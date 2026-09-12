@@ -8,3 +8,6 @@ psycopg2-binary
 pgvector
 openai
 boto3
+python-docx
+openpyxl
+tiktoken
