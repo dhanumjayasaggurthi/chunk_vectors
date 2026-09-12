@@ -1,0 +1,10 @@
+markdown
+streamlit
+pymupdf
+pdfplumber
+pillow
+google-cloud-vision
+psycopg2-binary
+pgvector
+openai
+boto3
