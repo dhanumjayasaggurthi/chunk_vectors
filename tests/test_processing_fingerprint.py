@@ -1,6 +1,7 @@
 import tempfile
 from pathlib import Path
 from mir_ai.settings import Settings
+from mir_ai.profile import processing_fingerprint, validate_runtime
 
 
 def _settings(tmp: Path, extra: str = "") -> Settings:
@@ -16,15 +17,15 @@ def test_processing_fingerprint_is_stable_and_changes_for_output_settings():
         a = _settings(root)
         b = _settings(root)
         c = _settings(root, "chunk_target_max_tokens=1400")
-        assert a.processing_fingerprint() == b.processing_fingerprint()
-        assert a.processing_fingerprint() != c.processing_fingerprint()
+        assert processing_fingerprint(a) == processing_fingerprint(b)
+        assert processing_fingerprint(a) != processing_fingerprint(c)
 
 
 def test_heartbeat_must_be_shorter_than_lease():
     with tempfile.TemporaryDirectory() as d:
         s = _settings(Path(d), "lease_seconds=60\nheartbeat_seconds=60")
         try:
-            s.validate()
+            validate_runtime(s)
         except ValueError as exc:
             assert "heartbeat_seconds" in str(exc)
         else:
