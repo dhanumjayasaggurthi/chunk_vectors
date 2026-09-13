@@ -32,7 +32,7 @@ def save_file_data_batch(records):
     cur = conn.cursor()
     cur.executemany("""
                     INSERT INTO epod1.file_data (folder_path, file_name, file_size_mb, last_modified)
-                    VALUES (%s, %s, %s, %s, %s) ON CONFLICT (folder_path, file_name) DO NOTHING;
+                    VALUES (%s, %s, %s, %s) ON CONFLICT (folder_path, file_name) DO NOTHING;
                     """, records)
     conn.commit()
     conn.close()
