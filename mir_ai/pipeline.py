@@ -215,6 +215,16 @@ class MIRPipeline:
 
                 progress = self.store.generation_progress(generation_id)
                 pages_total = max(pages_total, int(progress.get("last_page_completed") or 0))
+                if not self.store.heartbeat(
+                    generation_id,
+                    worker_id,
+                    self.settings.lease_seconds,
+                    stage="PAGE_EXTRACTION_COMPLETE",
+                    last_page=pages_total,
+                    pages_total=pages_total,
+                ):
+                    raise RuntimeError("Lost generation ownership")
+
                 header_sigs, footer_sigs = self.store.repeated_header_footer_signatures(generation_id)
 
                 def summarize_table(text, page_start, page_end):
