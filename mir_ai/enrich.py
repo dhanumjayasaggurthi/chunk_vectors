@@ -19,12 +19,14 @@ class PDFEnricher:
         ocr_render_dpi=200,
         vision_ocr=None,
         chart_describer=None,
+        image_describer=None,
     ):
         self.file_path = file_path
         self.doc_id = doc_id
         self.ocr_render_dpi = ocr_render_dpi
         self.vision_ocr = vision_ocr
         self.chart_describer = chart_describer
+        self.image_describer = image_describer
 
     def _fitz_doc(self):
         key = f"fitz_{id(self)}"
@@ -38,12 +40,7 @@ class PDFEnricher:
 
     @staticmethod
     def _find_tables(fitz_page):
-        """Find tables without constructing a pdfplumber Page object for every PDF page.
-
-        This is important for 12k+ page documents: pdfplumber's cached `pages`
-        property materializes Page wrappers for the complete document in each
-        worker. PyMuPDF operates directly on the requested page.
-        """
+        """Find tables without constructing a pdfplumber Page object for every PDF page."""
         with _table_find_lock:
             finder = fitz_page.find_tables(
                 vertical_strategy="lines",
@@ -151,24 +148,39 @@ class PDFEnricher:
                         )
                     data = pix.tobytes("png")
                     result = self.vision_ocr(data)
-                    ocr = str(getattr(result, "text", result or ""))
+                    ocr = str(getattr(result, "text", result or "")).strip()
                     element.confidence = getattr(result, "confidence", None)
                     success = bool(getattr(result, "success", True))
+                    nearby = " ".join(
+                        e.text
+                        for e in page.elements
+                        if e.element_type == "text" and e.text
+                    )[:1000]
 
                     if element.element_type == "chart" and self.chart_describer:
-                        nearby = " ".join(
-                            e.text
-                            for e in page.elements
-                            if e.element_type == "text" and e.text
-                        )[:1000]
-                        description = self.chart_describer(data, nearby)
-                        element.text = (
-                            f"[CHART DESCRIPTION]\n{description}\n\n"
-                            f"[VISIBLE OCR TEXT]\n{ocr}"
-                            if description
-                            else ocr
-                        ).strip()
+                        description = self.chart_describer(data, nearby).strip()
+                        parts = []
+                        if description:
+                            parts.append(f"[CHART DESCRIPTION]\n{description}")
+                        if ocr:
+                            parts.append(f"[VISIBLE OCR TEXT]\n{ocr}")
+                        element.text = "\n\n".join(parts)
+                    elif (
+                        element.element_type == "image"
+                        and not element.raw.get("full_page_ocr")
+                        and self.image_describer
+                    ):
+                        description = self.image_describer(data, nearby).strip()
+                        parts = []
+                        if description:
+                            parts.append(f"[IMAGE DESCRIPTION]\n{description}")
+                        if ocr:
+                            parts.append(f"[VISIBLE OCR TEXT]\n{ocr}")
+                        element.text = "\n\n".join(parts)
                     else:
+                        # Full-page scanned images use OCR as the authoritative text
+                        # representation; describing the entire page visually would
+                        # duplicate content and increase unsupported inference risk.
                         element.text = ocr
 
                     low_confidence = str(getattr(result, "error", "")) == "low_confidence"
@@ -184,7 +196,6 @@ class PDFEnricher:
                     element.extraction_status = "error"
                     element.raw["error"] = str(exc)
                 finally:
-                    # Do not retain rendered image bytes between elements/pages.
                     data = None
                     pix = None
 
