@@ -257,9 +257,10 @@ class DOCXPageStream:
 
 
 class DOCXEnricher:
-    def __init__(self, file_path, vision_ocr=None):
+    def __init__(self, file_path, vision_ocr=None, image_describer=None):
         self.file_path = file_path
         self.vision_ocr = vision_ocr
+        self.image_describer = image_describer
 
     def _zip(self):
         key = f"docx_zip_{id(self)}"
@@ -271,16 +272,29 @@ class DOCXEnricher:
 
     def enrich_page(self, page):
         zf = self._zip()
+        nearby = page.native_text[:1000]
         for element in page.elements:
             if element.extraction_status != "pending":
                 continue
             try:
                 locator = element.source_locator
                 if locator.get("kind") == "docx_media" and self.vision_ocr:
-                    result = self.vision_ocr(zf.read(locator["zip_path"]))
-                    element.text = str(getattr(result, "text", result or ""))
+                    data = zf.read(locator["zip_path"])
+                    result = self.vision_ocr(data)
+                    ocr = str(getattr(result, "text", result or "")).strip()
                     element.confidence = getattr(result, "confidence", None)
                     success = bool(getattr(result, "success", True))
+                    description = (
+                        self.image_describer(data, nearby).strip()
+                        if self.image_describer
+                        else ""
+                    )
+                    parts = []
+                    if description:
+                        parts.append(f"[IMAGE DESCRIPTION]\n{description}")
+                    if ocr:
+                        parts.append(f"[VISIBLE OCR TEXT]\n{ocr}")
+                    element.text = "\n\n".join(parts)
                     low = str(getattr(result, "error", "")) == "low_confidence"
                     if success and low:
                         element.extraction_status = "low_confidence"
