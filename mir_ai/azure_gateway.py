@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+import configparser
+import json
+import random
+import time
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional
+import requests
+
+
+@dataclass(frozen=True)
+class EndpointConfig:
+    endpoint: str
+    api_key: str
+    api_version: str
+    deployment: str
+    model: str
+
+
+class AzureGateway:
+    def __init__(self, config_path: str | Path = "config.ini", max_retries: int = 5, timeout_s: int = 120):
+        self.config_path = Path(config_path)
+        self.max_retries = max_retries
+        self.timeout_s = timeout_s
+        self._cfg = configparser.ConfigParser()
+        self._cfg.read(self.config_path)
+        self._tls = threading.local()
+
+    def _session(self) -> requests.Session:
+        session = getattr(self._tls, "session", None)
+        if session is None:
+            session = requests.Session()
+            self._tls.session = session
+        return session
+
+    def _section(self, aliases: tuple[str, ...], required_model: Optional[str] = None, required_api_version: Optional[str] = None) -> EndpointConfig:
+        section = next((s for s in aliases if self._cfg.has_section(s)), None)
+        if not section:
+            raise KeyError(f"None of the config sections exist: {aliases}")
+        c = self._cfg[section]
+        endpoint = c.get("endpoint", c.get("api_base", "")).rstrip("/")
+        if not endpoint:
+            raise KeyError(f"Missing endpoint/api_base in [{section}]")
+        api_key = c.get("api_key", "")
+        if not api_key:
+            raise KeyError(f"Missing api_key in [{section}]")
+        model = c.get("model", required_model or "")
+        deployment = c.get("deployment", model)
+        if not deployment:
+            raise KeyError(f"Missing deployment/model in [{section}]")
+        api_version = required_api_version or c.get("api_version", "")
+        if not api_version:
+            raise KeyError(f"Missing api_version in [{section}]")
+        return EndpointConfig(endpoint, api_key, api_version, deployment, model or deployment)
+
+    @staticmethod
+    def _url(c: EndpointConfig, path: str) -> str:
+        return f"{c.endpoint}/openai/deployments/{c.deployment}/{path}?api-version={c.api_version}"
+
+    def _post(self, url: str, api_key: str, *, json_body: dict[str, Any]) -> requests.Response:
+        last = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = self._session().post(url, headers={"api-key": api_key, "Content-Type": "application/json"}, json=json_body, timeout=self.timeout_s)
+                if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                    if attempt == self.max_retries:
+                        resp.raise_for_status()
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else min(60.0, 2 ** (attempt - 1))
+                    time.sleep(delay + random.random())
+                    continue
+                resp.raise_for_status()
+                return resp
+            except requests.RequestException as exc:
+                last = exc
+                if attempt == self.max_retries:
+                    raise
+                time.sleep(min(60.0, 2 ** (attempt - 1)) + random.random())
+        raise last
+
+    def embeddings(self, texts: list[str]) -> list[list[float]]:
+        c = self._section(("AZURE_OPENAI_EMBEDDING", "azure_embedding"), required_model="text-embedding-3-large", required_api_version="2025-04-01-preview")
+        data = self._post(self._url(c, "embeddings"), c.api_key, json_body={"model": c.model, "input": texts}).json()
+        items = sorted(data.get("data", []), key=lambda x: x.get("index", 0))
+        vectors = [x.get("embedding") for x in items]
+        if len(vectors) != len(texts) or any(not isinstance(v, list) or len(v) != 3072 for v in vectors):
+            raise ValueError("Embedding response shape/dimension mismatch; expected one 3072-d vector per input")
+        return vectors
+
+    def chat_json(self, messages: list[dict[str, Any]], *, max_tokens: int = 3000, temperature: float = 0.0) -> dict[str, Any]:
+        c = self._section(("AZURE_OPENAI_CHAT", "azure_chat"))
+        payload = {"model": c.model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens, "response_format": {"type": "json_object"}}
+        try:
+            data = self._post(self._url(c, "chat/completions"), c.api_key, json_body=payload).json()
+        except requests.HTTPError as exc:
+            if exc.response is None or exc.response.status_code != 400:
+                raise
+            payload.pop("response_format", None)
+            data = self._post(self._url(c, "chat/completions"), c.api_key, json_body=payload).json()
+        text = data["choices"][0]["message"]["content"]
+        if isinstance(text, list):
+            text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
+        return json.loads(text)
+
+    def describe_chart(self, image_bytes: bytes, context: str = "") -> str:
+        import base64
+        c = self._section(("AZURE_OPENAI_CHAT", "azure_chat"))
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        prompt = "Extract only information visibly supported by this chart/graph. Report chart type, visible title, axes/units, legend labels, explicit plotted values when readable, and clearly visible trends. If something is not readable, say it is not readable; do not infer values. " + (f"Nearby document text: {context[:1000]}" if context else "")
+        payload = {"model": c.model, "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}}]}], "temperature": 0.0, "max_tokens": 800}
+        data = self._post(self._url(c, "chat/completions"), c.api_key, json_body=payload).json()
+        text = data["choices"][0]["message"]["content"]
+        if isinstance(text, list):
+            return "".join(part.get("text", "") for part in text if isinstance(part, dict)).strip()
+        return str(text).strip()
+
+    def chat_text(self, messages: list[dict[str, Any]], *, max_tokens: int = 800, temperature: float = 0.0) -> str:
+        c = self._section(("AZURE_OPENAI_CHAT", "azure_chat"))
+        payload = {"model": c.model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        data = self._post(self._url(c, "chat/completions"), c.api_key, json_body=payload).json()
+        text = data["choices"][0]["message"]["content"]
+        if isinstance(text, list):
+            return "".join(part.get("text", "") for part in text if isinstance(part, dict)).strip()
+        return str(text).strip()

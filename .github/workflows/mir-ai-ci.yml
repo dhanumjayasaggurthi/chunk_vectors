@@ -1,0 +1,19 @@
+name: MIR-AI CI
+
+on:
+  push:
+    branches: ["feature/MIR-AI-2026-09-12"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements-mirai.txt
+      - run: python -m compileall -q mir_ai mir_ai_main.py
+      - run: pytest -q

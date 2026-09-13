@@ -1,0 +1,4 @@
+-r requirements.txt
+requests>=2.31
+tiktoken>=0.7
+pytest>=8.0
