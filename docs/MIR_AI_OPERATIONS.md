@@ -10,9 +10,13 @@ MIR-AI is additive. The legacy EPOD entrypoint remains available while the new p
 - page state is persisted immediately
 - contiguous checkpoint tracking prevents an out-of-order page completion from skipping gaps after a crash
 - renewable DB leases replace fixed-age stale assumptions
+- completed `pages_total` is persisted with the generation and survives restarts
 - header/footer aggregation runs in PostgreSQL
-- metadata candidate pages are streamed
+- metadata candidate pages are streamed and searched using persisted native + enriched OCR/table/chart/image text
 - table summaries use bounded ordered concurrency
+- PDF table detection operates directly on the requested PyMuPDF page rather than materializing pdfplumber Page wrappers for an entire 12k+ page document in every worker
+- PDF vector line-art is inspected for evidence-backed chart regions in addition to embedded raster images
+- DOCX XML is streamed and bounded into logical segments even when the source has no explicit page breaks
 - old active generations are not deleted; replacement activation is atomic
 
 ## Configuration
@@ -68,16 +72,20 @@ S3 batch:
 python mir_ai_main.py --config config.ini --s3 --rimdocs-jsonl /handover/rimdocs.jsonl
 ```
 
-Document and API concurrency are independently bounded. S3 source versions use ETag + LastModified + size only as a no-download resume key; downloaded content is still SHA-256 hashed before generation creation.
+Batch mode intentionally fails closed without `--rimdocs-jsonl`. The MIR-AI requirements define RimDocs metadata as authoritative and allow LLM extraction only after overlap analysis; treating all 50 requested fields as missing when the authoritative source is unavailable would violate that rule. The JSONL provider is an explicit handover interface until Business/Data Hub supplies the approved live RimDocs interface and mapping.
+
+Document and API concurrency are independently bounded. S3 source versions use ETag + LastModified + size only as a no-download resume key; downloaded content is still SHA-256 hashed before generation creation. S3 download scratch space is reserved before download and released on cleanup.
 
 ## DOCX provenance limitation
 
-DOCX XML does not contain reliable rendered page coordinates. MIR-AI records logical page hints only when explicit page breaks are present and stores `bbox=null`. It does not fabricate coordinates. Exact rendered DOCX page/BBOX provenance requires an approved rendering service.
+DOCX XML does not contain reliable rendered page coordinates. MIR-AI honors explicit Word page breaks when present and additionally creates bounded `logical-N` segments when necessary for memory safety. These logical segment identifiers are **not rendered page numbers**. DOCX elements store `bbox=null`; the pipeline does not fabricate coordinates. Exact rendered DOCX page/BBOX provenance requires an approved rendering service.
 
 ## Open deployment decisions
 
-The supplied requirements leave PGVector vs Elastic open. This branch implements a PGVector path because current production already uses it, but does not represent that as a business selection. The screenshots also do not establish the authoritative RimDocs interface/table mapping; this branch uses an explicit provider boundary instead of inventing a Snowflake mapping.
+The supplied requirements leave PGVector vs Elastic open. This branch implements a PGVector path because current production already uses it, but does not represent that as a business selection. CI exercises the schema, generation lifecycle, 3072-d vector persistence, exact cosine retrieval, enriched metadata page selection, and atomic activation against a real PostgreSQL + pgvector service.
+
+The supplied screenshots also do not establish the authoritative live RimDocs interface/table mapping. This branch therefore uses an explicit provider boundary and JSONL handover instead of inventing a Snowflake/table mapping.
 
 ## Quality gate
 
-Do not claim the required >=99% table/metadata accuracy or <=1% chunking/metadata error until measured on a business-approved labelled golden set and reviewed by GRA.
+Do not claim the required >=99% table/metadata accuracy or <=1% chunking/metadata error until measured on a business-approved labelled golden set and reviewed by GRA. The automated test suite is a software-correctness gate; it is not a substitute for the business accuracy benchmark.
