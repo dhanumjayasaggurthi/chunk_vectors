@@ -5,7 +5,7 @@ import json
 
 # Bump whenever extraction/chunking/embedding semantics change in a way that
 # requires a fresh generation for the same source bytes.
-PROCESSING_PROFILE_VERSION = "mir-ai-2026-09-13-v3"
+PROCESSING_PROFILE_VERSION = "mir-ai-2026-09-13-v4"
 MAX_GENERATION_ATTEMPTS = 3
 
 
