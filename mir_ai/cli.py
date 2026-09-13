@@ -7,7 +7,7 @@ from .batch import BatchRunner, S3Source
 from .logging_utils import configure_logging
 from .pipeline import MIRPipeline
 from .profile import validate_runtime
-from .rimdocs import JSONLRimDocsProvider, EmptyRimDocsProvider
+from .rimdocs import JSONLRimDocsProvider
 from .settings import Settings
 from .store import PostgresStore
 
@@ -48,11 +48,18 @@ def main(argv=None):
             parser.error("--file, --root, and --s3 are mutually exclusive")
 
         if args.root or args.s3:
-            provider = (
-                JSONLRimDocsProvider(args.rimdocs_jsonl, settings.scratch_dir)
-                if args.rimdocs_jsonl
-                else EmptyRimDocsProvider()
-            )
+            # The source requirements define RimDocs as authoritative and permit
+            # LLM extraction only after overlap analysis. Batch ingestion therefore
+            # fails closed if an authoritative handover is not supplied; silently
+            # treating every one of the 50 requested fields as missing would violate
+            # that rule. The provider boundary can be replaced by the approved live
+            # RimDocs interface once Business/Data Hub supplies it.
+            if not args.rimdocs_jsonl:
+                parser.error(
+                    "batch MIR-AI ingestion requires --rimdocs-jsonl so authoritative "
+                    "RimDocs overlap analysis can be performed"
+                )
+            provider = JSONLRimDocsProvider(args.rimdocs_jsonl, settings.scratch_dir)
             runner = BatchRunner(settings, store, provider)
             results = (
                 runner.run_s3(S3Source(args.config), args.max_files)
@@ -70,6 +77,8 @@ def main(argv=None):
         if args.rimdocs_json:
             with open(args.rimdocs_json, "r", encoding="utf-8") as f:
                 rimdocs = json.load(f)
+            if not isinstance(rimdocs, dict):
+                raise ValueError("--rimdocs-json must contain a JSON object")
 
         result = MIRPipeline(settings, store=store).process_file(
             args.file,
