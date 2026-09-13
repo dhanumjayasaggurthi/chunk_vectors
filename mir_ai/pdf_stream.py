@@ -15,31 +15,57 @@ def _clean(text: str) -> str:
 
 def _looks_like_chart(bbox: BBox, text_elements: list[ElementRef]) -> bool:
     nearby = []
-    for el in text_elements:
-        if not el.bbox:
+    for element in text_elements:
+        if element.element_type != "text" or not element.bbox:
             continue
-        horizontal = not (el.bbox.x1 < bbox.x0 - 30 or el.bbox.x0 > bbox.x1 + 30)
-        vertical = not (el.bbox.y1 < bbox.y0 - 30 or el.bbox.y0 > bbox.y1 + 30)
+        horizontal = not (
+            element.bbox.x1 < bbox.x0 - 30 or element.bbox.x0 > bbox.x1 + 30
+        )
+        vertical = not (
+            element.bbox.y1 < bbox.y0 - 30 or element.bbox.y0 > bbox.y1 + 30
+        )
         if horizontal and vertical:
-            nearby.append(el.text)
+            nearby.append(element.text)
     text = " ".join(nearby)
-    numeric_labels = len(re.findall(r"(?<![A-Za-z])[-+]?\d+(?:[.,]\d+)?%?", text))
-    axis_terms = bool(re.search(
-        r"\b(mean|dose|day|week|time|concentration|response|percent|%|mg|kg|ml|hr|hours?)\b",
-        text,
-        re.I,
-    ))
+    numeric_labels = len(
+        re.findall(r"(?<![A-Za-z])[-+]?\d+(?:[.,]\d+)?%?", text)
+    )
+    axis_terms = bool(
+        re.search(
+            r"\b(mean|dose|day|week|time|concentration|response|percent|%|mg|kg|ml|hr|hours?|"
+            r"baseline|change|group|treatment|control|vehicle)\b",
+            text,
+            re.I,
+        )
+    )
     return numeric_labels >= 3 and axis_terms
+
+
+def _overlap_fraction(a: BBox, b: BBox) -> float:
+    x0 = max(a.x0, b.x0)
+    y0 = max(a.y0, b.y0)
+    x1 = min(a.x1, b.x1)
+    y1 = min(a.y1, b.y1)
+    intersection = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    area = max(0.0, a.x1 - a.x0) * max(0.0, a.y1 - a.y0)
+    return intersection / area if area else 0.0
 
 
 class PDFPageStream:
     """Lightweight PDF manifest stream.
 
     `start_page` is 1-based and lets crash recovery seek directly to the next
-    uncommitted page instead of reparsing thousands of earlier pages.
+    uncommitted page instead of reparsing thousands of earlier pages. Rendered
+    image bytes are never retained in the manifest.
     """
 
-    def __init__(self, file_path: str, doc_id: str, scanned_text_threshold: int = 100, start_page: int = 1):
+    def __init__(
+        self,
+        file_path: str,
+        doc_id: str,
+        scanned_text_threshold: int = 100,
+        start_page: int = 1,
+    ):
         self.file_path = file_path
         self.doc_id = doc_id
         self.scanned_text_threshold = scanned_text_threshold
@@ -82,21 +108,24 @@ class PDFPageStream:
                     if not text:
                         continue
                     bbox = BBox(x0, y0, x1, y1)
-                    elements.append(ElementRef(
-                        stable_id("el", self.doc_id, idx + 1, order, text[:100]),
-                        "text",
-                        bbox,
-                        order,
-                        text,
-                    ))
+                    elements.append(
+                        ElementRef(
+                            stable_id("el", self.doc_id, idx + 1, order, text[:100]),
+                            "text",
+                            bbox,
+                            order,
+                            text,
+                        )
+                    )
                     text_parts.append(text)
-                    if y0 <= rect.height * .08:
+                    if y0 <= rect.height * 0.08:
                         headers.append(text)
-                    if y1 >= rect.height * .92:
+                    if y1 >= rect.height * 0.92:
                         footers.append(text)
                     order += 1
 
                 image_count = 0
+                raster_bboxes = []
                 try:
                     for image in page.get_images(full=True):
                         xref = int(image[0])
@@ -105,50 +134,138 @@ class PDFPageStream:
                             if image_rect.width * image_rect.height < 2500:
                                 continue
                             bbox = BBox(
-                                float(image_rect.x0), float(image_rect.y0),
-                                float(image_rect.x1), float(image_rect.y1),
+                                float(image_rect.x0),
+                                float(image_rect.y0),
+                                float(image_rect.x1),
+                                float(image_rect.y1),
                             )
-                            elements.append(ElementRef(
-                                stable_id("el", self.doc_id, idx + 1, "img", xref, image_count),
-                                "chart" if _looks_like_chart(bbox, elements) else "image",
-                                bbox,
-                                order,
-                                source_locator={
-                                    "kind": "pdf_image_region",
-                                    "page_index": idx,
-                                    "xref": xref,
-                                    "bbox": bbox.to_list(),
-                                },
-                                extraction_status="pending",
-                            ))
+                            raster_bboxes.append(bbox)
+                            elements.append(
+                                ElementRef(
+                                    stable_id(
+                                        "el",
+                                        self.doc_id,
+                                        idx + 1,
+                                        "img",
+                                        xref,
+                                        image_count,
+                                    ),
+                                    "chart" if _looks_like_chart(bbox, elements) else "image",
+                                    bbox,
+                                    order,
+                                    source_locator={
+                                        "kind": "pdf_image_region",
+                                        "page_index": idx,
+                                        "xref": xref,
+                                        "bbox": bbox.to_list(),
+                                    },
+                                    extraction_status="pending",
+                                )
+                            )
                             order += 1
                             image_count += 1
-                except Exception:
-                    # Image enumeration failure must not discard native text.
-                    pass
+                except Exception as exc:
+                    elements.append(
+                        ElementRef(
+                            stable_id("el", self.doc_id, idx + 1, "image_enum_error"),
+                            "image",
+                            None,
+                            order,
+                            extraction_status="error",
+                            raw={"error": str(exc), "stage": "image_enumeration"},
+                        )
+                    )
+                    order += 1
+
+                # Charts in regulatory PDFs are often vector line-art rather than
+                # embedded raster images. PyMuPDF can cluster neighboring vector
+                # drawing primitives into candidate regions. We only promote a
+                # significant region to a chart when nearby native labels contain
+                # both numeric values and chart/axis terminology; this avoids
+                # treating arbitrary boxes or decorative rules as charts.
+                try:
+                    drawings = page.get_drawings()
+                    if drawings:
+                        clusters = page.cluster_drawings(drawings=drawings)
+                        for vector_index, cluster in enumerate(clusters):
+                            if cluster.width * cluster.height < 10000:
+                                continue
+                            bbox = BBox(
+                                float(cluster.x0),
+                                float(cluster.y0),
+                                float(cluster.x1),
+                                float(cluster.y1),
+                            )
+                            if any(_overlap_fraction(bbox, other) >= 0.8 for other in raster_bboxes):
+                                continue
+                            if not _looks_like_chart(bbox, elements):
+                                continue
+                            elements.append(
+                                ElementRef(
+                                    stable_id(
+                                        "el",
+                                        self.doc_id,
+                                        idx + 1,
+                                        "vector_chart",
+                                        vector_index,
+                                        bbox.to_list(),
+                                    ),
+                                    "chart",
+                                    bbox,
+                                    order,
+                                    source_locator={
+                                        "kind": "pdf_vector_region",
+                                        "page_index": idx,
+                                        "bbox": bbox.to_list(),
+                                    },
+                                    extraction_status="pending",
+                                    raw={"vector_graphic": True},
+                                )
+                            )
+                            order += 1
+                except Exception as exc:
+                    # Vector discovery is supplementary. Preserve the page and
+                    # record the failure explicitly rather than dropping text.
+                    elements.append(
+                        ElementRef(
+                            stable_id("el", self.doc_id, idx + 1, "vector_enum_error"),
+                            "chart",
+                            None,
+                            order,
+                            extraction_status="error",
+                            raw={"error": str(exc), "stage": "vector_chart_enumeration"},
+                        )
+                    )
+                    order += 1
 
                 native = "\n".join(text_parts).strip()
-                needs_full_ocr = len(native) < self.scanned_text_threshold and image_count > 0
+                needs_full_ocr = (
+                    len(native) < self.scanned_text_threshold and image_count > 0
+                )
                 if needs_full_ocr:
-                    elements.append(ElementRef(
-                        stable_id("el", self.doc_id, idx + 1, "fullpage"),
-                        "image",
-                        BBox(0, 0, float(rect.width), float(rect.height)),
-                        order,
-                        source_locator={
-                            "kind": "pdf_full_page",
-                            "page_index": idx,
-                            "bbox": [0, 0, float(rect.width), float(rect.height)],
-                        },
-                        extraction_status="pending",
-                        raw={"full_page_ocr": True},
-                    ))
+                    elements.append(
+                        ElementRef(
+                            stable_id("el", self.doc_id, idx + 1, "fullpage"),
+                            "image",
+                            BBox(0, 0, float(rect.width), float(rect.height)),
+                            order,
+                            source_locator={
+                                "kind": "pdf_full_page",
+                                "page_index": idx,
+                                "bbox": [0, 0, float(rect.width), float(rect.height)],
+                            },
+                            extraction_status="pending",
+                            raw={"full_page_ocr": True},
+                        )
+                    )
 
-                elements.sort(key=lambda e: (
-                    e.bbox.y0 if e.bbox else 0,
-                    e.bbox.x0 if e.bbox else 0,
-                    e.reading_order,
-                ))
+                elements.sort(
+                    key=lambda element: (
+                        element.bbox.y0 if element.bbox else 0,
+                        element.bbox.x0 if element.bbox else 0,
+                        element.reading_order,
+                    )
+                )
                 for i, element in enumerate(elements):
                     element.reading_order = i
 
