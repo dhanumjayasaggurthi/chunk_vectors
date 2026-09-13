@@ -62,6 +62,18 @@ class TestAzureGatewayRetry(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(fake.calls, 2)
 
+    def test_visual_mime_detection_does_not_mislabel_jpeg(self):
+        self.assertEqual(AzureGateway._image_mime(b"\xff\xd8\xff\xe0payload"), "image/jpeg")
+        self.assertEqual(
+            AzureGateway._image_mime(b"\x89PNG\r\n\x1a\npayload"), "image/png"
+        )
+        self.assertEqual(
+            AzureGateway._image_mime(b"RIFF\x00\x00\x00\x00WEBPpayload"),
+            "image/webp",
+        )
+        with self.assertRaises(ValueError):
+            AzureGateway._image_mime(b"unknown")
+
 
 if __name__ == "__main__":
     unittest.main()
