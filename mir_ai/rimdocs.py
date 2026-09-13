@@ -64,7 +64,11 @@ class JSONLRimDocsProvider:
         row = self.conn.execute(
             "SELECT payload FROM metadata WHERE canonical_path=?", (canonical_path,)
         ).fetchone()
-        return json.loads(row[0]) if row else None
+        # A configured authoritative provider with no row for this document means
+        # "no authoritative metadata available for this document", not "provider absent".
+        # Keep that distinct from EmptyRimDocsProvider.get(), which deliberately returns
+        # None so previously persisted authoritative values are preserved.
+        return json.loads(row[0]) if row else {}
 
     def close(self):
         self.conn.close()
