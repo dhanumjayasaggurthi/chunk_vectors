@@ -94,6 +94,7 @@ class PostgresStore:
                 header_candidate TEXT,
                 footer_candidate TEXT,
                 native_text TEXT,
+                search_text TEXT,
                 payload JSONB NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY(generation_id,page_number))""",
@@ -132,6 +133,7 @@ class PostgresStore:
                 PRIMARY KEY(generation_id,field_key))""",
             f"ALTER TABLE {s}.mirai_generations ADD COLUMN IF NOT EXISTS processing_fingerprint TEXT NOT NULL DEFAULT 'legacy'",
             f"ALTER TABLE {s}.mirai_generations ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+            f"ALTER TABLE {s}.mirai_pages ADD COLUMN IF NOT EXISTS search_text TEXT",
             f"ALTER TABLE {s}.mirai_generations DROP CONSTRAINT IF EXISTS mirai_generations_doc_id_file_hash_key",
             f"CREATE UNIQUE INDEX IF NOT EXISTS mirai_generations_doc_file_profile_uidx ON {s}.mirai_generations(doc_id,file_hash,processing_fingerprint)",
             f"CREATE INDEX IF NOT EXISTS mirai_generations_doc_idx ON {s}.mirai_generations(doc_id,status)",
@@ -236,7 +238,15 @@ class PostgresStore:
             c.commit()
         return ok
 
-    def heartbeat(self, gid, worker_id, lease_seconds, stage=None, last_page=None):
+    def heartbeat(
+        self,
+        gid,
+        worker_id,
+        lease_seconds,
+        stage=None,
+        last_page=None,
+        pages_total=None,
+    ):
         s = self.schema
         fields = ["lease_expires_at=NOW()+(%s*INTERVAL '1 second')", "updated_at=NOW()"]
         params = [lease_seconds]
@@ -246,6 +256,9 @@ class PostgresStore:
         if last_page is not None:
             fields.append("last_page_completed=GREATEST(last_page_completed,%s)")
             params.append(last_page)
+        if pages_total is not None:
+            fields.append("pages_total=%s")
+            params.append(pages_total)
         params.extend([gid, worker_id])
         with self.conn() as c:
             with c.cursor() as cur:
@@ -276,23 +289,49 @@ class PostgresStore:
             raise KeyError(gid)
         return dict(zip(keys, row))
 
+    @staticmethod
+    def _page_search_text(page):
+        parts = []
+        seen = set()
+        for text in [page.native_text] + [e.text for e in page.elements if e.text]:
+            value = (text or "").strip()
+            if not value:
+                continue
+            key = " ".join(value.casefold().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(value)
+        return "\n\n".join(parts)
+
     def upsert_page(self, gid, page):
         payload = json.dumps(page.to_dict(), ensure_ascii=False)
+        search_text = self._page_search_text(page)
         with self.conn() as c:
             with c.cursor() as cur:
                 cur.execute(
                     f"""INSERT INTO {self.schema}.mirai_pages(
-                        generation_id,page_number,page_label,header_candidate,footer_candidate,native_text,payload)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)
+                        generation_id,page_number,page_label,header_candidate,footer_candidate,
+                        native_text,search_text,payload)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                     ON CONFLICT(generation_id,page_number) DO UPDATE SET
                         page_label=EXCLUDED.page_label,
                         header_candidate=EXCLUDED.header_candidate,
                         footer_candidate=EXCLUDED.footer_candidate,
                         native_text=EXCLUDED.native_text,
+                        search_text=EXCLUDED.search_text,
                         payload=EXCLUDED.payload,
                         updated_at=NOW()""",
-                    (gid, page.page_number, page.page_label, page.header_candidate,
-                     page.footer_candidate, page.native_text, payload),
+                    (
+                        gid,
+                        page.page_number,
+                        page.page_label,
+                        page.header_candidate,
+                        page.footer_candidate,
+                        page.native_text,
+                        search_text,
+                        payload,
+                    ),
                 )
             c.commit()
 
@@ -341,7 +380,10 @@ class PostgresStore:
             with c.cursor() as cur:
                 cur.execute(
                     f"SELECT EXISTS(SELECT 1 FROM {s}.mirai_pages WHERE generation_id=%s AND "
-                    f"(native_text ILIKE %s OR native_text ILIKE %s OR native_text ILIKE %s OR native_text ILIKE %s))",
+                    f"(COALESCE(search_text,native_text,'') ILIKE %s OR "
+                    f" COALESCE(search_text,native_text,'') ILIKE %s OR "
+                    f" COALESCE(search_text,native_text,'') ILIKE %s OR "
+                    f" COALESCE(search_text,native_text,'') ILIKE %s))",
                     (gid, *terms),
                 )
                 has_sections = bool(cur.fetchone()[0])
@@ -351,7 +393,10 @@ class PostgresStore:
                     cur.execute(
                         f"""WITH matches AS (
                             SELECT page_number FROM {s}.mirai_pages WHERE generation_id=%s AND
-                            (native_text ILIKE %s OR native_text ILIKE %s OR native_text ILIKE %s OR native_text ILIKE %s)
+                            (COALESCE(search_text,native_text,'') ILIKE %s OR
+                             COALESCE(search_text,native_text,'') ILIKE %s OR
+                             COALESCE(search_text,native_text,'') ILIKE %s OR
+                             COALESCE(search_text,native_text,'') ILIKE %s)
                         ), wanted AS (
                             SELECT DISTINCT p.page_number FROM {s}.mirai_pages p JOIN matches m
                             ON p.page_number BETWEEN m.page_number-1 AND m.page_number+1
