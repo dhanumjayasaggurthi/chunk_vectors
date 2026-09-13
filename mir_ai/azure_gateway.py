@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import configparser
 import json
 import random
@@ -113,8 +114,6 @@ class AzureGateway:
                 time.sleep(self._retry_delay(response, attempt) + random.random())
                 continue
 
-            # Permanent 4xx errors are not transient. Raise immediately rather
-            # than sending the same invalid request several more times.
             response.raise_for_status()
             return response
 
@@ -165,8 +164,6 @@ class AzureGateway:
                 json_body=payload,
             ).json()
         except requests.HTTPError as exc:
-            # Some configured Azure chat deployments do not support response_format.
-            # Retry once without it only for a client-side 400 response.
             if exc.response is None or exc.response.status_code != 400:
                 raise
             payload.pop("response_format", None)
@@ -182,18 +179,15 @@ class AzureGateway:
             )
         return json.loads(text)
 
-    def describe_chart(self, image_bytes: bytes, context: str = "") -> str:
-        import base64
-
+    def _describe_visual(
+        self,
+        image_bytes: bytes,
+        prompt: str,
+        *,
+        max_tokens: int = 800,
+    ) -> str:
         config = self._section(("AZURE_OPENAI_CHAT", "azure_chat"))
         encoded = base64.b64encode(image_bytes).decode("ascii")
-        prompt = (
-            "Extract only information visibly supported by this chart/graph. Report chart type, "
-            "visible title, axes/units, legend labels, explicit plotted values when readable, and "
-            "clearly visible trends. If something is not readable, say it is not readable; do not "
-            "infer values. "
-            + (f"Nearby document text: {context[:1000]}" if context else "")
-        )
         payload = {
             "model": config.model,
             "messages": [
@@ -212,7 +206,7 @@ class AzureGateway:
                 }
             ],
             "temperature": 0.0,
-            "max_tokens": 800,
+            "max_tokens": max_tokens,
         }
         data = self._post(
             self._url(config, "chat/completions"),
@@ -225,6 +219,28 @@ class AzureGateway:
                 part.get("text", "") for part in text if isinstance(part, dict)
             ).strip()
         return str(text).strip()
+
+    def describe_chart(self, image_bytes: bytes, context: str = "") -> str:
+        prompt = (
+            "Extract only information visibly supported by this chart/graph. Report chart type, "
+            "visible title, axes/units, legend labels, explicit plotted values when readable, and "
+            "clearly visible trends. If something is not readable, say it is not readable; do not "
+            "infer values. "
+            + (f"Nearby document text: {context[:1000]}" if context else "")
+        )
+        return self._describe_visual(image_bytes, prompt, max_tokens=800)
+
+    def describe_image(self, image_bytes: bytes, context: str = "") -> str:
+        prompt = (
+            "Describe only content visibly supported by this document image for retrieval. "
+            "Include visible subject matter, labels, annotations, captions, symbols, and "
+            "scientifically relevant relationships that can be directly observed. Do not infer "
+            "identity, measurements, diagnoses, values, or conclusions that are not visibly "
+            "supported. If the image is decorative or contains no meaningful retrievable content, "
+            "say so briefly. "
+            + (f"Nearby document text: {context[:1000]}" if context else "")
+        )
+        return self._describe_visual(image_bytes, prompt, max_tokens=600)
 
     def chat_text(
         self,
