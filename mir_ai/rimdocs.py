@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
@@ -21,6 +22,7 @@ class EmptyRimDocsProvider:
 class JSONLRimDocsProvider:
     def __init__(self, path, cache_dir=".mirai_scratch"):
         self.path = Path(path)
+        self._lock = threading.RLock()
         cache_dir = Path(cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
         st = self.path.stat()
@@ -61,9 +63,13 @@ class JSONLRimDocsProvider:
                     self.conn.commit()
 
     def get(self, canonical_path):
-        row = self.conn.execute(
-            "SELECT payload FROM metadata WHERE canonical_path=?", (canonical_path,)
-        ).fetchone()
+        # One JSONL-backed provider instance is shared by document workers. Serialize
+        # access to the SQLite connection instead of relying on SQLite build-specific
+        # same-connection threading behavior.
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT payload FROM metadata WHERE canonical_path=?", (canonical_path,)
+            ).fetchone()
         # A configured authoritative provider with no row for this document means
         # "no authoritative metadata available for this document", not "provider absent".
         # Keep that distinct from EmptyRimDocsProvider.get(), which deliberately returns
@@ -71,4 +77,5 @@ class JSONLRimDocsProvider:
         return json.loads(row[0]) if row else {}
 
     def close(self):
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
