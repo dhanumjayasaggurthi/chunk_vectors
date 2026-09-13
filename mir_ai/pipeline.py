@@ -102,6 +102,41 @@ class MIRPipeline:
 
         self.chart_describer = governed_chart
 
+        def governed_image(data, context=""):
+            with self.governor.slot(self.governor.chat):
+                return self.gateway.describe_image(data, context)
+
+        self.image_describer = governed_image
+
+    @staticmethod
+    def _validate_page(page):
+        """Prevent a generation with silently missing required page content from activating."""
+        if page.error:
+            raise RuntimeError(f"Page {page.page_number} parsing failed: {page.error}")
+        failed = [
+            element
+            for element in page.elements
+            if element.element_type in {"table", "image", "chart"}
+            and element.extraction_status == "error"
+        ]
+        if failed:
+            details = "; ".join(
+                f"{element.element_type}:{element.raw.get('stage', '')}:{element.raw.get('error', '')}"[:500]
+                for element in failed[:5]
+            )
+            raise RuntimeError(
+                f"Page {page.page_number} required extraction failed: {details}"
+            )
+        if page.needs_full_ocr:
+            full_page = next(
+                (element for element in page.elements if element.raw.get("full_page_ocr")),
+                None,
+            )
+            if full_page is None or not full_page.text.strip():
+                raise RuntimeError(
+                    f"Page {page.page_number} requires full-page OCR but no OCR text was produced"
+                )
+
     def process_file(
         self,
         file_path,
@@ -183,13 +218,14 @@ class MIRPipeline:
                         self.settings.ocr_render_dpi,
                         self.vision_ocr,
                         self.chart_describer,
+                        self.image_describer,
                     )
                     page_source = stream
                 else:
                     stream = DOCXPageStream(str(path), doc_id)
-                    enricher = DOCXEnricher(str(path), self.vision_ocr)
-                    # DOCX XML has no reliable random-access rendered pages. We
-                    # still skip enrichment for already committed logical pages.
+                    enricher = DOCXEnricher(
+                        str(path), self.vision_ocr, self.image_describer
+                    )
                     page_source = (p for p in stream if p.page_number >= resume_page)
 
                 results = bounded_parallel_map(
@@ -201,7 +237,10 @@ class MIRPipeline:
                 contiguous = ContiguousProgress(resume_page - 1)
                 for page in results:
                     heartbeat.assert_owned()
+                    # Persist diagnostics even when validation fails, but never
+                    # advance the contiguous checkpoint for an invalid page.
                     self.store.upsert_page(generation_id, page)
+                    self._validate_page(page)
                     pages_total = max(pages_total, page.page_number)
                     last = contiguous.mark(page.page_number)
                     if not self.store.heartbeat(
@@ -278,10 +317,6 @@ class MIRPipeline:
                     self.settings.chunk_overlap_tokens,
                 ).chunks(units)
 
-                # Do not delete previously committed batches on retry. Chunk IDs
-                # are deterministic for one processing profile, so successful
-                # batches are overwritten idempotently and remain recoverable if
-                # another crash occurs mid-document.
                 batch = []
                 count = 0
                 for chunk in chunks:
