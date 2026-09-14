@@ -137,6 +137,20 @@ class MIRPipeline:
                     f"Page {page.page_number} requires full-page OCR but no OCR text was produced"
                 )
 
+    def _metadata_should_run(self, business_metadata) -> bool:
+        """Return whether the structured metadata stage should run.
+
+        required: always run the RimDocs-first overlap/extraction stage.
+        optional: run only when authoritative metadata is actually available.
+        disabled: skip the structured metadata stage entirely.
+        """
+        mode = self.settings.metadata_mode
+        if mode == "disabled":
+            return False
+        if mode == "optional":
+            return bool(business_metadata)
+        return True
+
     def process_file(
         self,
         file_path,
@@ -237,8 +251,6 @@ class MIRPipeline:
                 contiguous = ContiguousProgress(resume_page - 1)
                 for page in results:
                     heartbeat.assert_owned()
-                    # Persist diagnostics even when validation fails, but never
-                    # advance the contiguous checkpoint for an invalid page.
                     self.store.upsert_page(generation_id, page)
                     self._validate_page(page)
                     pages_total = max(pages_total, page.page_number)
@@ -340,21 +352,25 @@ class MIRPipeline:
                 ):
                     raise RuntimeError("Lost generation ownership")
 
-                authoritative, missing = overlap_with_rimdocs(business_metadata or {})
-                extracted = MetadataExtractor(self.gateway).extract_missing_stream(
-                    missing,
-                    self.store.iter_metadata_candidate_pages(generation_id, 20),
-                )
-                self.store.upsert_metadata(
-                    generation_id,
-                    {**authoritative, **extracted}.values(),
-                )
+                if self._metadata_should_run(business_metadata):
+                    authoritative, missing = overlap_with_rimdocs(business_metadata or {})
+                    extracted = MetadataExtractor(self.gateway).extract_missing_stream(
+                        missing,
+                        self.store.iter_metadata_candidate_pages(generation_id, 20),
+                    )
+                    self.store.upsert_metadata(
+                        generation_id,
+                        {**authoritative, **extracted}.values(),
+                    )
+                    metadata_stage = "METADATA"
+                else:
+                    metadata_stage = "METADATA_SKIPPED"
 
                 if not self.store.heartbeat(
                     generation_id,
                     worker_id,
                     self.settings.lease_seconds,
-                    stage="METADATA",
+                    stage=metadata_stage,
                 ):
                     raise RuntimeError("Lost generation ownership")
 
