@@ -40,9 +40,16 @@ class Settings:
     db_password: str
     db_schema: str
     folder: str
-    scratch_dir: Path
+
     source_type: str
     docs_root: Path
+    source_auto_run: bool
+    source_recursive: bool
+    source_max_files: int
+    log_dir: Path
+    rimdocs_jsonl_path: str
+    scratch_dir: Path
+
     page_workers: int
     max_inflight_pages: int
     doc_workers: int
@@ -65,6 +72,7 @@ class Settings:
     enable_embeddings: bool
     vector_index_mode: str
     log_level: str
+
     enable_pdf: bool
     enable_docx: bool
     preferred_format: str
@@ -83,6 +91,7 @@ class Settings:
         pg = ("POSTGRES", "database")
         pipeline = ("MIR_AI", "PIPELINE", "processing")
         paths = ("PATHS", "paths")
+        source_sections = ("MIR_AI", "PATHS", "paths", "PIPELINE", "processing")
 
         db_schema = str(_first(cfg, pg, "schema", "public")).strip()
         scratch = Path(
@@ -111,9 +120,24 @@ class Settings:
             db_password=_first(cfg, pg, "password"),
             db_schema=db_schema,
             folder=_first(cfg, pg, "folder", "mirai"),
-            scratch_dir=scratch,
-            source_type=str(_first(cfg, paths, "source_type", "nas")).lower(),
+
+            source_type=str(_first(cfg, paths, "source_type", "nas")).strip().lower(),
             docs_root=Path(_first(cfg, paths, "docs_root", ".")),
+            source_auto_run=_as_bool(
+                _first(cfg, source_sections, "source_auto_run", "false"), False
+            ),
+            source_recursive=_as_bool(
+                _first(cfg, source_sections, "source_recursive", "true"), True
+            ),
+            source_max_files=max(
+                0, _as_int(_first(cfg, source_sections, "source_max_files", 0), 0)
+            ),
+            log_dir=Path(_first(cfg, paths, "log_dir", "logs")),
+            rimdocs_jsonl_path=str(
+                _first(cfg, pipeline, "rimdocs_jsonl_path", "")
+            ).strip(),
+            scratch_dir=scratch,
+
             page_workers=max(1, page_workers),
             max_inflight_pages=max(1, max_inflight),
             doc_workers=max(1, _as_int(_first(cfg, pipeline, "doc_workers", 2), 2)),
@@ -186,6 +210,7 @@ class Settings:
                 _first(cfg, pipeline, "vector_index_mode", "exact")
             ).lower(),
             log_level=str(_first(cfg, pipeline, "log_level", "INFO")).upper(),
+
             enable_pdf=_as_bool(_first(cfg, pipeline, "enable_pdf", "true"), True),
             enable_docx=_as_bool(_first(cfg, pipeline, "enable_docx", "true"), True),
             preferred_format=str(
@@ -228,6 +253,8 @@ class Settings:
             )
         if self.vector_index_mode not in {"exact", "halfvec_hnsw"}:
             raise ValueError("vector_index_mode must be exact or halfvec_hnsw")
+        if self.source_type not in {"nas", "s3"}:
+            raise ValueError("source_type must be nas or s3")
         if not self.enable_pdf and not self.enable_docx:
             raise ValueError("At least one of enable_pdf or enable_docx must be true")
         if self.preferred_format not in {"pdf", "docx"}:
