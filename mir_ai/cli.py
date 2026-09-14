@@ -12,8 +12,39 @@ from .settings import Settings
 from .store import PostgresStore
 
 
+def _configured_batch_source(settings, args, parser):
+    """Resolve batch source with CLI overrides taking precedence over config."""
+    explicit = [bool(args.file), bool(args.root), bool(args.s3)]
+    if sum(explicit) > 1:
+        parser.error("--file, --root, and --s3 are mutually exclusive")
+
+    if args.file:
+        return "file", args.file
+    if args.root:
+        return "nas", args.root
+    if args.s3:
+        return "s3", None
+
+    if args.init_db:
+        return "init_only", None
+
+    if not settings.source_auto_run:
+        parser.error(
+            "no source argument supplied and source_auto_run=false; use --file/--root/--s3 "
+            "or set [MIR_AI] source_auto_run=true"
+        )
+
+    if settings.source_type == "nas":
+        return "nas", str(settings.docs_root)
+    if settings.source_type == "s3":
+        return "s3", None
+    parser.error(f"unsupported configured source_type: {settings.source_type}")
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="MIR-AI bounded-memory ingestion pipeline")
+    parser = argparse.ArgumentParser(
+        description="MIR-AI bounded-memory ingestion pipeline"
+    )
     parser.add_argument("--config", default="config.ini")
     parser.add_argument("--file")
     parser.add_argument("--root")
@@ -28,7 +59,7 @@ def main(argv=None):
 
     settings = Settings.load(args.config)
     validate_runtime(settings)
-    configure_logging("logs", settings.log_level)
+    configure_logging(str(settings.log_dir), settings.log_level)
     store = PostgresStore(
         settings,
         maxconn=max(8, settings.doc_workers * 3 + settings.page_workers + 4),
@@ -37,34 +68,30 @@ def main(argv=None):
     try:
         if args.init_db:
             store.init_schema()
-            if not args.file and not args.root and not args.s3:
-                return 0
 
-        if not args.file and not args.root and not args.s3:
-            parser.error(
-                "one of --file, --root, or --s3 is required unless only --init-db is requested"
-            )
-        if sum(bool(x) for x in (args.file, args.root, args.s3)) > 1:
-            parser.error("--file, --root, and --s3 are mutually exclusive")
+        source_mode, source_value = _configured_batch_source(settings, args, parser)
+        if source_mode == "init_only":
+            return 0
 
-        if args.root or args.s3:
-            # The source requirements define RimDocs as authoritative and permit
-            # LLM extraction only after overlap analysis. Batch ingestion therefore
-            # fails closed if an authoritative handover is not supplied; silently
-            # treating every one of the 50 requested fields as missing would violate
-            # that rule. The provider boundary can be replaced by the approved live
-            # RimDocs interface once Business/Data Hub supplies it.
-            if not args.rimdocs_jsonl:
+        if source_mode in {"nas", "s3"}:
+            rimdocs_jsonl = args.rimdocs_jsonl or settings.rimdocs_jsonl_path
+            if not rimdocs_jsonl:
                 parser.error(
-                    "batch MIR-AI ingestion requires --rimdocs-jsonl so authoritative "
-                    "RimDocs overlap analysis can be performed"
+                    "batch MIR-AI ingestion requires authoritative RimDocs metadata. "
+                    "Set [MIR_AI] rimdocs_jsonl_path or pass --rimdocs-jsonl."
                 )
-            provider = JSONLRimDocsProvider(args.rimdocs_jsonl, settings.scratch_dir)
+
+            provider = JSONLRimDocsProvider(rimdocs_jsonl, settings.scratch_dir)
             runner = BatchRunner(settings, store, provider)
+            max_files = (
+                args.max_files
+                if args.max_files is not None
+                else (settings.source_max_files or None)
+            )
             results = (
-                runner.run_s3(S3Source(args.config), args.max_files)
-                if args.s3
-                else runner.run_nas(args.root, args.max_files)
+                runner.run_s3(S3Source(args.config), max_files)
+                if source_mode == "s3"
+                else runner.run_nas(source_value, max_files)
             )
             counts = {}
             for result in results:
@@ -81,7 +108,7 @@ def main(argv=None):
                 raise ValueError("--rimdocs-json must contain a JSON object")
 
         result = MIRPipeline(settings, store=store).process_file(
-            args.file,
+            source_value,
             canonical_path=args.canonical_path,
             source_url=args.source_url,
             rimdocs_metadata=rimdocs,
