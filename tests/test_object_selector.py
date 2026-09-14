@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 
-from mir_ai.object_selector import resolve_preferred_sources
+from mir_ai.object_selector import (
+    resolve_discovered_sources,
+    resolve_preferred_sources,
+)
 
 
 @dataclass(frozen=True)
@@ -87,3 +90,34 @@ def test_duplicate_preferred_sources_are_not_guessed():
     assert len(outcome.issues) == 1
     assert outcome.issues[0].status == "AMBIGUOUS_SOURCE"
     assert len(outcome.issues[0].candidates) == 2
+
+
+def test_all_files_mode_prefers_pdf_for_same_relative_logical_document():
+    outcome = resolve_discovered_sources(
+        [
+            Item("/root/sub/STUDY-100.docx", logical_object_id="sub/STUDY-100"),
+            Item("/root/sub/STUDY-100.pdf", logical_object_id="sub/STUDY-100"),
+            Item("/root/sub/STUDY-101.docx", logical_object_id="sub/STUDY-101"),
+        ],
+        preferred_format="pdf",
+    )
+    assert [item.logical_object_id for item in outcome.selected] == [
+        "sub/STUDY-100",
+        "sub/STUDY-101",
+    ]
+    assert outcome.selected[0].selected_format == "pdf"
+    assert outcome.selected[1].selected_format == "docx"
+
+
+def test_all_files_mode_keeps_same_basename_in_different_subfolders_separate():
+    outcome = resolve_discovered_sources(
+        [
+            Item("/root/a/STUDY.pdf", logical_object_id="a/STUDY"),
+            Item("/root/b/STUDY.pdf", logical_object_id="b/STUDY"),
+        ]
+    )
+    assert [item.logical_object_id for item in outcome.selected] == [
+        "a/STUDY",
+        "b/STUDY",
+    ]
+    assert not outcome.issues
