@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 
-# Bump whenever extraction/chunking/embedding semantics change in a way that
+# Bump whenever extraction/chunking/embedding/metadata semantics change in a way that
 # requires a fresh generation for the same source bytes.
-PROCESSING_PROFILE_VERSION = "mir-ai-2026-09-13-v4"
+PROCESSING_PROFILE_VERSION = "mir-ai-2026-09-14-v5"
 MAX_GENERATION_ATTEMPTS = 3
 
 
@@ -21,6 +21,7 @@ def processing_fingerprint(settings) -> str:
         "chunk_target_min_tokens": settings.chunk_target_min_tokens,
         "chunk_target_max_tokens": settings.chunk_target_max_tokens,
         "chunk_overlap_tokens": settings.chunk_overlap_tokens,
+        "metadata_mode": settings.metadata_mode,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
