@@ -10,13 +10,17 @@ from typing import Any, Optional, Protocol
 
 class RimDocsProvider(Protocol):
     def get(self, canonical_path: str) -> Optional[dict[str, Any]]: ...
+    def get_with_version(self, canonical_path: str) -> tuple[Optional[dict[str, Any]], str]: ...
 
 
 class EmptyRimDocsProvider:
-    """No provider configured. Return None so existing authoritative data is preserved."""
+    """No provider configured. Return None so metadata can be skipped by policy."""
 
     def get(self, canonical_path):
         return None
+
+    def get_with_version(self, canonical_path):
+        return None, "none"
 
 
 class JSONLRimDocsProvider:
@@ -49,7 +53,7 @@ class JSONLRimDocsProvider:
                         raise ValueError(
                             f"Invalid RimDocs JSONL row {line_number}: expected canonical_path + metadata object"
                         )
-                    rows.append((canonical, json.dumps(metadata, ensure_ascii=False)))
+                    rows.append((canonical, json.dumps(metadata, ensure_ascii=False, sort_keys=True)))
                     if len(rows) >= 1000:
                         self.conn.executemany(
                             "INSERT OR REPLACE INTO metadata VALUES (?,?)", rows
@@ -62,19 +66,26 @@ class JSONLRimDocsProvider:
                     )
                     self.conn.commit()
 
-    def get(self, canonical_path):
-        # One JSONL-backed provider instance is shared by document workers. Serialize
-        # access to the SQLite connection instead of relying on SQLite build-specific
-        # same-connection threading behavior.
+    def get_with_version(self, canonical_path):
+        """Return authoritative metadata plus a stable per-document content version.
+
+        Missing rows return ``(None, "none")``. An explicitly present empty metadata
+        object returns ``({}, <hash>)`` so required mode can distinguish "row exists
+        but no fields are populated" from "no authoritative row exists".
+        """
         with self._lock:
             row = self.conn.execute(
                 "SELECT payload FROM metadata WHERE canonical_path=?", (canonical_path,)
             ).fetchone()
-        # A configured authoritative provider with no row for this document means
-        # "no authoritative metadata available for this document", not "provider absent".
-        # Keep that distinct from EmptyRimDocsProvider.get(), which deliberately returns
-        # None so previously persisted authoritative values are preserved.
-        return json.loads(row[0]) if row else {}
+        if not row:
+            return None, "none"
+        payload = row[0]
+        version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return json.loads(payload), version
+
+    def get(self, canonical_path):
+        metadata, _ = self.get_with_version(canonical_path)
+        return metadata
 
     def close(self):
         with self._lock:
