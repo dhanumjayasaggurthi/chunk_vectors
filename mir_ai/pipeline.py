@@ -137,18 +137,19 @@ class MIRPipeline:
                     f"Page {page.page_number} requires full-page OCR but no OCR text was produced"
                 )
 
-    def _metadata_should_run(self, business_metadata) -> bool:
-        """Return whether the structured metadata stage should run.
+    def _metadata_should_run(self, current_rimdocs_metadata) -> bool:
+        """Return whether structured metadata should run for this invocation.
 
-        required: always run the RimDocs-first overlap/extraction stage.
-        optional: run only when authoritative metadata is actually available.
+        required: always run the RimDocs-first overlap/extraction stage. CLI/batch
+                  guards ensure authoritative input is supplied.
+        optional: run only when authoritative metadata was supplied for this run.
         disabled: skip the structured metadata stage entirely.
         """
         mode = self.settings.metadata_mode
         if mode == "disabled":
             return False
         if mode == "optional":
-            return bool(business_metadata)
+            return current_rimdocs_metadata is not None
         return True
 
     def process_file(
@@ -352,7 +353,7 @@ class MIRPipeline:
                 ):
                     raise RuntimeError("Lost generation ownership")
 
-                if self._metadata_should_run(business_metadata):
+                if self._metadata_should_run(rimdocs_metadata):
                     authoritative, missing = overlap_with_rimdocs(business_metadata or {})
                     extracted = MetadataExtractor(self.gateway).extract_missing_stream(
                         missing,
