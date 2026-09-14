@@ -24,6 +24,13 @@ MIR-AI is additive. The legacy EPOD entrypoint remains available while the new p
 `config.ini` remains uncommitted. MIR-AI accepts uppercase project sections and lowercase screenshot-style sections where applicable.
 
 ```ini
+[MIR_AI]
+source_auto_run = false
+source_recursive = true
+source_max_files = 0
+metadata_mode = optional
+rimdocs_jsonl_path =
+
 page_workers = 4
 max_inflight_pages = 8
 doc_workers = 2
@@ -48,31 +55,118 @@ enable_embeddings = true
 
 `exact` stores full 3072-d vectors and performs exact cosine search. `halfvec_hnsw` is explicit opt-in and creates a half-precision HNSW expression index; do not enable it without retrieval-quality qualification.
 
+## Configurable source start behavior
+
+When:
+
+```ini
+source_auto_run = false
+```
+
+an operator must explicitly choose `--file`, `--root`, or `--s3`.
+
+When:
+
+```ini
+source_auto_run = true
+```
+
+a bare command uses `[PATHS] source_type = nas|s3` and the configured NAS root or S3 settings:
+
+```bash
+python mir_ai_main.py --config config.ini
+```
+
+This switch exists to prevent accidental broad ingestion while still supporting future scheduler/UI-driven execution.
+
+## Configurable structured metadata policy
+
+RimDocs is no longer an unconditional runtime dependency. `[MIR_AI] metadata_mode` controls the behavior:
+
+```ini
+metadata_mode = required
+```
+
+Use for formal MIR-AI requirements qualification or workflows where structured metadata is mandatory. A RimDocs source must be configured. In batch mode, missing per-document RimDocs rows are reported as `RIMDOCS_NOT_FOUND` rather than silently extracting all requested fields.
+
+```ini
+metadata_mode = optional
+```
+
+If RimDocs input is configured and a document has an authoritative row, the RimDocs-first overlap/extraction workflow runs. If no RimDocs input/row is available, document ingestion continues and the structured metadata stage is skipped. The system does not assume all 50 fields are missing.
+
+```ini
+metadata_mode = disabled
+```
+
+Skip structured metadata extraction entirely. This is useful for parsing/OCR/table/chunking/embedding/infrastructure tests.
+
+Changing `metadata_mode` changes the processing fingerprint. Per-document RimDocs payload content is also included in the effective source version, so a real metadata change cannot be incorrectly skipped as `SKIPPED_UNCHANGED`.
+
 ## Setup
+
+Initialize schema:
 
 ```bash
 python mir_ai_main.py --config config.ini --init-db
 ```
 
-Single document:
+### Single document with required metadata
 
 ```bash
 python mir_ai_main.py --config config.ini --file /staging/report.pdf --canonical-path //nas/path/report.pdf --source-url "rimdocs://..." --rimdocs-json /staging/report.rimdocs.json
 ```
 
-NAS batch:
+### NAS or S3 without mandatory RimDocs
 
-```bash
-python mir_ai_main.py --config config.ini --root /archive --rimdocs-jsonl /handover/rimdocs.jsonl
+Set:
+
+```ini
+[MIR_AI]
+metadata_mode = optional
 ```
 
-S3 batch:
+or:
 
-```bash
-python mir_ai_main.py --config config.ini --s3 --rimdocs-jsonl /handover/rimdocs.jsonl
+```ini
+metadata_mode = disabled
 ```
 
-Batch mode intentionally fails closed without `--rimdocs-jsonl`. The MIR-AI requirements define RimDocs metadata as authoritative and allow LLM extraction only after overlap analysis; treating all 50 requested fields as missing when the authoritative source is unavailable would violate that rule. The JSONL provider is an explicit handover interface until Business/Data Hub supplies the approved live RimDocs interface and mapping.
+Then run:
+
+```bash
+python mir_ai_main.py --config config.ini --root /archive
+```
+
+or:
+
+```bash
+python mir_ai_main.py --config config.ini --s3
+```
+
+No `--rimdocs-jsonl` is required in these modes.
+
+### Formal RimDocs-first batch
+
+Set:
+
+```ini
+[MIR_AI]
+metadata_mode = required
+rimdocs_jsonl_path = /handover/rimdocs.jsonl
+```
+
+Then either run with the configured path:
+
+```bash
+python mir_ai_main.py --config config.ini --s3
+```
+
+or override it for one invocation:
+
+```bash
+python mir_ai_main.py --config config.ini --s3 --rimdocs-jsonl /handover/other.jsonl
+```
 
 Document and API concurrency are independently bounded. S3 source versions use ETag + LastModified + size only as a no-download resume key; downloaded content is still SHA-256 hashed before generation creation. S3 download scratch space is reserved before download and released on cleanup.
 
