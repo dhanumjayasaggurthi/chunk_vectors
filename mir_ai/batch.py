@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timezone
 import configparser
+import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -338,20 +340,50 @@ class BatchRunner:
             logical = logical.casefold()
         return f"mirai-object:{logical}"
 
-    def _effective_source_version(self, item: SourceItem) -> str:
-        if not item.logical_object_id:
-            return item.source_version
+    def _metadata_for_item(self, item: SourceItem):
+        if self.settings.metadata_mode == "disabled":
+            return None, "disabled", None
+
+        if hasattr(self.rimdocs, "get_with_version"):
+            metadata, version = self.rimdocs.get_with_version(item.canonical_path)
+        else:
+            metadata = self.rimdocs.get(item.canonical_path)
+            if metadata is None:
+                version = "none"
+            else:
+                payload = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+        if self.settings.metadata_mode == "required" and metadata is None:
+            object_id = item.logical_object_id or item.canonical_path
+            issue = SelectionIssue(
+                object_id,
+                "RIMDOCS_NOT_FOUND",
+                "metadata_mode=required but no authoritative RimDocs row matched this source",
+                (item.canonical_path,),
+            )
+            return None, version, issue
+
+        return metadata, version, None
+
+    def _effective_source_version(self, item: SourceItem, metadata_version: str = "") -> str:
+        base = item.source_version
+        if item.logical_object_id:
+            base = (
+                f"{base};format={item.selected_format or ''};"
+                f"source={item.canonical_path}"
+            )
         return (
-            f"{item.source_version};format={item.selected_format or ''};"
-            f"source={item.canonical_path}"
+            f"{base};metadata_mode={self.settings.metadata_mode};"
+            f"metadata_version={metadata_version or 'none'}"
         )
 
-    def _skip_if_unchanged(self, item):
+    def _skip_if_unchanged(self, item, metadata_version=""):
         state = self.store.active_source_state(self._document_key(item))
         if not state:
             return None
         if (
-            state.get("source_version") == self._effective_source_version(item)
+            state.get("source_version") == self._effective_source_version(item, metadata_version)
             and state.get("processing_fingerprint") == self.profile
         ):
             return PipelineResult(
@@ -387,15 +419,18 @@ class BatchRunner:
             yield self._issue_result(issue)
 
         def work(item):
-            skipped = self._skip_if_unchanged(item)
+            metadata, metadata_version, metadata_issue = self._metadata_for_item(item)
+            if metadata_issue:
+                return self._issue_result(metadata_issue)
+            skipped = self._skip_if_unchanged(item, metadata_version)
             if skipped:
                 return skipped
             return self._pipeline().process_file(
                 item.local_path,
                 canonical_path=self._document_key(item),
                 source_url=item.source_url,
-                source_version=self._effective_source_version(item),
-                rimdocs_metadata=self.rimdocs.get(item.canonical_path),
+                source_version=self._effective_source_version(item, metadata_version),
+                rimdocs_metadata=metadata,
             )
 
         yield from bounded_parallel_map(
@@ -414,7 +449,10 @@ class BatchRunner:
             yield self._issue_result(issue)
 
         def work(item):
-            skipped = self._skip_if_unchanged(item)
+            metadata, metadata_version, metadata_issue = self._metadata_for_item(item)
+            if metadata_issue:
+                return self._issue_result(metadata_issue)
+            skipped = self._skip_if_unchanged(item, metadata_version)
             if skipped:
                 return skipped
             local = source.download(item)
@@ -423,8 +461,8 @@ class BatchRunner:
                     local,
                     canonical_path=self._document_key(item),
                     source_url=item.source_url,
-                    source_version=self._effective_source_version(item),
-                    rimdocs_metadata=self.rimdocs.get(item.canonical_path),
+                    source_version=self._effective_source_version(item, metadata_version),
+                    rimdocs_metadata=metadata,
                 )
             finally:
                 source.cleanup(local)
