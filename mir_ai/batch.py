@@ -7,11 +7,15 @@ import os
 import shutil
 import tempfile
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional, Iterator
 
 from .bounded import bounded_parallel_map
-from .object_selector import SelectionIssue, resolve_preferred_sources
+from .object_selector import (
+    SelectionIssue,
+    resolve_discovered_sources,
+    resolve_preferred_sources,
+)
 from .pipeline import MIRPipeline, PipelineResult
 from .profile import processing_fingerprint
 from .resources import ResourceGovernor
@@ -43,11 +47,25 @@ class SourceSelectionResult:
     candidates: tuple[str, ...] = ()
 
 
-def iter_nas(root, max_files=None) -> Iterator[SourceItem]:
+def _relative_logical_id(path: Path, root: Path) -> str:
+    relative = path.relative_to(root)
+    return relative.with_suffix("").as_posix()
+
+
+def iter_nas(root, max_files=None, recursive=True) -> Iterator[SourceItem]:
+    """Yield NAS/local candidates in deterministic order.
+
+    `recursive=true` includes all nested subfolders. `recursive=false` scans
+    only files directly under `root`. The iterator remains lazy and does not
+    load document bytes.
+    """
+    root = Path(root).resolve()
     count = 0
     for dirpath, dirnames, filenames in os.walk(str(root)):
         dirnames.sort()
         filenames.sort()
+        if not recursive:
+            dirnames[:] = []
         for name in filenames:
             if Path(name).suffix.lower() not in {".pdf", ".docx"}:
                 continue
@@ -63,6 +81,7 @@ def iter_nas(root, max_files=None) -> Iterator[SourceItem]:
                 canonical,
                 f"mtime_ns={stat.st_mtime_ns};size={stat.st_size}",
                 stat.st_size,
+                logical_object_id=_relative_logical_id(path.resolve(), root),
             )
             count += 1
             if max_files and count >= max_files:
@@ -137,13 +156,24 @@ class S3Source:
             kwargs["endpoint_url"] = self.endpoint_url
         self.client = session.client("s3", **kwargs)
 
-    def items(self, max_files=None):
+    def _relative_key(self, key: str) -> str:
+        if not self.prefix:
+            return key.lstrip("/")
+        if not key.startswith(self.prefix):
+            return key.lstrip("/")
+        return key[len(self.prefix):].lstrip("/")
+
+    def items(self, max_files=None, recursive=True):
         count = 0
         paginator = self.client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
-                if Path(key).suffix.lower() not in {".pdf", ".docx"}:
+                suffix = Path(key).suffix.lower()
+                if suffix not in {".pdf", ".docx"}:
+                    continue
+                relative_key = self._relative_key(key)
+                if not recursive and "/" in relative_key:
                     continue
                 etag = str(obj.get("ETag", "")).strip('"')
                 modified = obj.get("LastModified")
@@ -152,12 +182,14 @@ class S3Source:
                 )
                 uri = f"s3://{self.bucket}/{key}"
                 size = int(obj.get("Size", 0))
+                logical_id = str(PurePosixPath(relative_key).with_suffix(""))
                 yield SourceItem(
                     uri,
                     None,
                     uri,
                     f"etag={etag};last_modified={modified_text};size={size}",
                     size,
+                    logical_object_id=logical_id,
                 )
                 count += 1
                 if max_files and count >= max_files:
@@ -270,26 +302,21 @@ class BatchRunner:
                 cur.itersize = 1000
                 cur.execute(sql, params)
                 rows.extend(str(row[0]).strip() for row in cur)
-            # End the read transaction before returning the pooled connection.
             conn.rollback()
         return rows
 
-    def _format_enabled(self, item: SourceItem) -> bool:
-        ext = Path(item.canonical_path).suffix.lower()
-        return (ext == ".pdf" and self.settings.enable_pdf) or (
-            ext == ".docx" and self.settings.enable_docx
-        )
-
     def _resolve_items(self, items, max_files=None):
         if not self.settings.object_list_enabled:
-            selected = []
-            for item in items:
-                if not self._format_enabled(item):
-                    continue
-                selected.append(item)
-                if max_files and len(selected) >= max_files:
-                    break
-            return selected, ()
+            outcome = resolve_discovered_sources(
+                items,
+                enable_pdf=self.settings.enable_pdf,
+                enable_docx=self.settings.enable_docx,
+                preferred_format=self.settings.preferred_format,
+                strict=self.settings.strict_source_selection,
+                case_sensitive=self.settings.object_match_case_sensitive,
+                max_items=max_files,
+            )
+            return list(outcome.selected), outcome.issues
 
         object_ids = self._load_object_ids(max_files)
         outcome = resolve_preferred_sources(
@@ -306,7 +333,7 @@ class BatchRunner:
     def _document_key(self, item: SourceItem) -> str:
         if not item.logical_object_id:
             return item.canonical_path
-        logical = item.logical_object_id.strip()
+        logical = item.logical_object_id.strip().replace("\\", "/")
         if not self.settings.object_match_case_sensitive:
             logical = logical.casefold()
         return f"mirai-object:{logical}"
@@ -337,7 +364,7 @@ class BatchRunner:
         return None
 
     def _issue_result(self, issue: SelectionIssue) -> SourceSelectionResult:
-        key = issue.object_id.strip()
+        key = issue.object_id.strip().replace("\\", "/")
         if not self.settings.object_match_case_sensitive:
             key = key.casefold()
         return SourceSelectionResult(
@@ -352,7 +379,10 @@ class BatchRunner:
         )
 
     def run_nas(self, root, max_files=None):
-        selected, issues = self._resolve_items(iter_nas(root), max_files)
+        selected, issues = self._resolve_items(
+            iter_nas(root, recursive=self.settings.source_recursive),
+            max_files,
+        )
         for issue in issues:
             yield self._issue_result(issue)
 
@@ -376,7 +406,10 @@ class BatchRunner:
         )
 
     def run_s3(self, source, max_files=None):
-        selected, issues = self._resolve_items(source.items(), max_files)
+        selected, issues = self._resolve_items(
+            source.items(recursive=self.settings.source_recursive),
+            max_files,
+        )
         for issue in issues:
             yield self._issue_result(issue)
 
