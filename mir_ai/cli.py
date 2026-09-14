@@ -41,6 +41,29 @@ def _configured_batch_source(settings, args, parser):
     parser.error(f"unsupported configured source_type: {settings.source_type}")
 
 
+def _batch_rimdocs_provider(settings, args, parser):
+    """Resolve RimDocs behavior entirely from configuration/CLI policy.
+
+    metadata_mode=required: authoritative JSONL is mandatory.
+    metadata_mode=optional: use JSONL when configured; otherwise skip metadata enrichment.
+    metadata_mode=disabled: never initialize a metadata provider.
+    """
+    if settings.metadata_mode == "disabled":
+        return None
+
+    rimdocs_jsonl = args.rimdocs_jsonl or settings.rimdocs_jsonl_path
+    if not rimdocs_jsonl:
+        if settings.metadata_mode == "required":
+            parser.error(
+                "metadata_mode=required but no authoritative RimDocs JSONL is configured. "
+                "Set [MIR_AI] rimdocs_jsonl_path, pass --rimdocs-jsonl, or change "
+                "metadata_mode to optional/disabled for an ingestion-only run."
+            )
+        return None
+
+    return JSONLRimDocsProvider(rimdocs_jsonl, settings.scratch_dir)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="MIR-AI bounded-memory ingestion pipeline"
@@ -74,14 +97,7 @@ def main(argv=None):
             return 0
 
         if source_mode in {"nas", "s3"}:
-            rimdocs_jsonl = args.rimdocs_jsonl or settings.rimdocs_jsonl_path
-            if not rimdocs_jsonl:
-                parser.error(
-                    "batch MIR-AI ingestion requires authoritative RimDocs metadata. "
-                    "Set [MIR_AI] rimdocs_jsonl_path or pass --rimdocs-jsonl."
-                )
-
-            provider = JSONLRimDocsProvider(rimdocs_jsonl, settings.scratch_dir)
+            provider = _batch_rimdocs_provider(settings, args, parser)
             runner = BatchRunner(settings, store, provider)
             max_files = (
                 args.max_files
@@ -106,6 +122,11 @@ def main(argv=None):
                 rimdocs = json.load(f)
             if not isinstance(rimdocs, dict):
                 raise ValueError("--rimdocs-json must contain a JSON object")
+        elif settings.metadata_mode == "required":
+            parser.error(
+                "metadata_mode=required for single-file ingestion; pass --rimdocs-json "
+                "or set [MIR_AI] metadata_mode=optional/disabled."
+            )
 
         result = MIRPipeline(settings, store=store).process_file(
             source_value,
