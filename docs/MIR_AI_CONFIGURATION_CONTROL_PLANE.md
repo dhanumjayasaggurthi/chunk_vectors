@@ -117,17 +117,54 @@ source_max_files = 0
 
 `0` means unlimited. Positive values cap selected logical documents. A CLI `--max-files` value overrides the configured value for that run.
 
-## RimDocs handover
+## Structured metadata policy
+
+RimDocs/structured metadata is not hard-coded as an unconditional dependency. The behavior is controlled by one setting:
 
 ```ini
+[MIR_AI]
+metadata_mode = optional
+rimdocs_jsonl_path =
+```
+
+Supported modes:
+
+| `metadata_mode` | Behavior |
+|---|---|
+| `required` | Authoritative RimDocs input is mandatory. The RimDocs-first overlap workflow runs and only missing fields are sent to metadata extraction. Use for formal MIR-AI requirements qualification or production workflows that require structured metadata. |
+| `optional` | If RimDocs input is configured, use it and run the RimDocs-first workflow. If no RimDocs input is configured, continue ingestion and **skip structured metadata extraction**. The system does not pretend all 50 fields are missing. |
+| `disabled` | Skip the structured metadata stage entirely, even if a RimDocs path is present. Useful for parsing/OCR/table/chunking/embedding or infrastructure-only runs. |
+
+Examples:
+
+### Full requirements / RimDocs required
+
+```ini
+metadata_mode = required
 rimdocs_jsonl_path = C:\data\rimdocs.jsonl
 ```
 
-Batch ingestion still requires authoritative RimDocs metadata before missing-field extraction. `--rimdocs-jsonl` overrides the configured path. This is intentionally separate from the object-list control table: disabling the object-list filter does not disable authoritative metadata requirements.
+### Ingest with RimDocs when available, otherwise continue
+
+```ini
+metadata_mode = optional
+rimdocs_jsonl_path =
+```
+
+### Pure ingestion test, no structured metadata stage
+
+```ini
+metadata_mode = disabled
+rimdocs_jsonl_path =
+```
+
+CLI `--rimdocs-jsonl` overrides `rimdocs_jsonl_path` for a batch run. For a single-file run, `--rimdocs-json` supplies the authoritative metadata object.
+
+Changing `metadata_mode` changes the processing fingerprint, so a previously active generation is not incorrectly reused when metadata behavior changes.
 
 ## Safe production defaults
 
-Recommended production defaults:
+Recommended general-purpose server defaults:
 
 ```ini
 source_auto_run = false
@@ -140,7 +177,16 @@ enable_pdf = true
 enable_docx = true
 preferred_format = pdf
 
+metadata_mode = optional
+
 strict_source_selection = true
+```
+
+For a formal MIR-AI requirements qualification run, change only:
+
+```ini
+metadata_mode = required
+rimdocs_jsonl_path = C:\data\rimdocs.jsonl
 ```
 
 `source_auto_run=false` prevents a bare command from unexpectedly ingesting an entire NAS tree or S3 prefix. After deployment automation or a future UI supplies an explicit approved start action, it may set or invoke the configured-source mode deliberately.
@@ -162,6 +208,7 @@ A future interface can expose these fields without changing ingestion code:
 | Preferred representation | `preferred_format` |
 | Batch cap | `source_max_files` |
 | Automatic configured-source run | `source_auto_run` |
+| Structured metadata policy | `metadata_mode = required|optional|disabled` |
 | RimDocs JSONL handover | `rimdocs_jsonl_path` |
 | Worker/API limits | concurrency settings |
 | Embedding/chunking policy | embedding/chunking settings |
