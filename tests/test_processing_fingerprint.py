@@ -17,8 +17,10 @@ def test_processing_fingerprint_is_stable_and_changes_for_output_settings():
         a = _settings(root)
         b = _settings(root)
         c = _settings(root, "chunk_target_max_tokens=1400")
+        metadata_optional = _settings(root, "metadata_mode=optional")
         assert processing_fingerprint(a) == processing_fingerprint(b)
         assert processing_fingerprint(a) != processing_fingerprint(c)
+        assert processing_fingerprint(a) != processing_fingerprint(metadata_optional)
 
 
 def test_heartbeat_must_be_shorter_than_lease():
