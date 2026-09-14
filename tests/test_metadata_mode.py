@@ -13,11 +13,13 @@ def test_pipeline_metadata_mode_disabled_skips_even_with_metadata():
     assert pipe._metadata_should_run({"Study ID": "S1"}) is False
 
 
-def test_pipeline_metadata_mode_optional_runs_only_when_authoritative_data_exists():
+def test_pipeline_metadata_mode_optional_runs_only_when_authoritative_input_is_supplied():
     pipe = MIRPipeline.__new__(MIRPipeline)
     pipe.settings = SimpleNamespace(metadata_mode="optional")
     assert pipe._metadata_should_run(None) is False
-    assert pipe._metadata_should_run({}) is False
+    # An explicit empty authoritative row still means the source was supplied;
+    # all requested fields are legitimately missing and may be extracted.
+    assert pipe._metadata_should_run({}) is True
     assert pipe._metadata_should_run({"Study ID": "S1"}) is True
 
 
