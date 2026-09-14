@@ -47,6 +47,7 @@ class Settings:
     source_recursive: bool
     source_max_files: int
     log_dir: Path
+    metadata_mode: str
     rimdocs_jsonl_path: str
     scratch_dir: Path
 
@@ -133,6 +134,9 @@ class Settings:
                 0, _as_int(_first(cfg, source_sections, "source_max_files", 0), 0)
             ),
             log_dir=Path(_first(cfg, paths, "log_dir", "logs")),
+            metadata_mode=str(
+                _first(cfg, pipeline, "metadata_mode", "required")
+            ).strip().lower(),
             rimdocs_jsonl_path=str(
                 _first(cfg, pipeline, "rimdocs_jsonl_path", "")
             ).strip(),
@@ -255,6 +259,8 @@ class Settings:
             raise ValueError("vector_index_mode must be exact or halfvec_hnsw")
         if self.source_type not in {"nas", "s3"}:
             raise ValueError("source_type must be nas or s3")
+        if self.metadata_mode not in {"required", "optional", "disabled"}:
+            raise ValueError("metadata_mode must be required, optional, or disabled")
         if not self.enable_pdf and not self.enable_docx:
             raise ValueError("At least one of enable_pdf or enable_docx must be true")
         if self.preferred_format not in {"pdf", "docx"}:
