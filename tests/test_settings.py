@@ -28,6 +28,7 @@ page_workers=2
             s.validate()
             self.assertEqual(s.embedding_dim, 3072)
             self.assertEqual(s.embedding_model, "text-embedding-3-large")
+            self.assertEqual(s.metadata_mode, "required")
 
     def test_source_controls_are_configurable(self):
         cfg = """[POSTGRES]
@@ -45,6 +46,7 @@ log_dir=custom_logs
 source_auto_run=true
 source_recursive=false
 source_max_files=100
+metadata_mode=optional
 rimdocs_jsonl_path=C:\\data\\rimdocs.jsonl
 object_list_enabled=false
 enable_pdf=true
@@ -60,6 +62,7 @@ preferred_format=pdf
             self.assertTrue(s.source_auto_run)
             self.assertFalse(s.source_recursive)
             self.assertEqual(s.source_max_files, 100)
+            self.assertEqual(s.metadata_mode, "optional")
             self.assertFalse(s.object_list_enabled)
             self.assertTrue(s.enable_pdf)
             self.assertFalse(s.enable_docx)
@@ -81,4 +84,24 @@ docs_root=.
             p.write_text(cfg)
             s = Settings.load(p)
             with self.assertRaisesRegex(ValueError, "source_type"):
+                s.validate()
+
+    def test_invalid_metadata_mode_fails_closed(self):
+        cfg = """[POSTGRES]
+host=localhost
+database=regulatory
+user=u
+password=p
+schema=dev_raw
+[PATHS]
+source_type=nas
+docs_root=.
+[MIR_AI]
+metadata_mode=anything
+"""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.ini"
+            p.write_text(cfg)
+            s = Settings.load(p)
+            with self.assertRaisesRegex(ValueError, "metadata_mode"):
                 s.validate()
