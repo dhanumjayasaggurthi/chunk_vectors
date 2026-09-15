@@ -136,20 +136,10 @@ class Settings:
         source_sections = ("MIR_AI", "PATHS", "paths", "PIPELINE", "processing")
 
         db_schema = str(_first(cfg, pg, "schema", "public")).strip()
-        scratch = Path(
-            _first(
-                cfg,
-                pipeline,
-                "scratch_dir",
-                os.environ.get("MIRAI_SCRATCH", ".mirai_scratch"),
-            )
-        )
+        scratch = Path(_first(cfg, pipeline, "scratch_dir", os.environ.get("MIRAI_SCRATCH", ".mirai_scratch")))
         scratch.mkdir(parents=True, exist_ok=True)
         page_workers = _as_int(_first(cfg, pipeline, "page_workers", 4), 4)
-        max_inflight = _as_int(
-            _first(cfg, pipeline, "max_inflight_pages", max(4, page_workers * 2)),
-            max(4, page_workers * 2),
-        )
+        max_inflight = _as_int(_first(cfg, pipeline, "max_inflight_pages", max(4, page_workers * 2)), max(4, page_workers * 2))
         if max_inflight < page_workers:
             max_inflight = page_workers
 
@@ -162,7 +152,6 @@ class Settings:
             db_password=_first(cfg, pg, "password"),
             db_schema=db_schema,
             folder=_first(cfg, pg, "folder", "mirai"),
-
             source_type=str(_first(cfg, paths, "source_type", "nas")).strip().lower(),
             docs_root=Path(_first(cfg, paths, "docs_root", ".")),
             source_auto_run=_as_bool(_first(cfg, source_sections, "source_auto_run", "false"), False),
@@ -173,7 +162,6 @@ class Settings:
             metadata_mode=str(_first(cfg, pipeline, "metadata_mode", "required")).strip().lower(),
             rimdocs_jsonl_path=str(_first(cfg, pipeline, "rimdocs_jsonl_path", "")).strip(),
             scratch_dir=scratch,
-
             page_workers=max(1, page_workers),
             max_inflight_pages=max(1, max_inflight),
             doc_workers=max(1, _as_int(_first(cfg, pipeline, "doc_workers", 2), 2)),
@@ -190,7 +178,6 @@ class Settings:
             batch_retry_base_seconds=max(0.0, _as_float(_first(cfg, pipeline, "batch_retry_base_seconds", 2.0), 2.0)),
             batch_exit_nonzero_on_error=_as_bool(_first(cfg, pipeline, "batch_exit_nonzero_on_error", "true"), True),
             progress_log_every_pages=max(1, _as_int(_first(cfg, pipeline, "progress_log_every_pages", 25), 25)),
-
             db_pool_maxconn=max(0, _as_int(_first(cfg, pipeline, "db_pool_maxconn", 0), 0)),
             db_max_retries=max(1, _as_int(_first(cfg, pipeline, "db_max_retries", 5), 5)),
             db_retry_base_seconds=max(0.0, _as_float(_first(cfg, pipeline, "db_retry_base_seconds", 1.0), 1.0)),
@@ -198,7 +185,6 @@ class Settings:
             db_keepalives_idle_s=max(1, _as_int(_first(cfg, pipeline, "db_keepalives_idle_s", 30), 30)),
             db_keepalives_interval_s=max(1, _as_int(_first(cfg, pipeline, "db_keepalives_interval_s", 10), 10)),
             db_keepalives_count=max(1, _as_int(_first(cfg, pipeline, "db_keepalives_count", 5), 5)),
-
             api_max_retries=max(1, _as_int(_first(cfg, pipeline, "api_max_retries", 5), 5)),
             api_retry_base_seconds=max(0.0, _as_float(_first(cfg, pipeline, "api_retry_base_seconds", _first(cfg, pipeline, "api_retry_delay_s", 1.0)), 1.0)),
             api_timeout_s=max(10, _as_int(_first(cfg, pipeline, "api_timeout_s", 120), 120)),
@@ -207,7 +193,6 @@ class Settings:
             preflight_embedding=_as_bool(_first(cfg, pipeline, "preflight_embedding", "true"), True),
             preflight_chat=_as_bool(_first(cfg, pipeline, "preflight_chat", "true"), True),
             preflight_vision=_as_bool(_first(cfg, pipeline, "preflight_vision", "true"), True),
-
             ocr_render_dpi=max(72, _as_int(_first(cfg, pipeline, "ocr_render_dpi", 200), 200)),
             scanned_text_threshold=max(0, _as_int(_first(cfg, pipeline, "scanned_text_threshold", 100), 100)),
             embedding_model=str(_first(cfg, pipeline, "embedding_model", "text-embedding-3-large")).strip(),
@@ -221,14 +206,12 @@ class Settings:
             enable_embeddings=_as_bool(_first(cfg, pipeline, "enable_embeddings", "true"), True),
             vector_index_mode=str(_first(cfg, pipeline, "vector_index_mode", "exact")).strip().lower(),
             requirements_mode=str(_first(cfg, pipeline, "requirements_mode", "strict")).strip().lower(),
-
             log_level=str(_first(cfg, logging_sections, "log_level", "INFO")).upper(),
             log_max_bytes=max(1024 * 1024, _as_int(_first(cfg, logging_sections, "log_max_bytes", 50 * 1024 * 1024), 50 * 1024 * 1024)),
             log_backup_count=max(1, _as_int(_first(cfg, logging_sections, "log_backup_count", 10), 10)),
             log_queue_size=max(100, _as_int(_first(cfg, logging_sections, "log_queue_size", 10000), 10000)),
             log_console=_as_bool(_first(cfg, logging_sections, "log_console", "true"), True),
             log_console_json=_as_bool(_first(cfg, logging_sections, "log_console_json", "false"), False),
-
             enable_pdf=_as_bool(_first(cfg, pipeline, "enable_pdf", "true"), True),
             enable_docx=_as_bool(_first(cfg, pipeline, "enable_docx", "true"), True),
             preferred_format=str(_first(cfg, pipeline, "preferred_format", "pdf")).strip().lower(),
@@ -242,11 +225,7 @@ class Settings:
 
     @property
     def requirement_compliant_embedding_config(self) -> bool:
-        return (
-            self.embedding_model == "text-embedding-3-large"
-            and self.embedding_dim == 3072
-            and self.embedding_api_version == "2025-04-01-preview"
-        )
+        return self.embedding_model == "text-embedding-3-large" and self.embedding_dim == 3072 and self.embedding_api_version == "2025-04-01-preview"
 
     def validate(self) -> None:
         if not self.db_schema or not self.db_schema.replace("_", "").isalnum() or self.db_schema[0].isdigit():
@@ -254,13 +233,9 @@ class Settings:
         if self.requirements_mode not in {"strict", "warn"}:
             raise ValueError("requirements_mode must be strict or warn")
         if self.requirements_mode == "strict" and not self.requirement_compliant_embedding_config:
-            raise ValueError(
-                "MIR-AI strict requirements require embedding_model=text-embedding-3-large, "
-                "embedding_dim=3072, embedding_api_version=2025-04-01-preview"
-            )
-        if self.requirements_mode == "warn":
-            if self.embedding_dim <= 0 or not self.embedding_model or not self.embedding_api_version:
-                raise ValueError("embedding model/dimension/api version must be valid")
+            raise ValueError("MIR-AI strict requirements require embedding_model=text-embedding-3-large, embedding_dim=3072, embedding_api_version=2025-04-01-preview")
+        if self.requirements_mode == "warn" and (self.embedding_dim <= 0 or not self.embedding_model or not self.embedding_api_version):
+            raise ValueError("embedding model/dimension/api version must be valid")
         if self.chunk_target_min_tokens > self.chunk_target_max_tokens:
             raise ValueError("chunk_target_min_tokens cannot exceed chunk_target_max_tokens")
         if self.vector_index_mode not in {"exact", "halfvec_hnsw"}:
@@ -280,7 +255,11 @@ class Settings:
         if self.max_inflight_docs < self.doc_workers:
             raise ValueError("max_inflight_docs must be >= doc_workers")
         if self.object_list_enabled:
-            if not self.object_list_schema or not self.object_list_table or not self.object_list_id_column:
-                raise ValueError("object list schema/table/id column are required when object_list_enabled=true")
+            if not self.object_list_schema:
+                raise ValueError("object_list_schema is required when object_list_enabled=true")
+            if not self.object_list_table:
+                raise ValueError("object_list_table is required when object_list_enabled=true")
+            if not self.object_list_id_column:
+                raise ValueError("object_list_id_column is required when object_list_enabled=true")
             if not self.strict_source_selection:
                 raise ValueError("strict_source_selection must be true when object_list_enabled=true")
