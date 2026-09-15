@@ -180,7 +180,7 @@ class MIRPipeline:
                         pass
                     resolution=("Dependency throttled/server-failed this visual request; bounded retry is permitted and persistent failures should be investigated using the request ID." if retryable else "Permanent dependency HTTP error. Verify the returned gateway code/message and configured endpoint/deployment/API contract before retrying unchanged input.")
             raise RequiredExtractionError(
-                f"Page {page.page_number} {e.element_type} extraction failed at {stage}: {observed}",
+                f"Page {page.page_number} required extraction failed: {e.element_type} at {stage}: {observed}",
                 category=category, service=service, operation=stage, retryable=retryable, error_code=error_code, status_code=status_code, request_id=request_id, root_cause_status=root_status,
                 resolution_hint=resolution or "Inspect the exact page/element error and its dependency logs. Retry automatically only when the captured failure is marked transient.",
             )
@@ -197,7 +197,7 @@ class MIRPipeline:
 
     def _metadata_should_run(self, business_metadata) -> bool:
         if self.settings.metadata_mode == "disabled": return False
-        if self.settings.metadata_mode == "optional": return bool(business_metadata)
+        if self.settings.metadata_mode == "optional": return business_metadata is not None
         return True
 
     def process_file(self, file_path, *, canonical_path=None, source_url="", source_version=None,
