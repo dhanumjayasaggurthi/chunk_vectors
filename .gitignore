@@ -1,3 +1,9 @@
 .idea/
 config.ini
 /logs
+
+# Generated fidelity/retrieval test artifacts
+__pycache__/
+*.pyc
+testdata/
+results/
