@@ -23,6 +23,8 @@ from vision_ocr import ocr_page_elements
 from table_extractor import extract_tables_for_page, inject_table_text_into_elements
 from chunker import chunk_document, Chunk
 from embedder import embed_chunks, embedding_stats
+from layout_preserver import extract_document_layout
+from layout_store import save_document_layout
 from db import (
     init_db,
     reset_stale_running,
@@ -323,6 +325,18 @@ def process_document(
         if struct.error:
             raise RuntimeError(f"PDF processing failed: {struct.error}")
         struct.file_path = file_path  # replace temp path with canonical S3/NAS URI
+
+        # Fidelity layer: preserve source bytes + exact layout independently of
+        # the normalized semantic chunks used for embeddings/RAG.
+        dlog.info("  Saving source-faithful layout + original PDF bytes")
+        fidelity_layout = extract_document_layout(local_file)
+        save_document_layout(
+            doc_id,
+            file_path,
+            file_name,
+            fidelity_layout,
+            source_file=local_file,
+        )
 
         dlog.info(
             f"  Pages: {struct.page_count}  "
