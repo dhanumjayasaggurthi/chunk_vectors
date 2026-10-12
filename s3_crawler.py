@@ -375,7 +375,7 @@ class S3Crawler:
 
         if self.profile_hash:
             from profile_store import profile_is_current
-            current = profile_is_current(doc_id, etag, self.profile_hash)
+            current = False if self.force_reingest else profile_is_current(doc_id, etag, self.profile_hash)
             return CrawlResult(
                 file_path=s3_uri, file_name=file_name, doc_id=doc_id,
                 file_hash=etag, file_size=file_size, last_modified=last_modified,
