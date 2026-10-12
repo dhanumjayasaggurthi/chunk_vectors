@@ -59,6 +59,7 @@ For rollback, run the legacy CLI without profile flags. Never delete existing pr
 ## 6. Validation
 
     pip install -r requirements.txt
+    pip install -r requirements-profiles.txt
     python -m compileall -q .
     python -m unittest discover -s tests -p "test_*.py" -v
 
