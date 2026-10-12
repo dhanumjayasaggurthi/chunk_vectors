@@ -2,8 +2,8 @@
   "name": "haq_questions_large",
   "version": 1,
   "existing_chunks": {
-    "schema": "public",
-    "table": "haq_query",
+    "schema": "haq_vector_embedding",
+    "table": "rdh_haq_haq_query",
     "id_column": "id",
     "text_column": "question",
     "vector_column": "question_embedding",
