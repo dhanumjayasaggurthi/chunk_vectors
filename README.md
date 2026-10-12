@@ -37,3 +37,5 @@ Do not deploy until staging and scale validation gates in STATUS.md pass.
 ## 3072-dimensional HAQ question embeddings
 
 For an existing `haq_query.question_embedding vector(3072)` column, use `profiles/haq_question_3072.json` and `python main.py --profile profiles/haq_question_3072.json --embed-existing`. Edit the JSON schema/column mapping to your actual identifiers. The profile sets `embedding.dimensions=3072` and `embedding.model=text-embedding-3-large`, and checks the destination pgvector column before API calls. Existing non-NULL embeddings are skipped. The selected Azure deployment must actually support 3072 dimensions.
+
+For optional HAQ processing notes, run the reviewed migration `ALTER TABLE public.haq_query ADD COLUMN IF NOT EXISTS embedding_processing_note TEXT;` before using the example HAQ profile. It records short neutral explanations and clears them on success. The feature never creates user-table columns automatically. See the user guide for progress logging and note meanings.
