@@ -81,11 +81,15 @@ def profile_is_current(doc_id: str, source_hash: str, profile_hash: str) -> bool
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT 1 FROM {RESULTS_TABLE} WHERE doc_id=%s AND source_hash=%s AND profile_hash=%s",
-                (doc_id, source_hash, profile_hash),
-            )
-            return cur.fetchone() is not None
+            try:
+                cur.execute(
+                    f"SELECT 1 FROM {RESULTS_TABLE} WHERE doc_id=%s AND source_hash=%s AND profile_hash=%s",
+                    (doc_id, source_hash, profile_hash),
+                )
+                return cur.fetchone() is not None
+            except psycopg2.errors.UndefinedTable:
+                conn.rollback()
+                return False
     finally:
         conn.close()
 
