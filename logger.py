@@ -230,30 +230,35 @@ class RunSummary:
         summary.print()
     """
 
-    def __init__(self):
+    def __init__(self, max_rows: int = None):
         self._rows: list[dict] = []
+        self._max_rows = max_rows
+        self._total = 0
+        self._counts: dict[str, int] = {}
         self.started_at = datetime.now()
 
     def add(self, status: str, file_name: str, error: str = None,
             chunks: int = 0, pages: int = 0, elapsed: float = 0.0):
-        self._rows.append({
-            "status":    status,
-            "file_name": file_name,
-            "error":     error,
-            "chunks":    chunks,
-            "pages":     pages,
-            "elapsed":   round(elapsed, 1),
-        })
+        self._total += 1
+        self._counts[status] = self._counts.get(status, 0) + 1
+        if self._max_rows is None or len(self._rows) < self._max_rows:
+            self._rows.append({
+                "status":    status,
+                "file_name": file_name,
+                "error":     error,
+                "chunks":    chunks,
+                "pages":     pages,
+                "elapsed":   round(elapsed, 1),
+            })
 
     def counts(self) -> dict:
-        from collections import Counter
-        return dict(Counter(r["status"] for r in self._rows))
+        return dict(self._counts)
 
     def print(self):
         log = get_logger("epod.summary")
         elapsed = (datetime.now() - self.started_at).total_seconds()
         counts  = self.counts()
-        total   = len(self._rows)
+        total   = self._total
 
         sep = "─" * 68
         log.info(sep)
@@ -269,7 +274,7 @@ class RunSummary:
         # List errors with messages
         errors = [r for r in self._rows if r["status"] == "ERROR"]
         if errors:
-            log.warning(f"  ⚠  {len(errors)} file(s) failed:")
+            log.warning(f"  ⚠  {counts.get('ERROR', 0)} file(s) failed (showing at most {len(errors)}):")
             for e in errors:
                 log.warning(f"     • {e['file_name']}: {e['error']}")
             log.warning(sep)
