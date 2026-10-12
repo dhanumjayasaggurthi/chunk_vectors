@@ -524,7 +524,8 @@ def _process_doc_thread(args: tuple) -> tuple[str, dict]:
       - Each thread uses its own boto3 client (thread-local in s3_crawler).
       - The crawl phase stays fast (list-only, no downloads).
     """
-    crawl_result, workers, enable_embeddings = args
+    crawl_result, workers, enable_embeddings, *optional_profile = args
+    profile = optional_profile[0] if optional_profile else None
     downloaded_temp = None   # temp file we created in this thread (S3 only)
 
     try:
@@ -538,6 +539,8 @@ def _process_doc_thread(args: tuple) -> tuple[str, dict]:
             if downloaded_temp is None:
                 # Mark failed in DB so the retry counter advances
                 try:
+                    if profile:
+                        raise RuntimeError("Profile download failure; legacy log preserved")
                     upsert_ingestion_log(
                         file_path=crawl_result.file_path,
                         file_name=crawl_result.file_name,
@@ -556,11 +559,17 @@ def _process_doc_thread(args: tuple) -> tuple[str, dict]:
                 }
             crawl_result.local_path = downloaded_temp
 
-        result = process_document(
-            crawl_result,
-            workers=workers,
-            enable_embeddings=enable_embeddings,
-        )
+        if profile:
+            with profile_document_lock(crawl_result.doc_id, profile["_fingerprint"]) as acquired:
+                if acquired:
+                    result = process_document(crawl_result, workers=workers,
+                                              enable_embeddings=enable_embeddings, profile=profile)
+                else:
+                    result = {"status": "SKIPPED", "chunks": 0, "pages": 0,
+                              "elapsed": 0, "error": "already_processing_profile"}
+        else:
+            result = process_document(crawl_result, workers=workers,
+                                      enable_embeddings=enable_embeddings)
     except Exception as e:
         result = {
             "status":  "ERROR",
@@ -650,6 +659,7 @@ def run_pipeline(
     retry_errors:      bool           = False,
     source_type:       str            = None,     # "nas" | "s3" (default: from config)
     enable_embeddings: bool           = None,     # True/False (default: from config)
+    profile:           Optional[dict] = None,
 ) -> RunSummary:
     """
     Main pipeline runner.
@@ -683,7 +693,7 @@ def run_pipeline(
     if source_type is None:
         source_type = SOURCE_TYPE
     if enable_embeddings is None:
-        enable_embeddings = ENABLE_EMBEDDINGS
+        enable_embeddings = profile["embedding"]["enabled"] if profile else ENABLE_EMBEDDINGS
 
     # ── Warn if Vision concurrency is high ───────────────────────────────────
     total_vision = doc_workers * workers
@@ -719,7 +729,12 @@ def run_pipeline(
     # Must run even in dry-run mode because the crawler queries the DB
     # to decide what to skip (get_ingestion_record calls happen during crawl).
     logger.info("Initialising database schema…")
-    init_db()
+    if not dry_run:
+        init_db()
+        if profile:
+            init_profile_store()
+    else:
+        logger.info("Dry run: no database migrations or ingestion-state writes")
 
     # ── Connection pool + crash recovery — skip in dry-run ───────────────────
     if not dry_run:
@@ -730,7 +745,7 @@ def run_pipeline(
     # ── Single-file mode ─────────────────────────────────────────────────────
     if single_file:
         return _run_single_file(
-            single_file, dry_run, force_reingest, workers, enable_embeddings
+            single_file, dry_run, force_reingest, workers, enable_embeddings, profile
         )
 
     # ── Crawler ──────────────────────────────────────────────────────────────
@@ -739,7 +754,14 @@ def run_pipeline(
         root=root,
         force_reingest=force_reingest or retry_errors,
         max_files=max_files,
+        profile_hash=profile["_fingerprint"] if profile else None,
     )
+
+    if profile:
+        if retry_errors:
+            raise ValueError("--retry-errors is legacy-only; profile outputs retry automatically")
+        return _run_profile_streamed(crawler, dry_run, summary, workers,
+                                     doc_workers, enable_embeddings, profile)
 
     # If retrying errors only, override crawler to only return ERROR docs
     if retry_errors and not dry_run:
@@ -897,6 +919,7 @@ def _run_single_file(
     force_reingest:    bool,
     workers:           int,
     enable_embeddings: bool = True,
+    profile: Optional[dict] = None,
 ) -> RunSummary:
     import datetime
 
@@ -921,7 +944,7 @@ def _run_single_file(
             summary.print()
             return summary
         path_str  = file_path
-        file_hash = ""   # no local hash for S3 single-file mode
+        file_hash = hash_file_bytes(local_path) if profile else ""
         file_size = os.path.getsize(local_path)
         mtime     = datetime.datetime.now(tz=datetime.timezone.utc)
     else:
@@ -945,18 +968,23 @@ def _run_single_file(
 
     doc_id = hash_file_path(path_str)
 
-    if not force_reingest and not is_s3:
-        process, reason = should_ingest(path_str, file_hash)
-        if not process:
-            logger.info(f"Skipping {file_name}: {reason}")
-            summary.add("SKIPPED", file_name, error=reason)
+    if profile:
+        if profile_is_current(doc_id, file_hash, profile["_fingerprint"]) and not force_reingest:
+            summary.add("SKIPPED", file_name, error="profile_current")
             summary.print()
             return summary
-
-    upsert_ingestion_log(
-        file_path=path_str, file_name=file_name, file_hash=file_hash,
-        file_size=file_size, last_modified=mtime, status="RUNNING",
-    )
+    else:
+        if not force_reingest and not is_s3:
+            process, reason = should_ingest(path_str, file_hash)
+            if not process:
+                logger.info(f"Skipping {file_name}: {reason}")
+                summary.add("SKIPPED", file_name, error=reason)
+                summary.print()
+                return summary
+        upsert_ingestion_log(
+            file_path=path_str, file_name=file_name, file_hash=file_hash,
+            file_size=file_size, last_modified=mtime, status="RUNNING",
+        )
 
     cr = CrawlResult(
         file_path=path_str, file_name=file_name, doc_id=doc_id,
@@ -965,7 +993,12 @@ def _run_single_file(
     )
 
     try:
-        result = process_document(cr, workers=workers, enable_embeddings=enable_embeddings)
+        if profile:
+            with profile_document_lock(doc_id, profile["_fingerprint"]) as acquired:
+                result = (process_document(cr, workers=workers, enable_embeddings=enable_embeddings, profile=profile)
+                          if acquired else {"status":"SKIPPED", "chunks":0, "pages":0, "elapsed":0, "error":"already_processing_profile"})
+        else:
+            result = process_document(cr, workers=workers, enable_embeddings=enable_embeddings)
     finally:
         if local_path and os.path.exists(local_path):
             try:
@@ -1034,6 +1067,11 @@ Examples:
   python main.py --stats
         """,
     )
+    ap.add_argument("--profile", type=str, help="Optional JSON processing profile")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="Override an allowed profile setting; repeatable")
+    ap.add_argument("--embed-existing", action="store_true",
+                    help="Embed mapped existing PostgreSQL chunks without PDF extraction")
     ap.add_argument("--root",         type=str,  help="Override DOCS_ROOT from config (NAS mode)")
     ap.add_argument("--file",         type=str,  help="Process a single file (local path or s3://bucket/key)")
     ap.add_argument("--dry-run",      action="store_true", help="Preview only, no DB writes")
@@ -1074,6 +1112,14 @@ Examples:
 if __name__ == "__main__":
     args = _parse_args()
 
+    if args.embed_existing:
+        if not args.profile:
+            raise SystemExit("--embed-existing requires --profile")
+        from existing_embeddings import embed_existing
+        profile = load_profile(args.profile, args.set)
+        print(embed_existing(profile, dry_run=args.dry_run, max_chunks=args.max_files))
+        sys.exit(0)
+
     if args.stats:
         init_db()
         _print_db_stats()
@@ -1096,4 +1142,5 @@ if __name__ == "__main__":
         retry_errors      = args.retry_errors,
         source_type       = args.source,           # None → use config.ini value
         enable_embeddings = not args.no_embed if args.no_embed else None,
+        profile = load_profile(args.profile, args.set),
     )
