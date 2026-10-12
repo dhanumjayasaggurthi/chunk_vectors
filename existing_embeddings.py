@@ -29,6 +29,9 @@ def embed_existing(profile: dict, *, dry_run: bool = False, max_chunks: int | No
     text_col = _safe_identifier(source["text_column"])
     vector_col = _safe_identifier(source["vector_column"])
     batch_size = profile["embedding"]["batch_size"]
+    requested_dimensions = profile["embedding"].get("dimensions", EMBEDDING_DIM)
+    deployment = profile["embedding"].get("deployment")
+    model = profile["embedding"].get("model")
     reuse = profile["embedding"]["reuse_existing"]
     where = f"{vector_col} IS NULL" if reuse else "TRUE"
     stats = {"scanned": 0, "embedded": 0, "failed": 0, "skipped_empty": 0}
@@ -38,6 +41,20 @@ def embed_existing(profile: dict, *, dry_run: bool = False, max_chunks: int | No
         with conn.cursor() as cur:
             # Fail fast on invalid mappings / permissions; do not mutate schema.
             cur.execute(f"SELECT {id_col}, {text_col}, {vector_col} FROM {table} LIMIT 0")
+        # Detect a mismatched pgvector column before making any Azure requests.
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT a.atttypmod
+                FROM pg_attribute a
+                WHERE a.attrelid = %s::regclass AND a.attname = %s
+                  AND a.attnum > 0 AND NOT a.attisdropped
+            """, (source["schema"] + "." + source["table"], source["vector_column"]))
+            metadata = cur.fetchone()
+            if not metadata or metadata[0] != requested_dimensions:
+                raise ValueError(
+                    f"Target vector column dimension {metadata[0] if metadata else 'unknown'} "
+                    f"does not match configured embedding dimension {requested_dimensions}"
+                )
         while True:
             if max_chunks is not None and stats["scanned"] >= max_chunks:
                 break
@@ -58,9 +75,16 @@ def embed_existing(profile: dict, *, dry_run: bool = False, max_chunks: int | No
             stats["skipped_empty"] += len(rows) - len(usable)
             if dry_run or not usable:
                 continue
-            vectors = _embed_batch([text for _, text in usable])
+            embed_kwargs = {}
+            if "dimensions" in profile["embedding"]:
+                embed_kwargs["dimensions"] = requested_dimensions
+            if deployment:
+                embed_kwargs["deployment"] = deployment
+            if model:
+                embed_kwargs["model"] = model
+            vectors = _embed_batch([text for _, text in usable], **embed_kwargs)
             if vectors is None or len(vectors) != len(usable) or any(
-                len(v) != EMBEDDING_DIM or not any(v) for v in vectors
+                len(v) != requested_dimensions or not any(v) for v in vectors
             ):
                 stats["failed"] += len(usable)
                 continue
