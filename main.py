@@ -322,7 +322,7 @@ def process_document(
     try:
         # ── 1. Delete stale chunks if re-ingesting ───────────────────────────
         if profile:
-            if profile_is_current(doc_id, crawl_result.file_hash, profile["_fingerprint"]):
+            if not profile.get("_force") and profile_is_current(doc_id, crawl_result.file_hash, profile["_fingerprint"]):
                 dlog.info("Profile output already current — skipped")
                 return {"status": "SKIPPED", "chunks": 0, "pages": 0, "elapsed": 0, "error": ""}
         else:
@@ -643,6 +643,93 @@ def _build_queue(
     return queue_list
 
 
+def _run_extracted_profile(
+    profile: dict, dry_run: bool, max_docs: Optional[int], doc_workers: int,
+    enable_embeddings: bool,
+) -> RunSummary:
+    """Rechunk existing DB content without PDF/OCR work, in bounded batches."""
+    from extracted_source import iter_document_ids, load_extracted_document
+    if doc_workers < 1:
+        raise ValueError("doc_workers must be positive")
+    results = RunSummary()
+    if not dry_run:
+        init_profile_store()
+    progress = ProgressTracker(total=None, report_every=50)
+
+    def process(document_key):
+        start = time.time()
+        try:
+            struct, source_hash = load_extracted_document(profile, document_key)
+            with profile_document_lock(struct.doc_id, profile["_fingerprint"]) as acquired:
+                if not acquired:
+                    return struct.file_name, {"status": "SKIPPED", "error": "profile_busy"}
+                if profile_is_current(struct.doc_id, source_hash, profile["_fingerprint"]) and not profile.get("_force"):
+                    return struct.file_name, {"status": "SKIPPED", "error": "profile_current"}
+                chunks = (chunk_with_profile(struct, profile["chunking"])
+                          if profile["chunking"]["strategy"] != "legacy" else chunk_document(struct))
+                if not chunks:
+                    raise ValueError("No valid chunks generated")
+                attach_metadata(struct, chunks, profile["metadata"])
+                if enable_embeddings:
+                    chunks = _embed_chunks_guarded(
+                        chunks, batch_size=profile["embedding"]["batch_size"]
+                    )
+                    if embedding_stats(chunks)["with_vector"] != len(chunks):
+                        raise RuntimeError("Incomplete embeddings; previous profile output preserved")
+                save_profile_result(struct.doc_id, source_hash, profile["_fingerprint"], chunks)
+            return struct.file_name, {
+                "status": "SUCCESS", "chunks": len(chunks), "pages": struct.page_count,
+                "elapsed": time.time() - start,
+            }
+        except Exception as exc:
+            logger.exception("Existing-content processing failed for %s", document_key)
+            return str(document_key), {
+                "status": "ERROR", "error": str(exc), "chunks": 0,
+                "pages": 0, "elapsed": time.time() - start,
+            }
+
+    if dry_run:
+        for document_key in iter_document_ids(profile, max_docs=max_docs):
+            results.add("WOULD_PROCESS", str(document_key))
+        results.print()
+        return results
+
+    pending = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=doc_workers) as pool:
+        def finish(done):
+            for future in done:
+                doc_key = pending.pop(future)
+                try:
+                    name, result = future.result()
+                except Exception as exc:
+                    name, result = str(doc_key), {"status": "ERROR", "error": str(exc)}
+                results.add(result["status"], name, error=result.get("error"),
+                            chunks=result.get("chunks", 0),
+                            pages=result.get("pages", 0),
+                            elapsed=result.get("elapsed", 0))
+                if result["status"] != "SKIPPED":
+                    progress.record(result["status"])
+
+        for document_key in iter_document_ids(profile, max_docs=max_docs):
+            if _shutdown_requested:
+                break
+            future = pool.submit(process, document_key)
+            pending[future] = document_key
+            if len(pending) >= max(2, doc_workers * 2):
+                finished, _ = concurrent.futures.wait(
+                    pending, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                finish(finished)
+        while pending:
+            finished, _ = concurrent.futures.wait(
+                pending, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            finish(finished)
+    progress.final()
+    results.print()
+    return results
+
+
 def _run_profile_streamed(
     crawler, dry_run: bool, summary: RunSummary, workers: int, doc_workers: int,
     enable_embeddings: bool, profile: dict,
@@ -759,6 +846,8 @@ def run_pipeline(
         source_type = SOURCE_TYPE
     if enable_embeddings is None:
         enable_embeddings = profile["embedding"]["enabled"] if profile else ENABLE_EMBEDDINGS
+    if profile:
+        profile = {**profile, "_force": force_reingest}
 
     # ── Warn if Vision concurrency is high ───────────────────────────────────
     total_vision = doc_workers * workers
@@ -1137,6 +1226,8 @@ Examples:
                     help="Override an allowed profile setting; repeatable")
     ap.add_argument("--embed-existing", action="store_true",
                     help="Embed mapped existing PostgreSQL chunks without PDF extraction")
+    ap.add_argument("--rechunk-extracted", action="store_true",
+                    help="Create profile chunks from mapped extracted-content table without PDF/OCR")
     ap.add_argument("--root",         type=str,  help="Override DOCS_ROOT from config (NAS mode)")
     ap.add_argument("--file",         type=str,  help="Process a single file (local path or s3://bucket/key)")
     ap.add_argument("--dry-run",      action="store_true", help="Preview only, no DB writes")
@@ -1176,6 +1267,16 @@ Examples:
 
 if __name__ == "__main__":
     args = _parse_args()
+
+    if args.rechunk_extracted:
+        if not args.profile:
+            raise SystemExit("--rechunk-extracted requires --profile")
+        profile = load_profile(
+            args.profile, args.set + (["embedding.enabled=false"] if args.no_embed else [])
+        )
+        _run_extracted_profile(profile, args.dry_run, args.max_files, args.doc_workers,
+                               profile["embedding"]["enabled"])
+        sys.exit(0)
 
     if args.embed_existing:
         if not args.profile:
