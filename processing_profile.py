@@ -72,6 +72,22 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
 
 
 def validate_profile(profile: dict) -> None:
+    if type(profile.get("version")) is not int or profile["version"] != 1:
+        raise ValueError("Only version 1 profiles are supported")
+    allowed_nested = {
+        "chunking": {"strategy", "min_tokens", "max_tokens", "overlap_tokens",
+                     "small_section_policy", "preserve_headers", "tokenizer"},
+        "embedding": {"enabled", "reuse_existing", "batch_size"},
+        "metadata": {"document", "chunk", "inherit_document_fields"},
+        "existing_chunks": {"schema", "table", "id_column", "text_column", "vector_column"},
+        "extracted_content": {"schema", "table", "doc_id_column", "text_column",
+                              "page_column", "position_column", "file_path_column", "file_name_column"},
+        "output": set(),
+    }
+    for section, allowed in allowed_nested.items():
+        unexpected = set(profile[section]) - allowed
+        if unexpected:
+            raise ValueError("Unknown " + section + " options: " + ", ".join(sorted(unexpected)))
     chunking = profile["chunking"]
     if chunking.get("tokenizer", "cl100k_base") not in {"cl100k_base", "o200k_base"}:
         raise ValueError("Unsupported tokenizer")
@@ -105,6 +121,9 @@ def validate_profile(profile: dict) -> None:
                 raise ValueError("Invalid metadata key: " + name)
             if not isinstance(rule, dict) or rule.get("method") not in _ALLOWED_METHODS:
                 raise ValueError("Invalid metadata rule for " + name)
+            extra_options = set(rule) - {"method", "label", "pattern", "value", "first_pages"}
+            if extra_options:
+                raise ValueError("Unsupported rule options for " + name)
             if rule["method"] == "regex":
                 pattern = rule.get("pattern", "")
                 if not isinstance(pattern, str) or not 1 <= len(pattern) <= 300:
