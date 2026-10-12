@@ -19,6 +19,20 @@ jobs:
           python-version: "3.11"
       - name: Install minimal profile test requirements
         run: python -m pip install --disable-pip-version-check tiktoken psycopg2-binary
+      - name: Supply non-secret unit-test config
+        run: |
+          cat > config.ini <<'INI'
+          [POSTGRES]
+          host = localhost
+          port = 5432
+          database = ci_only
+          user = ci
+          password = ci_only
+          schema = epod_ci
+          folder = test
+          [GCP]
+          gcp_key_path = dummy-key.json
+          INI
       - name: Python syntax checks
         run: python -m compileall -q .
       - name: Profile regression tests
