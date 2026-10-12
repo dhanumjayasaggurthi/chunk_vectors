@@ -644,6 +644,72 @@ def _build_queue(
     return queue_list
 
 
+def _run_profile_streamed(
+    crawler, dry_run: bool, summary: RunSummary, workers: int, doc_workers: int,
+    enable_embeddings: bool, profile: dict,
+) -> RunSummary:
+    """Process large archives with bounded memory; legacy runner remains unchanged."""
+    if doc_workers < 1 or workers < 1:
+        raise ValueError("Worker counts must be positive")
+    progress = ProgressTracker(total=None, report_every=50)
+    max_in_flight = max(2, doc_workers * 2)
+    submitted = 0
+
+    def record(completed):
+        for future in completed:
+            cr = pending.pop(future)
+            try:
+                _, result = future.result()
+            except Exception as exc:
+                result = {"status": "ERROR", "chunks": 0, "pages": 0,
+                          "elapsed": 0.0, "error": str(exc)}
+            summary.add(status=result["status"], file_name=cr.file_name,
+                        chunks=result.get("chunks", 0), pages=result.get("pages", 0),
+                        elapsed=result.get("elapsed", 0), error=result.get("error"))
+            if result["status"] != "SKIPPED":
+                progress.record(result["status"])
+
+    if dry_run:
+        for cr in crawler.crawl():
+            if _shutdown_requested:
+                break
+            summary.add("WOULD_PROCESS" if cr.should_process else "SKIPPED",
+                        cr.file_name, error=cr.error or cr.skip_reason)
+        summary.print()
+        return summary
+
+    pending = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=doc_workers) as pool:
+        for cr in crawler.crawl():
+            if _shutdown_requested:
+                break
+            if cr.error:
+                summary.add("ERROR", cr.file_name, error=cr.error)
+                continue
+            if not cr.should_process:
+                summary.add("SKIPPED", cr.file_name, error=cr.skip_reason)
+                continue
+            future = pool.submit(_process_doc_thread, (cr, workers, enable_embeddings, profile))
+            pending[future] = cr
+            submitted += 1
+            if len(pending) >= max_in_flight:
+                finished, _ = concurrent.futures.wait(
+                    pending, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                record(finished)
+        while pending:
+            finished, _ = concurrent.futures.wait(
+                pending, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            record(finished)
+    logger.info("Profile workers finished: submitted=%s profile=%s", submitted,
+                profile["_fingerprint"][:12])
+    progress.final()
+    summary.print()
+    return summary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 # Main orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
