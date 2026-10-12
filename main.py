@@ -488,18 +488,17 @@ def process_document(
         error_msg = str(e)
         dlog.error(f"❌ FAILED: {error_msg}", exc_info=True)
         try:
-            if profile:
-                raise RuntimeError("Profile failure; original ingestion log preserved")
-            upsert_ingestion_log(
-                file_path=file_path,
+            if not profile:
+                upsert_ingestion_log(
+                    file_path=file_path,
                 file_name=file_name,
                 file_hash=crawl_result.file_hash,
                 file_size=crawl_result.file_size,
                 last_modified=crawl_result.last_modified,
                 status="ERROR",
                 error_message=error_msg[:2000],
-                increment_retry=True,
-            )
+                    increment_retry=True,
+                )
         except Exception as db_e:
             dlog.error(f"Could not write ERROR to DB: {db_e}")
         return {
@@ -1208,5 +1207,7 @@ if __name__ == "__main__":
         retry_errors      = args.retry_errors,
         source_type       = args.source,           # None → use config.ini value
         enable_embeddings = not args.no_embed if args.no_embed else None,
-        profile = load_profile(args.profile, args.set),
+        profile = load_profile(
+            args.profile, args.set + (["embedding.enabled=false"] if args.no_embed and args.profile else [])
+        ),
     )
