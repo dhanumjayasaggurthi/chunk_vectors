@@ -67,6 +67,8 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
 
 def validate_profile(profile: dict) -> None:
     chunking = profile["chunking"]
+    if chunking.get("tokenizer", "cl100k_base") not in {"cl100k_base", "o200k_base"}:
+        raise ValueError("Unsupported tokenizer")
     if chunking.get("strategy") not in {"legacy", "toc_then_semantic"}:
         raise ValueError("chunking.strategy must be legacy or toc_then_semantic")
     for name in ("min_tokens", "max_tokens", "overlap_tokens"):
