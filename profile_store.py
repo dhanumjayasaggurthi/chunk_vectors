@@ -139,3 +139,25 @@ def save_profile_result(doc_id: str, source_hash: str, profile_hash: str, chunks
         raise
     finally:
         conn.close()
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def profile_document_lock(doc_id: str, profile_hash: str):
+    """Hold a database session lock for the processing lifetime."""
+    conn = get_conn()
+    acquired = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(hashtext(%s), hashtext(%s))", (doc_id, profile_hash))
+            acquired = bool(cur.fetchone()[0])
+        conn.commit()
+        yield acquired
+    finally:
+        if acquired:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))", (doc_id, profile_hash))
+            conn.commit()
+        conn.close()
