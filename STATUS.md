@@ -16,13 +16,21 @@ Branch: feature-configurable-processing-profiles. Target: main. Branch work is o
 
 ## Required validation before production rollout
 
-- [ ] Confirm CI checks pass on the feature PR.
+- [x] GitHub Actions profile CI passes: Python syntax plus 14 unit/ephemeral PostgreSQL-pgvector tests, including native-PDF ingestion and extracted-content reuse (run 38192365882).
 - [ ] Stage SQL mapping, transaction, permission, pgvector dimension tests.
 - [ ] Regulatory document quality/coverage evaluation with ground truth.
 - [ ] OCR, tables, TOC, no-TOC, overlapping headings and large-file fixtures.
 - [ ] Crash recovery, parallel run contention, throttling/failure injection.
 - [ ] Million-document throughput, memory, cost, connection pool load test.
 - [ ] Security and production change approval.
+
+## Verified scope
+
+- Schema-mapped embedding backfill only updates missing NULL vectors and is idempotent in test DB.
+- Profile replacement uses a single transaction and retains previous content on failed validation.
+- Generated native PDF and previously extracted SQL text both create profiled chunks end-to-end.
+- Bounded profile summaries retain accurate totals after the detail cap.
+- These are synthetic CI fixtures; enterprise production workloads remain unverified.
 
 ## Known scope boundaries
 
