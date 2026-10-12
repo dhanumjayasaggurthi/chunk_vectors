@@ -842,7 +842,7 @@ def run_pipeline(
     doc_workers=16, workers=1   → 16 Vision threads  (max docs, serial OCR)
     """
     global summary
-    summary = RunSummary()
+    summary = RunSummary(max_rows=1000 if profile else None)
 
     # Apply config defaults for optional params
     if source_type is None:
