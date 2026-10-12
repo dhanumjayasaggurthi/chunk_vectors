@@ -205,12 +205,14 @@ class S3Crawler:
         extensions:     set  = None,
         force_reingest: bool = False,
         max_files:      int  = None,
+        profile_hash:   str  = None,
     ):
         self.bucket         = bucket or S3_BUCKET
         self.prefix         = prefix if prefix is not None else S3_PREFIX
         self.extensions     = extensions or SUPPORTED_EXTENSIONS
         self.force_reingest = force_reingest
         self.max_files      = max_files
+        self.profile_hash  = profile_hash
         self.stats          = CrawlStats()
 
     # ── Public ───────────────────────────────────────────────────────────────
@@ -330,10 +332,14 @@ class S3Crawler:
         ):
             dlog.debug(f"FAST-SKIP {file_name}  (SUCCESS + ETag unchanged)")
             self.stats.bytes_avoided += file_size
+            requires_profile = False
+            if self.profile_hash:
+                from profile_store import profile_is_current
+                requires_profile = not profile_is_current(doc_id, etag, self.profile_hash)
             return CrawlResult(
                 file_path=s3_uri, file_name=file_name, doc_id=doc_id,
                 file_hash=etag, file_size=file_size, last_modified=last_modified,
-                should_process=False, skip_reason="unchanged",
+                should_process=requires_profile, skip_reason="" if requires_profile else "unchanged",
             )
 
         # ── Already running on another worker ────────────────────────────────
@@ -365,6 +371,16 @@ class S3Crawler:
                 file_hash=etag, file_size=file_size, last_modified=last_modified,
                 should_process=False,
                 skip_reason=f"max_retries_exceeded ({record['retry_count']})",
+            )
+
+        if self.profile_hash:
+            from profile_store import profile_is_current
+            current = False if self.force_reingest else profile_is_current(doc_id, etag, self.profile_hash)
+            return CrawlResult(
+                file_path=s3_uri, file_name=file_name, doc_id=doc_id,
+                file_hash=etag, file_size=file_size, last_modified=last_modified,
+                should_process=not current, skip_reason="profile_current" if current else "",
+                local_path=None,
             )
 
         # ── Skip/ingest decision ──────────────────────────────────────────────

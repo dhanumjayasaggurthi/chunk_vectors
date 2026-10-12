@@ -1,0 +1,24 @@
+{
+  "name": "fill_missing_vectors",
+  "version": 1,
+  "chunking": {
+    "strategy": "legacy"
+  },
+  "metadata": {
+    "document": {},
+    "chunk": {},
+    "inherit_document_fields": true
+  },
+  "embedding": {
+    "enabled": true,
+    "batch_size": 16,
+    "reuse_existing": true
+  },
+  "existing_chunks": {
+    "schema": "your_existing_schema",
+    "table": "your_chunks",
+    "id_column": "chunk_id",
+    "text_column": "chunk_text",
+    "vector_column": "chunk_vector"
+  }
+}

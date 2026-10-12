@@ -1,0 +1,20 @@
+{
+  "name": "haq_questions_large",
+  "version": 1,
+  "existing_chunks": {
+    "schema": "haq_vector_embedding",
+    "table": "rdh_haq_haq_query",
+    "id_column": "id",
+    "text_column": "question",
+    "vector_column": "question_embedding",
+    "note_column": "embedding_processing_note"
+  },
+  "embedding": {
+    "enabled": true,
+    "reuse_existing": true,
+    "batch_size": 16,
+    "progress_every_batches": 1,
+    "dimensions": 3072,
+    "model": "text-embedding-3-large"
+  }
+}

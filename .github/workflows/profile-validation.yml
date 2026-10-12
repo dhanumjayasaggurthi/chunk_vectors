@@ -1,0 +1,55 @@
+name: Profile validation
+on:
+  push:
+    branches:
+      - feature-configurable-processing-profiles
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci_only
+          POSTGRES_DB: ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_only"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal profile test requirements
+        run: python -m pip install --disable-pip-version-check tiktoken psycopg2-binary pymupdf pdfplumber pillow
+      - name: Supply non-secret unit-test config
+        run: |
+          cat > config.ini <<'INI'
+          [POSTGRES]
+          host = localhost
+          port = 5432
+          database = ci_only
+          user = ci
+          password = ci_only
+          schema = epod_ci
+          folder = test
+          [GCP]
+          gcp_key_path = dummy-key.json
+          INI
+      - name: Python syntax checks
+        run: python -m compileall -q .
+      - name: Profile regression and PostgreSQL integration tests
+        env:
+          CI_DB_TEST: "1"
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
