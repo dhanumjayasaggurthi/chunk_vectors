@@ -24,6 +24,7 @@ Read ARCHITECTURE.md, STATUS.md and docs/USER_GUIDE.md before deployment.
 
 ## Validation
 
+    pip install -r requirements-profiles.txt
     python -m compileall -q .
     python -m unittest discover -s tests -p "test_*.py" -v
 
