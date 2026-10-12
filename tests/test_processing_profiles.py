@@ -11,21 +11,13 @@ from types import SimpleNamespace
 
 from processing_profile import load_profile
 
-# Import opt-in chunking/metadata with lightweight independent domain doubles.
-chunker = types.ModuleType("chunker")
-
-
+# Use the real chunker module: replacing sys.modules globally would break
+# downstream integration tests that import the production pipeline.
 class FakeChunk:
     def __init__(self, **data):
         self.__dict__.update(data)
         self.chunk_vector = []
         self.headers = []
-
-
-chunker.Chunk = FakeChunk
-chunker._make_chunk_id = lambda doc_id, index: f"{doc_id}_{index}"
-chunker._page_full_text = lambda page: "\n".join(el.text for el in page.elements)
-sys.modules["chunker"] = chunker
 
 import metadata_extractor
 import configurable_chunking
