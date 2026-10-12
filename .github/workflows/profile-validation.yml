@@ -12,6 +12,20 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci_only
+          POSTGRES_DB: ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_only"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -35,5 +49,7 @@ jobs:
           INI
       - name: Python syntax checks
         run: python -m compileall -q .
-      - name: Profile regression tests
+      - name: Profile regression and PostgreSQL integration tests
+        env:
+          CI_DB_TEST: "1"
         run: python -m unittest discover -s tests -p 'test_*.py' -v
