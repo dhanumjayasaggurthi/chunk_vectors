@@ -134,7 +134,7 @@ def chunk_with_profile(struct, policy: dict) -> list[Chunk]:
             # oversized token/word only as the final safety fallback.
             pieces = []
             current = ""
-            for word in re.findall(r"\\S+\\s*", text):
+            for word in re.findall(r"\S+\s*", text):
                 if len(tokens(word)) > budget:
                     if current.strip():
                         pieces.append(current.strip())
