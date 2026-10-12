@@ -38,3 +38,7 @@ All SQL identifiers in optional mapped-source paths are validated and quoted; va
 ## Rollout
 
 Compile + unit tests; then staging SQL/provider integration, sampled metadata accuracy, source-change retries, kill/restart recovery, and million-document-scale throughput/memory benchmarking. Canary first. Rollback by removing profile flags. Do not merge or deploy before signoff.
+
+## Dimension configuration
+
+Embedding dimensions are selected by `embedding.dimensions` in a profile, or by `[AZURE_OPENAI_EMBEDDING] dimensions` in the existing config.ini for legacy/global defaults (1536 when unspecified for compatibility). Azure's request, embedding-vector shape validation and the mapped existing-table dimension check use the configured dimension. The HAQ embedding-only path supports `vector(3072)` without hardcoding a particular table or model. The isolated document-profile store still has a separate fixed `vector(1536)` destination: dimension-independent profile storage migrations and its retrieval index remain follow-up work, not a prerequisite for `--embed-existing`.
