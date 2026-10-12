@@ -19,6 +19,7 @@ _DEFAULTS = {
     "embedding": {"enabled": True, "reuse_existing": True, "batch_size": 16},
     "output": {},
     "existing_chunks": {},
+    "extracted_content": {},
 }
 
 
@@ -112,6 +113,6 @@ def validate_profile(profile: dict) -> None:
                 type(rule["first_pages"]) is not int or not 1 <= rule["first_pages"] <= 20
             ):
                 raise ValueError("first_pages must be between 1 and 20")
-    for area in ("output", "existing_chunks"):
+    for area in ("output", "existing_chunks", "extracted_content"):
         if not isinstance(profile[area], dict):
             raise ValueError(area + " must be an object")
