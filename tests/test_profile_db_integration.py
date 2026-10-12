@@ -161,6 +161,61 @@ class PostgresIntegrationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_optional_embedding_notes_and_retries(self):
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS epod_ci.note_test")
+                cur.execute(
+                    "CREATE TABLE epod_ci.note_test "
+                    "(id BIGINT PRIMARY KEY, question TEXT, embedding vector(3072), processing_note TEXT)"
+                )
+                cur.execute(
+                    "INSERT INTO epod_ci.note_test VALUES "
+                    "(1, 'Valid question', NULL, 'previous note'),"
+                    "(2, '', NULL, NULL),"
+                    "(3, 'Retry question', NULL, NULL)"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        profile = load_profile(None, [
+            "existing_chunks.schema=epod_ci",
+            "existing_chunks.table=note_test",
+            "existing_chunks.id_column=id",
+            "existing_chunks.text_column=question",
+            "existing_chunks.vector_column=embedding",
+            "existing_chunks.note_column=processing_note",
+            "embedding.dimensions=3072",
+            "embedding.progress_every_batches=1",
+        ])
+        with patch.object(existing_embeddings, "_embed_batch", return_value=None):
+            first = existing_embeddings.embed_existing(profile)
+        self.assertEqual(first["failed"], 2)
+        self.assertEqual(first["skipped_empty"], 1)
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT processing_note FROM epod_ci.note_test WHERE id=2")
+                self.assertIn("empty", cur.fetchone()[0].lower())
+                cur.execute("SELECT processing_note FROM epod_ci.note_test WHERE id=3")
+                self.assertIn("retry", cur.fetchone()[0].lower())
+        finally:
+            conn.close()
+        with patch.object(existing_embeddings, "_embed_batch",
+                          side_effect=lambda texts, **kw: [[0.3] * 3072 for _ in texts]):
+            second = existing_embeddings.embed_existing(profile)
+        self.assertEqual(second["embedded"], 2)
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT processing_note FROM epod_ci.note_test WHERE id=1")
+                self.assertIsNone(cur.fetchone()[0])
+                cur.execute("SELECT processing_note FROM epod_ci.note_test WHERE id=3")
+                self.assertIsNone(cur.fetchone()[0])
+        finally:
+            conn.close()
+
     def test_existing_extraction_page_mapping(self):
         conn = get_conn()
         try:
