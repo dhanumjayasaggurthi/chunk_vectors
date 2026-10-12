@@ -33,3 +33,7 @@ The profile-aware chunker needs tiktoken; legacy does not. The existing config.i
 New profiled output is isolated in profile_chunks_<folder> and profile_results_<folder>. It does not replace the legacy RAG query table. The embedder and profile vector column currently support 1536 dimensions.
 
 Do not deploy until staging and scale validation gates in STATUS.md pass.
+
+## 3072-dimensional HAQ question embeddings
+
+For an existing `haq_query.question_embedding vector(3072)` column, use `profiles/haq_question_3072.json` and `python main.py --profile profiles/haq_question_3072.json --embed-existing`. Edit the JSON schema/column mapping to your actual identifiers. The profile sets `embedding.dimensions=3072` and `embedding.model=text-embedding-3-large`, and checks the destination pgvector column before API calls. Existing non-NULL embeddings are skipped. The selected Azure deployment must actually support 3072 dimensions.
