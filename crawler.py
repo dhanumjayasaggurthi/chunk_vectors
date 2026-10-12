@@ -190,11 +190,13 @@ class Crawler:
         extensions:     set  = None,
         force_reingest: bool = False,
         max_files:      int  = None,
+        profile_hash:   str  = None,
     ):
         self.root           = Path(root) if root else DOCS_ROOT
         self.extensions     = extensions or SUPPORTED_EXTENSIONS
         self.force_reingest = force_reingest
         self.max_files      = max_files
+        self.profile_hash  = profile_hash
         self.stats          = CrawlStats()
 
     # ── Public ───────────────────────────────────────────────────────────────
@@ -329,6 +331,10 @@ class Crawler:
         ):
             dlog.debug(f"FAST-SKIP {file_name}  (SUCCESS + mtime unchanged)")
             self.stats.bytes_avoided += file_size
+            requires_profile = False
+            if self.profile_hash:
+                from profile_store import profile_is_current
+                requires_profile = not profile_is_current(doc_id, record["file_hash"], self.profile_hash)
             return CrawlResult(
                 file_path=path_str,
                 file_name=file_name,
@@ -336,8 +342,8 @@ class Crawler:
                 file_hash=record["file_hash"],   # reuse stored hash
                 file_size=file_size,
                 last_modified=last_modified,
-                should_process=False,
-                skip_reason="unchanged",
+                should_process=requires_profile,
+                skip_reason="" if requires_profile else "unchanged",
             )
 
         # ── 5. Already running on another machine / process ──────────────────
@@ -393,6 +399,16 @@ class Crawler:
                 file_hash="", file_size=file_size, last_modified=last_modified,
                 should_process=False, skip_reason="hash_error",
                 error=str(e),
+            )
+
+        if self.profile_hash:
+            from profile_store import profile_is_current
+            current = profile_is_current(doc_id, file_hash, self.profile_hash)
+            return CrawlResult(
+                file_path=path_str, file_name=file_name, doc_id=doc_id,
+                file_hash=file_hash, file_size=file_size, last_modified=last_modified,
+                should_process=not current,
+                skip_reason="profile_current" if current else "",
             )
 
         # ── 8. Full skip/ingest decision with hash ───────────────────────────
