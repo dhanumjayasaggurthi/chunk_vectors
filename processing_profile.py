@@ -50,6 +50,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
         if not separator or key not in {
             "chunking.strategy", "chunking.min_tokens", "chunking.max_tokens",
             "chunking.overlap_tokens", "embedding.enabled", "embedding.batch_size",
+            "embedding.dimensions", "embedding.deployment", "embedding.model",
             "existing_chunks.schema", "existing_chunks.table",
             "existing_chunks.id_column", "existing_chunks.text_column",
             "existing_chunks.vector_column",
@@ -77,7 +78,8 @@ def validate_profile(profile: dict) -> None:
     allowed_nested = {
         "chunking": {"strategy", "min_tokens", "max_tokens", "overlap_tokens",
                      "small_section_policy", "preserve_headers", "tokenizer"},
-        "embedding": {"enabled", "reuse_existing", "batch_size"},
+        "embedding": {"enabled", "reuse_existing", "batch_size",
+                      "dimensions", "deployment", "model"},
         "metadata": {"document", "chunk", "inherit_document_fields"},
         "existing_chunks": {"schema", "table", "id_column", "text_column", "vector_column"},
         "extracted_content": {"schema", "table", "doc_id_column", "text_column",
@@ -109,6 +111,16 @@ def validate_profile(profile: dict) -> None:
         raise ValueError("embedding flags must be boolean")
     if type(emb.get("batch_size")) is not int or not 1 <= emb["batch_size"] <= 128:
         raise ValueError("embedding.batch_size must be between 1 and 128")
+    if "dimensions" in emb and (
+        type(emb["dimensions"]) is not int or not 1 <= emb["dimensions"] <= 16000
+    ):
+        raise ValueError("embedding.dimensions must be an integer between 1 and 16000")
+    for field in ("deployment", "model"):
+        if field in emb and (
+            not isinstance(emb[field], str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", emb[field])
+        ):
+            raise ValueError("Invalid embedding." + field)
     meta = profile["metadata"]
     if type(meta.get("inherit_document_fields")) is not bool:
         raise ValueError("metadata.inherit_document_fields must be boolean")
