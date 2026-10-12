@@ -127,11 +127,30 @@ def chunk_with_profile(struct, policy: dict) -> list[Chunk]:
         if budget < 8:
             raise ValueError("Heading too long for selected max_tokens")
         ids = tokens(text)
-        pieces = (
-            [text] if len(ids) <= budget
-            else [encoder.decode(ids[start:start + budget])
-                  for start in range(0, len(ids), budget)]
-        )
+        if len(ids) <= budget:
+            pieces = [text]
+        else:
+            # Split on whole words where possible; token-slice a single
+            # oversized token/word only as the final safety fallback.
+            pieces = []
+            current = ""
+            for word in re.findall(r"\\S+\\s*", text):
+                if len(tokens(word)) > budget:
+                    if current.strip():
+                        pieces.append(current.strip())
+                        current = ""
+                    word_ids = tokens(word)
+                    pieces.extend(
+                        encoder.decode(word_ids[offset:offset + budget])
+                        for offset in range(0, len(word_ids), budget)
+                    )
+                elif current and len(tokens(current + word)) > budget:
+                    pieces.append(current.strip())
+                    current = word
+                else:
+                    current += word
+            if current.strip():
+                pieces.append(current.strip())
         for piece in pieces:
             unit = (piece, page, path, kind)
             if pending:
