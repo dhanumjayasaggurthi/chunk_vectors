@@ -16,6 +16,10 @@ import psycopg2.pool
 
 # ── Pipeline imports ──────────────────────────────────────────────────────────
 from config import DOCS_ROOT, PAGE_WORKERS, EMBEDDING_BATCH_SIZE, SOURCE_TYPE, ENABLE_EMBEDDINGS
+from processing_profile import load_profile
+from profile_store import init_profile_store, profile_is_current, save_profile_result, profile_document_lock
+from metadata_extractor import attach_metadata
+from configurable_chunking import chunk_with_profile
 from logger import get_logger, DocLogger, RunSummary
 from crawler import Crawler, CrawlResult
 from pdf_processor import process_pdf, DocumentStructure, PageContent, ElementType
@@ -75,14 +79,15 @@ def _make_crawler(
     root:           Optional[Path],
     force_reingest: bool,
     max_files:      Optional[int],
+    profile_hash:    Optional[str] = None,
 ) -> Crawler:
     if source_type == "s3":
         from s3_crawler import S3Crawler
         logger.info("Source: Amazon S3")
-        return S3Crawler(force_reingest=force_reingest, max_files=max_files)
+        return S3Crawler(force_reingest=force_reingest, max_files=max_files, profile_hash=profile_hash)
     else:
         logger.info(f"Source: NAS/local  ({root or DOCS_ROOT})")
-        return Crawler(root=root, force_reingest=force_reingest, max_files=max_files)
+        return Crawler(root=root, force_reingest=force_reingest, max_files=max_files, profile_hash=profile_hash)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -272,10 +277,13 @@ def _extract_tables_for_page_guarded(
     return results
 
 
-def _embed_chunks_guarded(chunks: list, log_every_n: int = 20) -> list:
+def _embed_chunks_guarded(chunks: list, log_every_n: int = 20, batch_size: int = None) -> list:
     """Embedding with semaphore so concurrent doc threads don't flood the API."""
     with _SEM_EMBED:
-        return embed_chunks(chunks, log_every_n=log_every_n)
+        kwargs = {"log_every_n": log_every_n}
+        if batch_size is not None:
+            kwargs["batch_size"] = batch_size
+        return embed_chunks(chunks, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -286,6 +294,7 @@ def process_document(
     crawl_result:      CrawlResult,
     workers:           int  = PAGE_WORKERS,
     enable_embeddings: bool = True,
+    profile:          Optional[dict] = None,
 ) -> dict:
     """
     Full pipeline for one document. Thread-safe — can run concurrently with
@@ -312,10 +321,15 @@ def process_document(
 
     try:
         # ── 1. Delete stale chunks if re-ingesting ───────────────────────────
-        existing = get_ingestion_record(file_path)
-        if existing and existing["status"] == "SUCCESS":
-            dlog.info("Modified doc — deleting existing chunks")
-            delete_chunks_for_doc(doc_id)
+        if profile:
+            if profile_is_current(doc_id, crawl_result.file_hash, profile["_fingerprint"]):
+                dlog.info("Profile output already current — skipped")
+                return {"status": "SKIPPED", "chunks": 0, "pages": 0, "elapsed": 0, "error": ""}
+        else:
+            existing = get_ingestion_record(file_path)
+            if existing and existing["status"] == "SUCCESS":
+                dlog.info("Modified doc — deleting existing chunks")
+                delete_chunks_for_doc(doc_id)
 
         # ── 2. PDF layout analysis ───────────────────────────────────────────
         dlog.info("Step 1/5: PDF layout analysis")
@@ -402,7 +416,11 @@ def process_document(
 
         # ── 5. Chunking ──────────────────────────────────────────────────────
         dlog.info("Step 3/5: Chunking")
-        chunks = chunk_document(struct)
+        chunks = (
+            chunk_with_profile(struct, profile["chunking"])
+            if profile and profile["chunking"]["strategy"] != "legacy"
+            else chunk_document(struct)
+        )
         if not chunks:
             raise RuntimeError("No chunks produced — document may be empty or corrupt")
 
@@ -411,10 +429,15 @@ def process_document(
             f"Levels: {set(c.chunk_level for c in chunks)}"
         )
 
+        if profile:
+            attach_metadata(struct, chunks, profile["metadata"])
         # ── 6. Embedding  (embedding semaphore) ─────────────────────────────
         if enable_embeddings:
             dlog.info("Step 4/5: Embedding")
-            chunks = _embed_chunks_guarded(chunks, log_every_n=10)
+            chunks = _embed_chunks_guarded(
+                chunks, log_every_n=10,
+                batch_size=profile["embedding"]["batch_size"] if profile else None,
+            )
 
             stats = embedding_stats(chunks)
             dlog.info(
@@ -431,19 +454,21 @@ def process_document(
 
         # ── 7. DB write ──────────────────────────────────────────────────────
         dlog.info("Step 5/5: Saving to database")
-        chunk_dicts = [c.to_db_dict() for c in chunks]
-        insert_chunks_batch(chunk_dicts)
-
-        upsert_ingestion_log(
-            file_path=file_path,
-            file_name=file_name,
-            file_hash=crawl_result.file_hash,
-            file_size=crawl_result.file_size,
-            last_modified=crawl_result.last_modified,
-            status="SUCCESS",
-            chunk_count=len(chunks),
-            pages_total=struct.page_count,
-        )
+        if profile:
+            save_profile_result(doc_id, crawl_result.file_hash, profile["_fingerprint"], chunks)
+        else:
+            chunk_dicts = [c.to_db_dict() for c in chunks]
+            insert_chunks_batch(chunk_dicts)
+            upsert_ingestion_log(
+                file_path=file_path,
+                file_name=file_name,
+                file_hash=crawl_result.file_hash,
+                file_size=crawl_result.file_size,
+                last_modified=crawl_result.last_modified,
+                status="SUCCESS",
+                chunk_count=len(chunks),
+                pages_total=struct.page_count,
+            )
 
         elapsed = time.time() - t_start
         dlog.info(
@@ -463,6 +488,8 @@ def process_document(
         error_msg = str(e)
         dlog.error(f"❌ FAILED: {error_msg}", exc_info=True)
         try:
+            if profile:
+                raise RuntimeError("Profile failure; original ingestion log preserved")
             upsert_ingestion_log(
                 file_path=file_path,
                 file_name=file_name,
