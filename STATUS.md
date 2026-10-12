@@ -50,3 +50,10 @@ Do not interpret pushed commits or passing unit tests as proof of live productio
 - [x] Added `profiles/haq_question_3072.json` and real pgvector(3072) incremental integration test.
 - [ ] Generalize isolated PDF profile output schema and legacy vector indexes for variable dimensions (not required for HAQ embedding-only).
 - [ ] Live Azure text-embedding-3-large 3072 deployment validation; CI uses a deterministic provider stub.
+
+## Optional embedding notes
+
+- [x] Optional configurable `existing_chunks.note_column` in embedding-only mode, with neutral messages for empty text and unsuccessful batches, cleared after successful writes.
+- [x] Configurable periodic batch progress logging.
+- [x] PostgreSQL integration test for notes, retry eligibility and clearing on success.
+- [ ] Detailed per-row Azure failure taxonomy and privacy-safe diagnostics; raw error bodies are not persisted in the note column.
