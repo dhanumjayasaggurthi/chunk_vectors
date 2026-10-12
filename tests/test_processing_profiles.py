@@ -63,6 +63,12 @@ class ProcessingProfileTests(unittest.TestCase):
             self.load({}, ["output.unknown=1"])
         with self.assertRaises(ValueError):
             self.load({"chunking": {"tokenizer": "arbitrary_package"}})
+        with self.assertRaises(ValueError):
+            self.load({"chunking": {"min_token": 200}})
+        with self.assertRaises(ValueError):
+            self.load({"output": {"table": "ignored_destination"}})
+        with self.assertRaises(ValueError):
+            self.load({"version": 2})
 
     def test_document_metadata_and_local_precedence(self):
         config = self.load({
