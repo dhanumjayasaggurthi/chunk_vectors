@@ -150,5 +150,85 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(len(digest), 64)
 
 
+    def test_full_native_pdf_profile_processing(self):
+        """PDF -> structural chunks -> profile store, without Azure/GCP calls."""
+        import hashlib
+        import tempfile
+        from datetime import datetime, timezone
+        from pathlib import Path
+        import fitz
+        import main
+        from crawler import CrawlResult
+        from db import hash_file_path
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "regulatory.pdf"
+            document = fitz.open()
+            page = document.new_page()
+            page.insert_text((60, 70), "1 Introduction", fontsize=13)
+            page.insert_text((60, 105), "Protocol Number: MOMM281004", fontsize=11)
+            for offset in range(8):
+                page.insert_text(
+                    (60, 140 + offset * 17),
+                    "Study outcome and application number NDA 12345 section " + str(offset),
+                    fontsize=10,
+                )
+            document.save(path)
+            document.close()
+            source = CrawlResult(
+                file_path=str(path), file_name=path.name,
+                doc_id=hash_file_path(str(path)),
+                file_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
+                file_size=path.stat().st_size,
+                last_modified=datetime.now(timezone.utc),
+                should_process=True,
+            )
+            config = load_profile(None, [
+                "chunking.strategy=toc_then_semantic",
+                "chunking.max_tokens=80",
+                "chunking.min_tokens=16",
+                "chunking.overlap_tokens=8",
+                "embedding.enabled=false",
+            ])
+            result = main.process_document(
+                source, workers=1, enable_embeddings=False, profile=config
+            )
+            self.assertEqual(result["status"], "SUCCESS", result.get("error"))
+            self.assertGreater(result["chunks"], 0)
+            self.assertTrue(profile_store.profile_is_current(
+                source.doc_id, source.file_hash, config["_fingerprint"]
+            ))
+
+    def test_extracted_content_pipeline_without_pdf(self):
+        """Mapped source -> chunk -> atomic profile output with no PDF access."""
+        from unittest.mock import patch
+        import main
+        profile = load_profile(None, [
+            "chunking.strategy=toc_then_semantic",
+            "chunking.max_tokens=80",
+            "chunking.min_tokens=16",
+            "chunking.overlap_tokens=8",
+            "embedding.enabled=false",
+            "extracted_content.schema=epod_ci",
+            "extracted_content.table=integration_extracts",
+            "extracted_content.doc_id_column=doc_key",
+            "extracted_content.text_column=extracted",
+            "extracted_content.page_column=pg",
+        ])
+        with patch.object(main, "process_pdf", side_effect=AssertionError("PDF read prohibited")):
+            result = main._run_extracted_profile(
+                profile, dry_run=False, max_docs=2,
+                doc_workers=2, enable_embeddings=False
+            )
+            again = main._run_extracted_profile(
+                profile, dry_run=False, max_docs=2,
+                doc_workers=2, enable_embeddings=False
+            )
+        self.assertEqual(result.counts().get("SUCCESS"), 2, result.counts())
+        self.assertEqual(again.counts().get("SKIPPED"), 2, again.counts())
+
+
+
+
 if __name__ == "__main__":
     unittest.main()
