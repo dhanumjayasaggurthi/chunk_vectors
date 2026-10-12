@@ -580,6 +580,9 @@ def _process_doc_thread(args: tuple) -> tuple[str, dict]:
     finally:
         # Delete the S3 temp file (either pre-existing local_path or one we just downloaded)
         lp = downloaded_temp or crawl_result.local_path
+        if lp:
+            with _pdfplumber_locks_guard:
+                _pdfplumber_locks.pop(lp, None)
         if lp and os.path.exists(lp):
             try:
                 os.unlink(lp)
@@ -651,7 +654,7 @@ def _run_extracted_profile(
     from extracted_source import iter_document_ids, load_extracted_document
     if doc_workers < 1:
         raise ValueError("doc_workers must be positive")
-    results = RunSummary()
+    results = RunSummary(max_rows=1000)
     if not dry_run:
         init_profile_store()
     progress = ProgressTracker(total=None, report_every=50)
