@@ -116,6 +116,51 @@ class PostgresIntegrationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_existing_embeddings_3072_in_real_pgvector(self):
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS epod_ci.integration_haq_query")
+                cur.execute(
+                    "CREATE TABLE epod_ci.integration_haq_query "
+                    "(id BIGINT PRIMARY KEY, question TEXT, question_embedding vector(3072))"
+                )
+                cur.execute(
+                    "INSERT INTO epod_ci.integration_haq_query VALUES "
+                    "(11, 'What is the indication?', NULL), "
+                    "(12, 'What is the outcome?', NULL)"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        profile = load_profile(None, [
+            "existing_chunks.schema=epod_ci",
+            "existing_chunks.table=integration_haq_query",
+            "existing_chunks.id_column=id",
+            "existing_chunks.text_column=question",
+            "existing_chunks.vector_column=question_embedding",
+            "embedding.dimensions=3072",
+            "embedding.model=text-embedding-3-large",
+        ])
+        with patch.object(
+            existing_embeddings, "_embed_batch",
+            side_effect=lambda texts, **kwargs: [[0.05] * kwargs["dimensions"] for _ in texts],
+        ):
+            first = existing_embeddings.embed_existing(profile)
+            second = existing_embeddings.embed_existing(profile)
+        self.assertEqual(first["embedded"], 2)
+        self.assertEqual(second["embedded"], 0)
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT vector_dims(question_embedding) FROM "
+                    "epod_ci.integration_haq_query ORDER BY id"
+                )
+                self.assertEqual(cur.fetchall(), [(3072,), (3072,)])
+        finally:
+            conn.close()
+
     def test_existing_extraction_page_mapping(self):
         conn = get_conn()
         try:
