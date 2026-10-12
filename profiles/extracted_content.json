@@ -1,0 +1,30 @@
+{
+  "name": "existing_extracted",
+  "version": 1,
+  "chunking": {
+    "strategy": "toc_then_semantic",
+    "min_tokens": 200,
+    "max_tokens": 800,
+    "overlap_tokens": 100,
+    "preserve_headers": true,
+    "tokenizer": "cl100k_base"
+  },
+  "metadata": {
+    "document": {},
+    "chunk": {},
+    "inherit_document_fields": true
+  },
+  "embedding": {
+    "enabled": false,
+    "batch_size": 16,
+    "reuse_existing": true
+  },
+  "extracted_content": {
+    "schema": "your_existing_schema",
+    "table": "extracted_pages",
+    "doc_id_column": "document_id",
+    "text_column": "extracted_text",
+    "page_column": "page_number",
+    "file_path_column": "file_path"
+  }
+}
