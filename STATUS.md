@@ -43,3 +43,10 @@ Branch: feature-configurable-processing-profiles. Target: main. Branch work is o
 - [ ] Shared database connection pool throughout profiled operations.
 
 Do not interpret pushed commits or passing unit tests as proof of live production readiness.
+
+## Configurable embedding dimensions
+
+- [x] `--embed-existing` accepts configurable embedding dimensions, model and deployment; validates the PostgreSQL vector column before Azure requests.
+- [x] Added `profiles/haq_question_3072.json` and real pgvector(3072) incremental integration test.
+- [ ] Generalize isolated PDF profile output schema and legacy vector indexes for variable dimensions (not required for HAQ embedding-only).
+- [ ] Live Azure text-embedding-3-large 3072 deployment validation; CI uses a deterministic provider stub.
