@@ -42,3 +42,7 @@ Compile + unit tests; then staging SQL/provider integration, sampled metadata ac
 ## Dimension configuration
 
 Embedding dimensions are selected by `embedding.dimensions` in a profile, or by `[AZURE_OPENAI_EMBEDDING] dimensions` in the existing config.ini for legacy/global defaults (1536 when unspecified for compatibility). Azure's request, embedding-vector shape validation and the mapped existing-table dimension check use the configured dimension. The HAQ embedding-only path supports `vector(3072)` without hardcoding a particular table or model. The isolated document-profile store still has a separate fixed `vector(1536)` destination: dimension-independent profile storage migrations and its retrieval index remain follow-up work, not a prerequisite for `--embed-existing`.
+
+## Optional row-level processing notes
+
+`existing_chunks.note_column` maps a nullable PostgreSQL TEXT field. It is optional and never automatically added. The embedding-only path records predefined neutral explanations for blank text and unsuccessful vector batches; successful writes clear prior notes in the same transaction. Operators retain technical diagnostics in controlled logs rather than persisting raw exception messages in a table exposed to end users. `embedding.progress_every_batches` controls periodic log updates and avoids unbounded per-row status storage.
