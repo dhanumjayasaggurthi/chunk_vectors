@@ -73,3 +73,16 @@ Configure `[AZURE_OPENAI_EMBEDDING]` in the existing private config.ini to point
     python main.py --profile profiles/haq_question_3072.json --embed-existing
 
 The example uses `public.haq_query(id, question, question_embedding)`; update schema/column names for your actual table. The target column must be `vector(3072)` already; no schema changes or PDF extraction are performed by `--embed-existing`. The existing 1536-dimensional pipeline remains the default when a dimension is not configured. A dimension mismatch is rejected before sending anything to Azure. A custom Azure deployment can be selected using `embedding.deployment` in the profile; if Azure's model is `text-embedding-3-large`, keep the profile's model selection. Only NULL vectors are incrementally processed; changed already-embedded questions still require a separate fingerprint-based refresh feature.
+
+## Optional embedding processing notes
+
+To store a neutral, operator-readable note on an existing table, add a nullable TEXT column using a reviewed one-time migration:
+
+    ALTER TABLE public.haq_query
+    ADD COLUMN IF NOT EXISTS embedding_processing_note TEXT;
+
+The sample HAQ profile enables this feature with `existing_chunks.note_column=embedding_processing_note`. The mapped column is optional for all other tables. Do not assume that existing tables have it: if configured but absent, the command fails before embedding.
+
+For unembeddable/blank rows, the column contains `Question text is empty; no embedding needed`. For unsuccessful API batches, it contains `Embedding response needs review; eligible for retry`. Successful embedding sets the note to NULL. Raw Azure errors remain in the secured process logs and are not stored in a user-facing column. The column is meant for workflow guidance, not a complete technical audit trail. Existing successful rows are not rewritten during incremental runs.
+
+Use `embedding.progress_every_batches` in the profile (1 logs every completed batch) to enable progress logging. Existing-column embedding remains incremental: rerunning selects NULL vectors, even for rows with retry notes.
