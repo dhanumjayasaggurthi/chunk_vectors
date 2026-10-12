@@ -50,8 +50,13 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
         if not separator or key not in {
             "chunking.strategy", "chunking.min_tokens", "chunking.max_tokens",
             "chunking.overlap_tokens", "embedding.enabled", "embedding.batch_size",
-            "existing_chunks.table", "existing_chunks.id_column",
-            "existing_chunks.text_column", "existing_chunks.vector_column",
+            "existing_chunks.schema", "existing_chunks.table",
+            "existing_chunks.id_column", "existing_chunks.text_column",
+            "existing_chunks.vector_column",
+            "extracted_content.schema", "extracted_content.table",
+            "extracted_content.doc_id_column", "extracted_content.text_column",
+            "extracted_content.page_column", "extracted_content.position_column",
+            "extracted_content.file_path_column", "extracted_content.file_name_column",
         }:
             raise ValueError("Invalid --set override: " + item)
         section, field = key.split(".", 1)
