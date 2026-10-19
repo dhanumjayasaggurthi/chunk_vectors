@@ -1,0 +1,9 @@
+.git
+.pytest_cache
+.venv
+__pycache__
+*.db
+*.db-journal
+*.pem
+.env
+config.ini

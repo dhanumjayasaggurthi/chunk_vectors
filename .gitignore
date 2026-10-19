@@ -1,3 +1,11 @@
-.idea/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.db
+*.db-journal
+.env
 config.ini
-/logs
+*.pem
+.terraform/
+*.tfstate*

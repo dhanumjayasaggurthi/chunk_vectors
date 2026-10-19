@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10182c">
+  <title>EvidenceFlow | Document Intelligence</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">E<span>•</span></span>
+        <div class="brand-copy"><strong>EVIDENCEFLOW</strong><small>RIMDOCS Intelligence</small></div>
+      </div>
+      <div class="nav-caption">WORKSPACE</div>
+      <nav id="sidebar-nav" aria-label="Main navigation">
+        <button data-nav="dashboard" class="nav-item active"><span data-icon="grid"></span> Overview</button>
+        <button data-nav="submit" class="nav-item"><span data-icon="plus-square"></span> New extraction</button>
+        <button data-nav="results" class="nav-item"><span data-icon="file-search"></span> Job results</button>
+        <button data-nav="review" class="nav-item"><span data-icon="shield"></span> Review queue <span class="nav-count" id="nav-review-count">2</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="platform-card">
+          <div class="platform-orbit"><span data-icon="layers"></span></div>
+          <strong>Lean, proof-first pipeline</strong>
+          <p>Evidence-backed extraction, review, and export—one workflow.</p>
+          <div class="platform-chip">ONE CODEBASE</div>
+        </div>
+        <div class="sidebar-user"><span class="avatar">DI</span><span><strong>Document operations</strong><small>API + workers</small></span><span data-icon="chevrons"></span></div>
+      </div>
+    </aside>
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="breadcrumb"><span data-icon="panel"></span><span>Workspace</span><span class="slash">/</span><strong id="page-breadcrumb">Overview</strong></div>
+        <div class="topbar-actions">
+          <span class="top-pill"><span class="green-dot"></span> EvidenceFlow API</span>
+          <span class="top-divider"></span>
+          <span class="avatar avatar-light">DI</span>
+        </div>
+      </header>
+      <main id="app" class="main-content" aria-live="polite"></main>
+      <footer class="footer">EvidenceFlow · Evidence-backed extraction · Demonstration content is clearly marked · Live systems require approved credentials and governance</footer>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

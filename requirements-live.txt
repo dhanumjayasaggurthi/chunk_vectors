@@ -1,0 +1,8 @@
+-r requirements.txt
+boto3>=1.35,<2
+snowflake-connector-python>=3.12,<5
+cryptography>=43
+psycopg[binary]>=3.2,<4
+# Optional selective OCR: pip install google-cloud-vision
+PyJWT[crypto]>=2.10,<3
+alembic>=1.13,<2
