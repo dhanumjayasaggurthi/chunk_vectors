@@ -191,6 +191,9 @@ def embed_chunks(
     batch_size:       int  = EMBEDDING_BATCH_SIZE,
     log_every_n:      int  = 10,         # log progress every N batches
     skip_zero_text:   bool = True,       # skip chunks with empty text
+    dimensions: int | None = None,
+    deployment: str | None = None,
+    model: str | None = None,
 ) -> list[Chunk]:
     """
     Embed all chunks and attach vectors in-place.
@@ -210,6 +213,7 @@ def embed_chunks(
     if not chunks:
         return chunks
 
+    # Profile-specific model selection is forwarded per request, never mutated globally.
     total           = len(chunks)
     embedded_count  = 0
     failed_count    = 0
@@ -250,7 +254,14 @@ def embed_chunks(
             continue
 
         texts   = [chunk.chunk_text for chunk in active]
-        vectors = _embed_batch(texts)
+        embed_options = {}
+        if dimensions is not None:
+            embed_options["dimensions"] = dimensions
+        if deployment is not None:
+            embed_options["deployment"] = deployment
+        if model is not None:
+            embed_options["model"] = model
+        vectors = _embed_batch(texts, **embed_options)
 
         if vectors is not None:
             for chunk, vector in zip(active, vectors):
