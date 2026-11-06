@@ -1227,6 +1227,12 @@ Examples:
     ap.add_argument("--profile", type=str, help="Optional JSON processing profile")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="Override an allowed profile setting; repeatable")
+    ap.add_argument("--migrate-source-chunks", action="store_true",
+                    help="Read existing chunks, re-chunk and enrich into isolated profile storage")
+    ap.add_argument("--max-source-rows", type=int, default=10000,
+                    help="Maximum source rows per document (safety cap)")
+    ap.add_argument("--max-source-mb", type=int, default=32,
+                    help="Maximum source text MiB per document (safety cap)")
     ap.add_argument("--embed-existing", action="store_true",
                     help="Embed mapped existing PostgreSQL chunks without PDF extraction")
     ap.add_argument("--rechunk-extracted", action="store_true",
@@ -1270,6 +1276,20 @@ Examples:
 
 if __name__ == "__main__":
     args = _parse_args()
+
+    if args.migrate_source_chunks:
+        if not args.profile:
+            raise SystemExit("--migrate-source-chunks requires --profile")
+        from chunk_migration import run_migration
+        profile = load_profile(
+            args.profile, args.set + (["embedding.enabled=false"] if args.no_embed else [])
+        )
+        run_migration(
+            profile, dry_run=args.dry_run, max_docs=args.max_files,
+            workers=args.doc_workers, max_source_rows=args.max_source_rows,
+            max_source_bytes=args.max_source_mb * 1024 * 1024, force=args.force,
+        )
+        sys.exit(0)
 
     if args.rechunk_extracted:
         if not args.profile:
