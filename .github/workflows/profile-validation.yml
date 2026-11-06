@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - feature-configurable-processing-profiles
+      - feature-production-chunk-migration
   pull_request:
     branches:
       - main
