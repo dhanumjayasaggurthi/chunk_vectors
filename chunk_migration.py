@@ -247,7 +247,7 @@ def rebuild_chunks(rows: list[dict], profile: dict) -> tuple[object, list[Chunk]
             for line in source_part[0].splitlines():
                 clean = line.strip()
                 # Capture numbered subsection headings, but do not infer a TOC.
-                if re.fullmatch(r"\\d+(?:\\.\\d+){1,6}\\s+[A-Za-z][^\\n]{2,100}", clean):
+                if re.fullmatch(r"\d+(?:\.\d+){1,6}\s+[A-Za-z][^\n]{2,100}", clean):
                     inline_headers.append(clean)
         ch.headers = list(dict.fromkeys(inherited_headers + inline_headers))
         ch.source_chunk_ids = list(dict.fromkeys(p[5] for p in pending))
