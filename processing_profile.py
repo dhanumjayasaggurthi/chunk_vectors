@@ -20,6 +20,7 @@ _DEFAULTS = {
     "output": {},
     "existing_chunks": {},
     "extracted_content": {},
+    "source_chunks": {},
 }
 
 
@@ -59,6 +60,12 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "extracted_content.doc_id_column", "extracted_content.text_column",
             "extracted_content.page_column", "extracted_content.position_column",
             "extracted_content.file_path_column", "extracted_content.file_name_column",
+            "source_chunks.schema", "source_chunks.table",
+            "source_chunks.doc_id_column", "source_chunks.text_column",
+            "source_chunks.chunk_id_column", "source_chunks.chunk_index_column",
+            "source_chunks.file_name_column", "source_chunks.file_path_column",
+            "source_chunks.section_title_column", "source_chunks.page_start_column",
+            "source_chunks.page_end_column", "source_chunks.content_types_column",
         }:
             raise ValueError("Invalid --set override: " + item)
         section, field = key.split(".", 1)
@@ -86,6 +93,10 @@ def validate_profile(profile: dict) -> None:
                             "vector_column", "note_column"},
         "extracted_content": {"schema", "table", "doc_id_column", "text_column",
                               "page_column", "position_column", "file_path_column", "file_name_column"},
+        "source_chunks": {"schema", "table", "doc_id_column", "text_column",
+                          "chunk_id_column", "chunk_index_column", "file_name_column",
+                          "file_path_column", "section_title_column",
+                          "page_start_column", "page_end_column", "content_types_column"},
         "output": set(),
     }
     for section, allowed in allowed_nested.items():
@@ -156,6 +167,6 @@ def validate_profile(profile: dict) -> None:
                 type(rule["first_pages"]) is not int or not 1 <= rule["first_pages"] <= 20
             ):
                 raise ValueError("first_pages must be between 1 and 20")
-    for area in ("output", "existing_chunks", "extracted_content"):
+    for area in ("output", "existing_chunks", "extracted_content", "source_chunks"):
         if not isinstance(profile[area], dict):
             raise ValueError(area + " must be an object")
