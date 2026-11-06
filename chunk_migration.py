@@ -285,10 +285,17 @@ def rebuild_chunks(rows: list[dict], profile: dict) -> tuple[object, list[Chunk]
                     previous = pending[-1]
                     flush()
                     if overflow and not boundary and overlap:
-                        tail = encoder.encode(previous[0], disallowed_special=())[-overlap:]
-                        carry = (encoder.decode(tail), previous[1], previous[2],
+                        # Select overlap from the original Unicode text.
+                        # Decoding a sliced token tail can insert replacement
+                        # characters when it starts inside a UTF-8 sequence.
+                        tail = previous[0]
+                        while len(tail) > 1 and count(tail) > overlap:
+                            tail = tail[1:]
+                        if count(tail) > overlap:
+                            tail = ""
+                        carry = (tail, previous[1], previous[2],
                                  previous[3], previous[4], previous[5])
-                        if count(render([carry, item])) <= maximum:
+                        if tail and count(render([carry, item])) <= maximum:
                             pending.append(carry)
             pending.append(item)
             if count(render(pending)) > maximum:
