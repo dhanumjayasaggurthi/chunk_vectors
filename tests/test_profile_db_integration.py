@@ -329,6 +329,62 @@ class PostgresIntegrationTests(unittest.TestCase):
 
 
 
+    def test_source_chunk_migration_rebuilds_without_pdf_and_is_idempotent(self):
+        """Existing chunk rows remain untouched; new output is profile-isolated."""
+        import chunk_migration
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS epod_ci.migration_source")
+                cur.execute(
+                    "CREATE TABLE epod_ci.migration_source ("
+                    "doc_id TEXT, chunk_id TEXT, chunk_index INTEGER, chunk_text TEXT,"
+                    "file_name TEXT, file_path TEXT, section_title TEXT,"
+                    "page_start INTEGER, page_end INTEGER, content_types TEXT[])"
+                )
+                cur.execute(
+                    "INSERT INTO epod_ci.migration_source VALUES "
+                    "('doc-migration','chunk-one',0,'Indication: Treatment of condition X. "
+                    "Protocol Number: XYZ-100 and NDA 12345.','test.pdf',"
+                    "'nas://test.pdf','1 Introduction',1,2,ARRAY['text']),"
+                    "('doc-migration','chunk-two',1,'2 Methods. "
+                    "The research methods describe the population and outcomes.',"
+                    "'test.pdf','nas://test.pdf','2 Methods',3,4,ARRAY['text'])"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        p = load_profile(None, [
+            "source_chunks.schema=epod_ci",
+            "source_chunks.table=migration_source",
+            "chunking.strategy=toc_then_semantic",
+            "chunking.max_tokens=80",
+            "chunking.min_tokens=16",
+            "chunking.overlap_tokens=8",
+            "embedding.enabled=false",
+        ])
+        first = chunk_migration.run_migration(p, max_docs=1, workers=2)
+        again = chunk_migration.run_migration(p, max_docs=1, workers=2)
+        self.assertEqual(first.counts().get("SUCCESS"), 1, first.counts())
+        self.assertEqual(again.counts().get("SKIPPED"), 1, again.counts())
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM epod_ci.migration_source")
+                self.assertEqual(cur.fetchone()[0], 2)
+                cur.execute(
+                    "SELECT chunk_metadata, page_start, page_end FROM "
+                    "epod_ci.profile_chunks_test WHERE doc_id='doc-migration' "
+                    "AND profile_hash=%s", (p["_fingerprint"],)
+                )
+                results = cur.fetchall()
+                self.assertGreater(len(results), 0)
+                self.assertTrue(all(r[0]["source_chunk_ids"] for r in results))
+                self.assertTrue(all(r[1] >= 1 and r[2] <= 4 for r in results))
+        finally:
+            conn.close()
+
+
 
 if __name__ == "__main__":
     unittest.main()
