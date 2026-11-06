@@ -279,6 +279,9 @@ def rebuild_chunks(rows: list[dict], profile: dict) -> tuple[object, list[Chunk]
     # The source may have multi-page chunks. Page-number metadata is approximate.
     struct = SimpleNamespace(doc_id=doc_id, pages=pages, file_name=filename, file_path=filepath)
     attach_metadata(struct, chunks, profile["metadata"])
+    for ch in chunks:
+        ch.chunk_metadata["source_chunk_ids"] = ch.source_chunk_ids
+        ch.chunk_metadata["page_range_precision"] = "source_chunk_range"
     return struct, chunks
 
 
@@ -314,7 +317,14 @@ def run_migration(profile: dict, *, dry_run: bool = False, max_docs: int | None 
                     return "SKIPPED", 0, "profile_current", time.monotonic() - start
                 _, chunks = rebuild_chunks(rows, profile)
                 if profile["embedding"]["enabled"]:
-                    chunks = embed_chunks(chunks, batch_size=profile["embedding"]["batch_size"])
+                    options = {
+                        k: profile["embedding"][k]
+                        for k in ("dimensions", "deployment", "model")
+                        if k in profile["embedding"]
+                    }
+                    chunks = embed_chunks(
+                        chunks, batch_size=profile["embedding"]["batch_size"], **options
+                    )
                     stats = embedding_stats(chunks)
                     if stats["with_vector"] != len(chunks):
                         raise RuntimeError("Partial embedding result; output left unchanged")
