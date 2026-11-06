@@ -53,6 +53,20 @@ class ChunkMigrationTests(unittest.TestCase):
         self.assertEqual(chunks[0].page_start, 1)
         self.assertEqual(chunks[0].page_end, 2)
 
+    def test_numbered_subsection_headers_are_retained(self):
+        rows = [row(0, "1.1 Detailed Results\n" + "The result was positive. " * 7,
+                    "1 Results")]
+        _, chunks = rebuild_chunks(rows, self.profile)
+        self.assertTrue(any("1.1 Detailed Results" in c.headers for c in chunks))
+
+    def test_unicode_safe_long_text(self):
+        rows = [row(0, "研究结果📄" * 130, "1 Results")]
+        _, chunks = rebuild_chunks(rows, self.profile)
+        self.assertTrue(chunks)
+        self.assertFalse(any("\ufffd" in c.chunk_text for c in chunks))
+        self.assertTrue(all(len(tiktoken.get_encoding("cl100k_base").encode(c.chunk_text)) <= 80
+                            for c in chunks))
+
     def test_retains_page_range_without_inventing_precision(self):
         rows = [row(0, "Existing block from multiple pages " * 4, start=7, end=11)]
         _, chunks = rebuild_chunks(rows, self.profile)
