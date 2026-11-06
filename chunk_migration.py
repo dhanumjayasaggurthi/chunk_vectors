@@ -288,11 +288,16 @@ def rebuild_chunks(rows: list[dict], profile: dict) -> tuple[object, list[Chunk]
                         # Select overlap from the original Unicode text.
                         # Decoding a sliced token tail can insert replacement
                         # characters when it starts inside a UTF-8 sequence.
-                        tail = previous[0]
-                        while len(tail) > 1 and count(tail) > overlap:
-                            tail = tail[1:]
-                        if count(tail) > overlap:
-                            tail = ""
+                        original_tail = previous[0]
+                        lo, hi, best = 0, len(original_tail), len(original_tail)
+                        while lo <= hi:
+                            mid = (lo + hi) // 2
+                            if count(original_tail[mid:]) <= overlap:
+                                best = mid
+                                hi = mid - 1
+                            else:
+                                lo = mid + 1
+                        tail = original_tail[best:]
                         carry = (tail, previous[1], previous[2],
                                  previous[3], previous[4], previous[5])
                         if tail and count(render([carry, item])) <= maximum:
