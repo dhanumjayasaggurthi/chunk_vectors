@@ -1,0 +1,77 @@
+{
+  "name": "palm_paw_clinical_migration_v1",
+  "version": 1,
+  "source_chunks": {
+    "schema": "palm_paw",
+    "table": "palm_pah_jnj_search_results_doc_chunks_clinical",
+    "doc_id_column": "doc_id",
+    "text_column": "chunk_text",
+    "chunk_id_column": "chunk_id",
+    "chunk_index_column": "chunk_index",
+    "file_name_column": "file_name",
+    "file_path_column": "file_path",
+    "section_title_column": "section_title",
+    "page_start_column": "page_start",
+    "page_end_column": "page_end",
+    "content_types_column": "content_types"
+  },
+  "chunking": {
+    "strategy": "toc_then_semantic",
+    "min_tokens": 200,
+    "max_tokens": 800,
+    "overlap_tokens": 100,
+    "preserve_headers": true,
+    "small_section_policy": "merge_forward",
+    "tokenizer": "cl100k_base"
+  },
+  "metadata": {
+    "inherit_document_fields": true,
+    "document": {
+      "indication": {
+        "method": "label",
+        "label": "Indication",
+        "first_pages": 3
+      },
+      "application_type": {
+        "method": "regex",
+        "pattern": "\\\\b(NDA|BLA|IND)\\\\b",
+        "first_pages": 3
+      },
+      "application_number": {
+        "method": "regex",
+        "pattern": "(?i)Application\\\\s+(?:Number|No\\\\.?):?\\\\s*([A-Z0-9-]+)",
+        "first_pages": 3
+      },
+      "protocol_number": {
+        "method": "regex",
+        "pattern": "(?i)Protocol\\\\s+(?:Number|No\\\\.?):?\\\\s*([A-Z0-9-]+)",
+        "first_pages": 3
+      }
+    },
+    "chunk": {
+      "indication": {
+        "method": "label",
+        "label": "Indication"
+      },
+      "application_type": {
+        "method": "regex",
+        "pattern": "\\\\b(NDA|BLA|IND)\\\\b"
+      },
+      "application_number": {
+        "method": "regex",
+        "pattern": "(?i)Application\\\\s+(?:Number|No\\\\.?):?\\\\s*([A-Z0-9-]+)"
+      },
+      "protocol_number": {
+        "method": "regex",
+        "pattern": "(?i)Protocol\\\\s+(?:Number|No\\\\.?):?\\\\s*([A-Z0-9-]+)"
+      }
+    }
+  },
+  "embedding": {
+    "enabled": false,
+    "reuse_existing": true,
+    "batch_size": 16,
+    "dimensions": 1536
+  },
+  "output": {}
+}
