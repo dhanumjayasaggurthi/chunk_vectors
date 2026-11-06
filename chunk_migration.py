@@ -241,7 +241,15 @@ def rebuild_chunks(rows: list[dict], profile: dict) -> tuple[object, list[Chunk]
             content_types=sorted({t for p in pending for t in p[4]}),
             chunk_text=value,
         )
-        ch.headers = list(dict.fromkeys(p[3] for p in pending if p[3]))
+        inherited_headers = [p[3] for p in pending if p[3]]
+        inline_headers = []
+        for source_part in pending:
+            for line in source_part[0].splitlines():
+                clean = line.strip()
+                # Capture numbered subsection headings, but do not infer a TOC.
+                if re.fullmatch(r"\\d+(?:\\.\\d+){1,6}\\s+[A-Za-z][^\\n]{2,100}", clean):
+                    inline_headers.append(clean)
+        ch.headers = list(dict.fromkeys(inherited_headers + inline_headers))
         ch.source_chunk_ids = list(dict.fromkeys(p[5] for p in pending))
         chunks.append(ch)
         pending = []
@@ -360,6 +368,9 @@ def run_migration(profile: dict, *, dry_run: bool = False, max_docs: int | None 
                 key = pending.pop(future)
                 status, count, err, elapsed = future.result()
                 summary.add(status, str(key), error=err, chunks=count, elapsed=elapsed)
+                if summary._total % 100 == 0:
+                    log.info("Migration progress processed=%s counts=%s",
+                             summary._total, summary.counts())
         for key in iter_document_ids(profile, limit=max_docs):
             pending[pool.submit(process, key)] = key
             if len(pending) >= workers * 2:
