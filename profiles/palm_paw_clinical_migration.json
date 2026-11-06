@@ -34,17 +34,17 @@
       },
       "application_type": {
         "method": "regex",
-        "pattern": "\\\\b(NDA|BLA|IND)\\\\b",
+        "pattern": "\\b(NDA|BLA|IND)\\b",
         "first_pages": 3
       },
       "application_number": {
         "method": "regex",
-        "pattern": "(?i)Application\\\\s+(?:Number|No\\\\.?):?\\\\s*([A-Z0-9-]+)",
+        "pattern": "(?i)Application\\s+(?:Number|No\\.?):?\\s*([A-Z0-9-]+)",
         "first_pages": 3
       },
       "protocol_number": {
         "method": "regex",
-        "pattern": "(?i)Protocol\\\\s+(?:Number|No\\\\.?):?\\\\s*([A-Z0-9-]+)",
+        "pattern": "(?i)Protocol\\s+(?:Number|No\\.?):?\\s*([A-Z0-9-]+)",
         "first_pages": 3
       }
     },
@@ -55,15 +55,15 @@
       },
       "application_type": {
         "method": "regex",
-        "pattern": "\\\\b(NDA|BLA|IND)\\\\b"
+        "pattern": "\\b(NDA|BLA|IND)\\b"
       },
       "application_number": {
         "method": "regex",
-        "pattern": "(?i)Application\\\\s+(?:Number|No\\\\.?):?\\\\s*([A-Z0-9-]+)"
+        "pattern": "(?i)Application\\s+(?:Number|No\\.?):?\\s*([A-Z0-9-]+)"
       },
       "protocol_number": {
         "method": "regex",
-        "pattern": "(?i)Protocol\\\\s+(?:Number|No\\\\.?):?\\\\s*([A-Z0-9-]+)"
+        "pattern": "(?i)Protocol\\s+(?:Number|No\\.?):?\\s*([A-Z0-9-]+)"
       }
     }
   },
