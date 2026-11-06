@@ -169,9 +169,23 @@ def _text_pieces(text: str, budget: int, encoder) -> list[str]:
         if count(unit) <= budget:
             pending = unit.strip()
         else:
-            tokens = encoder.encode(unit, disallowed_special=())
-            pieces.extend(encoder.decode(tokens[p:p + budget])
-                          for p in range(0, len(tokens), budget))
+            # Split on Python character boundaries, not token IDs: slicing
+            # encoded tokens can corrupt multi-byte Unicode characters.
+            offset = 0
+            while offset < len(unit):
+                lo, hi, best = 1, len(unit) - offset, 0
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    segment = unit[offset:offset + mid]
+                    if count(segment) <= budget:
+                        best = mid
+                        lo = mid + 1
+                    else:
+                        hi = mid - 1
+                if best < 1:
+                    raise ValueError("Cannot encode a single character within budget")
+                pieces.append(unit[offset:offset + best])
+                offset += best
     if pending:
         pieces.append(pending)
     return [part for part in pieces if part.strip()]
