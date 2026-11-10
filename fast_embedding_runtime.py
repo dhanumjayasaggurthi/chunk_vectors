@@ -188,7 +188,12 @@ def discover(c, stop, max_chunks):
                 ids=[r[0] for r in cur.fetchall()]
                 if ids:
                     psycopg2.extras.execute_values(cur,"""INSERT INTO embedding_runtime.tasks(job_key,row_id)
-                       VALUES %s ON CONFLICT DO NOTHING""",[(job,r) for r in ids],page_size=500)
+                       VALUES %s ON CONFLICT (job_key,row_id) DO UPDATE
+                       SET status='PENDING',owner=NULL,claim_token=NULL,lease_until=NULL,
+                           processing_comment='Source was requeued after rediscovery',
+                           updated_at=now()
+                       WHERE embedding_runtime.tasks.status IN ('SUCCESS','SKIPPED')""",
+                       [(job,r) for r in ids],page_size=500)
                     cur.execute("UPDATE embedding_runtime.runs SET cursor_id=%s WHERE job_key=%s",(ids[-1],job))
                 else:
                     cur.execute("UPDATE embedding_runtime.runs SET discovery_done=true WHERE job_key=%s",(job,))
