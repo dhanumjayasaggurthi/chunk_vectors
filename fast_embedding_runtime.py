@@ -231,8 +231,20 @@ def mark(c, token, row_id, status, code=None, message=None, comment=None):
             if owned and c["note"] and code:
                 text=(code+": "+(message or ""))[:c["note_limit"]]
                 where=f" AND {c['vec']} IS NULL" if c["reuse"] else ""
-                cur.execute(f"UPDATE {c['table']} SET {c['note']}=%s WHERE {c['id']}=%s::{c['idtype']}{where}",
-                            (text,row_id))
+                cur.execute("SAVEPOINT embedding_note")
+                try:
+                    cur.execute(f"UPDATE {c['table']} SET {c['note']}=%s WHERE {c['id']}=%s::{c['idtype']}{where}",
+                                (text,row_id))
+                    cur.execute("RELEASE SAVEPOINT embedding_note")
+                except psycopg2.Error:
+                    # Never lose the durable failure record because a source-table
+                    # note trigger/constraint rejected the optional note update.
+                    cur.execute("ROLLBACK TO SAVEPOINT embedding_note")
+                    cur.execute("RELEASE SAVEPOINT embedding_note")
+                    cur.execute("""UPDATE embedding_runtime.tasks SET
+                         processing_comment=LEFT(COALESCE(processing_comment,'') ||
+                         '; source note write failed',1000)
+                         WHERE job_key=%s AND row_id=%s""",(c["job"],row_id))
         conn.commit()
         return owned
     except Exception:
@@ -487,7 +499,8 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
     azure=azure_cfg["AZURE_OPENAI_EMBEDDING"]
     emb=profile["embedding"]
     rpm,tpm=int(emb.get("rpm",0)),int(emb.get("tpm",0))
-    if (rpm==0)!=(tpm==0):raise ValueError("Set both RPM and TPM or neither")
+    if not dry_run and (rpm<=0 or tpm<=0):
+        raise ValueError("Provide positive embedding.rpm and embedding.tpm for safe distributed throttling")
     job=identity(profile,azure,max_chunks)
     deployment=emb.get("deployment",azure["deployment"])
     quota=hashlib.sha256((azure["api_base"].lower()+":"+deployment.lower()).encode()).hexdigest()
@@ -524,7 +537,6 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
                WHERE job_key=%s AND status='FAILED'""",(job,))
         if rescan_source:
             txn("UPDATE embedding_runtime.runs SET cursor_id=NULL,discovery_done=false WHERE job_key=%s",(job,))
-        if not rpm:LOG.warning("RPM/TPM unset; shared 429 backoff enabled but no proactive quota cap")
         if threading.current_thread() is threading.main_thread():
             for sig in (signal.SIGINT,signal.SIGTERM):
                 handlers[sig]=signal.getsignal(sig)
