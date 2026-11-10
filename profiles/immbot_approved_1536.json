@@ -1,0 +1,24 @@
+{
+  "name": "immbot_approved_1536",
+  "version": 1,
+  "existing_chunks": {
+    "schema": "palm_paw",
+    "table": "doc_chunks_immbot_approved",
+    "id_column": "chunk_id",
+    "text_column": "chunk_text",
+    "vector_column": "chunk_vector",
+    "note_column": "embedding_processing_note"
+  },
+  "embedding": {
+    "enabled": true,
+    "reuse_existing": true,
+    "batch_size": 128,
+    "batch_tokens": 24000,
+    "dimensions": 1536,
+    "model": "text-embedding-3-small",
+    "max_attempts": 5,
+    "timeout_seconds": 90,
+    "lease_seconds": 300,
+    "progress_every_batches": 1
+  }
+}
