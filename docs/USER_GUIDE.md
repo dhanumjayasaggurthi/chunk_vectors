@@ -39,7 +39,9 @@ use `profiles/immbot_approved_1536.json`. This maps
 `chunk_id` (valid UNIQUE index), `chunk_text`,
 `chunk_vector vector(1536)`, and `embedding_processing_note`.
 
-The profile includes **conservative caps of 30 RPM and 750,000 TPM**.
+The profile now specifies **30 RPM and 900,000 TPM**, after an initial
+750,000-TPM pilot and later performance tuning. Eight Linux workers with
+48,000-token batches measured 677.9 successful rows/min over 10 minutes.
 The Azure gateway returned an observed 1,000,000-TPM limit header, but
 the actual RPM allocation is still unknown. Override caps only when
 coordinated across workers on the same Azure deployment.
