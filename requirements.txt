@@ -1,5 +1,5 @@
 markdown
-streamlit
+streamlit>=1.37,<2
 pymupdf
 pdfplumber
 pillow
