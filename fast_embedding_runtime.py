@@ -134,7 +134,7 @@ def validate(profile, azure, max_chunks):
                     if src.get("note_column") and columns[src["note_column"]][1]>=4 else 400,
                 idtype=idtype,dim=dimensions)
 
-def initialize(job, quota_key, rpm, tpm):
+def initialize(job, quota_key, rpm, tpm, batch_tokens):
     conn=db()
     try:
         with conn.cursor() as cur:
@@ -143,7 +143,7 @@ def initialize(job, quota_key, rpm, tpm):
             cur.execute("""INSERT INTO embedding_runtime.quota
               (deployment_key,rpm,tpm,requests,tokens,last_refill)
               VALUES(%s,%s,%s,%s,%s,now()) ON CONFLICT DO NOTHING""",
-              (quota_key,rpm,tpm,max(1,rpm/6),max(24000,tpm/6)))
+              (quota_key,rpm,tpm,max(1,rpm/6),max(batch_tokens,tpm/6)))
             cur.execute("SELECT rpm,tpm FROM embedding_runtime.quota WHERE deployment_key=%s",(quota_key,))
             if cur.fetchone()!=(rpm,tpm):
                 raise ValueError("Conflicting RPM/TPM on same deployment across processes")
@@ -530,7 +530,7 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
             where=f"WHERE {c['vec']} IS NULL" if c["reuse"] else ""
             n=txn(f"SELECT count(*) FROM {c['table']} {where}",fetch=True)[0][0]
             return dict(dry_run=True,eligible=min(n,max_chunks) if max_chunks else n)
-        initialize(job,quota,rpm,tpm)
+        initialize(job,quota,rpm,tpm,c['batch_tokens'])
         if retry_failed:
             txn("""UPDATE embedding_runtime.tasks SET status='PENDING',updated_at=now(),
                processing_comment='Explicitly requeued; prior failure reason retained'
