@@ -6,10 +6,21 @@ embedding backfill**. Normal document ingestion remains the default when
 
 ## Live embedding dashboard (Streamlit)
 
-A **read-only monitoring UI** now shows all recent jobs in your PostgreSQL
-coordination database, including pilots/full runs across Linux and Windows
-hosts, active claims, completed/failed/pending counts, progress, a recent
-rows/minute trend, error reasons/history, and configured RPM/TPM caps.
+A **read-only leadership and engineering UI** has three views:
+
+- **Executive overview:** actual distinct `doc_id` documents, fully embedded
+  documents (every chunk vector present), partially embedded/not-started
+  documents, unresolved notes, chunk coverage, and highest-backlog documents.
+- **Document explorer:** enter any indexed `doc_id` to inspect the document's
+  total/embedded/missing chunk counts, source `chunk_total` consistency,
+  individual chunk readiness and per-row processing notes.
+- **Engineering operations:** distributed job status, active worker claims,
+  failure reasons/history, recent in-browser throughput and RPM/TPM caps.
+
+Leadership coverage is computed from the **source table across all runs**,
+not from a single job's overlapping/pilot task ledger. The heavier document
+aggregation is cached for **10 minutes** and has a 60-second DB timeout.
+It reads metadata and vector NULL status, not `chunk_text` or vector values.
 
 ```bash
 # Background dashboard on port 8501:
