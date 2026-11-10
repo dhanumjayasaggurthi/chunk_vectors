@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Resumable PostgreSQL -> Azure embeddings. Safe default: 1,000-row pilot.
 # Confirmed immbot configuration lives in profiles/immbot_approved_1536.json:
-# RPM=30 (conservative/unverified limit), TPM=750000 (75% of gateway header),
-# batch_size=128, batch_tokens=24000, max_attempts=5, timeout=90, lease=300.
+# RPM=30 (conservative/unverified limit), TPM=900000 (90% of observed gateway token-limit header),
+# batch_size=128, batch_tokens=48000, max_attempts=5, timeout=90, lease=300.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
