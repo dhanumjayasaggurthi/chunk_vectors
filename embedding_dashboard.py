@@ -219,6 +219,29 @@ def render_dashboard(job_limit):
         else:
             st.info("A small throughput trend will appear after the next refresh.")
 
+    worker_claims = [
+        item for item in snapshot.get("worker_claims", [])
+        if item["job_key"] == chosen
+    ]
+    with st.expander(f"Active worker claims ({len(worker_claims)} processes)", expanded=False):
+        if worker_claims:
+            st.dataframe(
+                pd.DataFrame([{
+                    "Worker / host": item["owner"] or "Unknown",
+                    "Claimed rows": item["active_claims"],
+                    "Lease until (UTC)": item["latest_lease"],
+                } for item in worker_claims]),
+                hide_index=True,
+                use_container_width=True,
+            )
+            st.caption(
+                "Hostnames appear for workers started with the updated runtime; "
+                "older workers show their UUID. A valid claim does not guarantee "
+                "the process is healthy."
+            )
+        else:
+            st.info("No unexpired task claims right now. This does not prove the job has stopped.")
+
     st.divider()
     st.subheader("Failures")
     st.caption("Failures are per task; a failed chunk does not stop other chunks.")
