@@ -9,6 +9,23 @@ per-deployment throttle accounting, retries and per-row failure isolation.
 **Current implementation branch:** `feat/distributed-fast-embeddings`,
 draft PR #3. The existing PDF-ingestion and RAG paths are unchanged.
 
+## Monitor all jobs in Streamlit
+
+The read-only dashboard displays the status of pilots and full jobs across
+servers, active lease counts, per-job throughput samples, failure details and
+quota caps. It uses PostgreSQL; it does not read source documents, start jobs
+or consume embedding API quota. New runner starts record readable
+source-table/profile metadata; older jobs appear by hashed job key.
+
+```bash
+./venv/bin/python -m streamlit run embedding_dashboard.py \
+  --server.address 127.0.0.1 --server.port 8501
+```
+
+For remote viewing, use an SSH tunnel rather than exposing the port.
+See [EMBEDDING_DASHBOARD.md](EMBEDDING_DASHBOARD.md) for secure access,
+refresh behavior, permissions and troubleshooting.
+
 ## 1. Verified target and pilot measurements
 
 Database: `regulatory`; target:
