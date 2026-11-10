@@ -324,9 +324,13 @@ def throttle(c, tokens, stop):
                 if delay==0:
                     if rpm:r-=1
                     if tpm:t-=tokens
-                cur.execute("""UPDATE embedding_runtime.quota SET requests=%s,tokens=%s,
-                     last_refill=%s WHERE deployment_key=%s""",(r,t,now,c["quota"]))
-            conn.commit()
+                    cur.execute("""UPDATE embedding_runtime.quota SET requests=%s,tokens=%s,
+                         last_refill=%s WHERE deployment_key=%s""",(r,t,now,c["quota"]))
+                    conn.commit()
+                else:
+                    # Waiting for quota must not generate WAL or update the shared
+                    # throttle row. Refill is computed from last_refill at next claim.
+                    conn.rollback()
         except Exception:
             conn.rollback()
             raise
