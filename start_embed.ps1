@@ -1,5 +1,5 @@
 # Resumable PostgreSQL -> Azure embeddings, Windows / PowerShell.
-# Default immbot profile defines RPM=30, TPM=750000, batch=128, tokens=24000.
+# Default immbot profile defines RPM=30, TPM=900000, batch=128, tokens=48000.
 # RPM is a cautious pilot cap, NOT a verified gateway RPM entitlement.
 param(
     [string]$Profile = ".\profiles\immbot_approved_1536.json",
