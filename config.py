@@ -51,8 +51,11 @@ GCP_KEY_PATH = _get("GCP", "gcp_key_path")
 # ─────────────────────────────────────────────────────────────────────────────
 # Azure OpenAI  (re-uses azure_client.py functions directly — no duplication)
 # ─────────────────────────────────────────────────────────────────────────────
-# Embedding dimension for text-embedding-3-small
-EMBEDDING_DIM = 1536
+# Legacy fallback retained for installations that have not declared a dimension.
+# New embedding profiles can override it independently at run time.
+EMBEDDING_DIM = int(_get("AZURE_OPENAI_EMBEDDING", "dimensions", "1536"))
+if not 1 <= EMBEDDING_DIM <= 16000:
+    raise ValueError("Embedding dimensions must be between 1 and 16000")
 
 # Max tokens to send to embedding model per chunk
 # text-embedding-3-small hard limit = 8191 tokens  (~6000 words)

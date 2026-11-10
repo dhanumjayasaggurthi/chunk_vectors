@@ -16,6 +16,10 @@ import psycopg2.pool
 
 # ── Pipeline imports ──────────────────────────────────────────────────────────
 from config import DOCS_ROOT, PAGE_WORKERS, EMBEDDING_BATCH_SIZE, SOURCE_TYPE, ENABLE_EMBEDDINGS
+from processing_profile import load_profile
+from profile_store import init_profile_store, profile_is_current, save_profile_result, profile_document_lock
+from metadata_extractor import attach_metadata
+from configurable_chunking import chunk_with_profile
 from logger import get_logger, DocLogger, RunSummary
 from crawler import Crawler, CrawlResult
 from pdf_processor import process_pdf, DocumentStructure, PageContent, ElementType
@@ -75,14 +79,15 @@ def _make_crawler(
     root:           Optional[Path],
     force_reingest: bool,
     max_files:      Optional[int],
+    profile_hash:    Optional[str] = None,
 ) -> Crawler:
     if source_type == "s3":
         from s3_crawler import S3Crawler
         logger.info("Source: Amazon S3")
-        return S3Crawler(force_reingest=force_reingest, max_files=max_files)
+        return S3Crawler(force_reingest=force_reingest, max_files=max_files, profile_hash=profile_hash)
     else:
         logger.info(f"Source: NAS/local  ({root or DOCS_ROOT})")
-        return Crawler(root=root, force_reingest=force_reingest, max_files=max_files)
+        return Crawler(root=root, force_reingest=force_reingest, max_files=max_files, profile_hash=profile_hash)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -272,10 +277,13 @@ def _extract_tables_for_page_guarded(
     return results
 
 
-def _embed_chunks_guarded(chunks: list, log_every_n: int = 20) -> list:
+def _embed_chunks_guarded(chunks: list, log_every_n: int = 20, batch_size: int = None) -> list:
     """Embedding with semaphore so concurrent doc threads don't flood the API."""
     with _SEM_EMBED:
-        return embed_chunks(chunks, log_every_n=log_every_n)
+        kwargs = {"log_every_n": log_every_n}
+        if batch_size is not None:
+            kwargs["batch_size"] = batch_size
+        return embed_chunks(chunks, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -286,6 +294,7 @@ def process_document(
     crawl_result:      CrawlResult,
     workers:           int  = PAGE_WORKERS,
     enable_embeddings: bool = True,
+    profile:          Optional[dict] = None,
 ) -> dict:
     """
     Full pipeline for one document. Thread-safe — can run concurrently with
@@ -312,10 +321,15 @@ def process_document(
 
     try:
         # ── 1. Delete stale chunks if re-ingesting ───────────────────────────
-        existing = get_ingestion_record(file_path)
-        if existing and existing["status"] == "SUCCESS":
-            dlog.info("Modified doc — deleting existing chunks")
-            delete_chunks_for_doc(doc_id)
+        if profile:
+            if not profile.get("_force") and profile_is_current(doc_id, crawl_result.file_hash, profile["_fingerprint"]):
+                dlog.info("Profile output already current — skipped")
+                return {"status": "SKIPPED", "chunks": 0, "pages": 0, "elapsed": 0, "error": ""}
+        else:
+            existing = get_ingestion_record(file_path)
+            if existing and existing["status"] == "SUCCESS":
+                dlog.info("Modified doc — deleting existing chunks")
+                delete_chunks_for_doc(doc_id)
 
         # ── 2. PDF layout analysis ───────────────────────────────────────────
         dlog.info("Step 1/5: PDF layout analysis")
@@ -402,7 +416,11 @@ def process_document(
 
         # ── 5. Chunking ──────────────────────────────────────────────────────
         dlog.info("Step 3/5: Chunking")
-        chunks = chunk_document(struct)
+        chunks = (
+            chunk_with_profile(struct, profile["chunking"])
+            if profile and profile["chunking"]["strategy"] != "legacy"
+            else chunk_document(struct)
+        )
         if not chunks:
             raise RuntimeError("No chunks produced — document may be empty or corrupt")
 
@@ -411,10 +429,15 @@ def process_document(
             f"Levels: {set(c.chunk_level for c in chunks)}"
         )
 
+        if profile:
+            attach_metadata(struct, chunks, profile["metadata"])
         # ── 6. Embedding  (embedding semaphore) ─────────────────────────────
         if enable_embeddings:
             dlog.info("Step 4/5: Embedding")
-            chunks = _embed_chunks_guarded(chunks, log_every_n=10)
+            chunks = _embed_chunks_guarded(
+                chunks, log_every_n=10,
+                batch_size=profile["embedding"]["batch_size"] if profile else None,
+            )
 
             stats = embedding_stats(chunks)
             dlog.info(
@@ -431,19 +454,21 @@ def process_document(
 
         # ── 7. DB write ──────────────────────────────────────────────────────
         dlog.info("Step 5/5: Saving to database")
-        chunk_dicts = [c.to_db_dict() for c in chunks]
-        insert_chunks_batch(chunk_dicts)
-
-        upsert_ingestion_log(
-            file_path=file_path,
-            file_name=file_name,
-            file_hash=crawl_result.file_hash,
-            file_size=crawl_result.file_size,
-            last_modified=crawl_result.last_modified,
-            status="SUCCESS",
-            chunk_count=len(chunks),
-            pages_total=struct.page_count,
-        )
+        if profile:
+            save_profile_result(doc_id, crawl_result.file_hash, profile["_fingerprint"], chunks)
+        else:
+            chunk_dicts = [c.to_db_dict() for c in chunks]
+            insert_chunks_batch(chunk_dicts)
+            upsert_ingestion_log(
+                file_path=file_path,
+                file_name=file_name,
+                file_hash=crawl_result.file_hash,
+                file_size=crawl_result.file_size,
+                last_modified=crawl_result.last_modified,
+                status="SUCCESS",
+                chunk_count=len(chunks),
+                pages_total=struct.page_count,
+            )
 
         elapsed = time.time() - t_start
         dlog.info(
@@ -463,16 +488,17 @@ def process_document(
         error_msg = str(e)
         dlog.error(f"❌ FAILED: {error_msg}", exc_info=True)
         try:
-            upsert_ingestion_log(
-                file_path=file_path,
+            if not profile:
+                upsert_ingestion_log(
+                    file_path=file_path,
                 file_name=file_name,
                 file_hash=crawl_result.file_hash,
                 file_size=crawl_result.file_size,
                 last_modified=crawl_result.last_modified,
                 status="ERROR",
                 error_message=error_msg[:2000],
-                increment_retry=True,
-            )
+                    increment_retry=True,
+                )
         except Exception as db_e:
             dlog.error(f"Could not write ERROR to DB: {db_e}")
         return {
@@ -497,7 +523,8 @@ def _process_doc_thread(args: tuple) -> tuple[str, dict]:
       - Each thread uses its own boto3 client (thread-local in s3_crawler).
       - The crawl phase stays fast (list-only, no downloads).
     """
-    crawl_result, workers, enable_embeddings = args
+    crawl_result, workers, enable_embeddings, *optional_profile = args
+    profile = optional_profile[0] if optional_profile else None
     downloaded_temp = None   # temp file we created in this thread (S3 only)
 
     try:
@@ -511,6 +538,8 @@ def _process_doc_thread(args: tuple) -> tuple[str, dict]:
             if downloaded_temp is None:
                 # Mark failed in DB so the retry counter advances
                 try:
+                    if profile:
+                        raise RuntimeError("Profile download failure; legacy log preserved")
                     upsert_ingestion_log(
                         file_path=crawl_result.file_path,
                         file_name=crawl_result.file_name,
@@ -529,11 +558,17 @@ def _process_doc_thread(args: tuple) -> tuple[str, dict]:
                 }
             crawl_result.local_path = downloaded_temp
 
-        result = process_document(
-            crawl_result,
-            workers=workers,
-            enable_embeddings=enable_embeddings,
-        )
+        if profile:
+            with profile_document_lock(crawl_result.doc_id, profile["_fingerprint"]) as acquired:
+                if acquired:
+                    result = process_document(crawl_result, workers=workers,
+                                              enable_embeddings=enable_embeddings, profile=profile)
+                else:
+                    result = {"status": "SKIPPED", "chunks": 0, "pages": 0,
+                              "elapsed": 0, "error": "already_processing_profile"}
+        else:
+            result = process_document(crawl_result, workers=workers,
+                                      enable_embeddings=enable_embeddings)
     except Exception as e:
         result = {
             "status":  "ERROR",
@@ -545,6 +580,9 @@ def _process_doc_thread(args: tuple) -> tuple[str, dict]:
     finally:
         # Delete the S3 temp file (either pre-existing local_path or one we just downloaded)
         lp = downloaded_temp or crawl_result.local_path
+        if lp:
+            with _pdfplumber_locks_guard:
+                _pdfplumber_locks.pop(lp, None)
         if lp and os.path.exists(lp):
             try:
                 os.unlink(lp)
@@ -608,6 +646,159 @@ def _build_queue(
     return queue_list
 
 
+def _run_extracted_profile(
+    profile: dict, dry_run: bool, max_docs: Optional[int], doc_workers: int,
+    enable_embeddings: bool,
+) -> RunSummary:
+    """Rechunk existing DB content without PDF/OCR work, in bounded batches."""
+    from extracted_source import iter_document_ids, load_extracted_document
+    if doc_workers < 1:
+        raise ValueError("doc_workers must be positive")
+    results = RunSummary(max_rows=1000)
+    if not dry_run:
+        init_profile_store()
+    progress = ProgressTracker(total=None, report_every=50)
+
+    def process(document_key):
+        start = time.time()
+        try:
+            struct, source_hash = load_extracted_document(profile, document_key)
+            with profile_document_lock(struct.doc_id, profile["_fingerprint"]) as acquired:
+                if not acquired:
+                    return struct.file_name, {"status": "SKIPPED", "error": "profile_busy"}
+                if profile_is_current(struct.doc_id, source_hash, profile["_fingerprint"]) and not profile.get("_force"):
+                    return struct.file_name, {"status": "SKIPPED", "error": "profile_current"}
+                chunks = (chunk_with_profile(struct, profile["chunking"])
+                          if profile["chunking"]["strategy"] != "legacy" else chunk_document(struct))
+                if not chunks:
+                    raise ValueError("No valid chunks generated")
+                attach_metadata(struct, chunks, profile["metadata"])
+                if enable_embeddings:
+                    chunks = _embed_chunks_guarded(
+                        chunks, batch_size=profile["embedding"]["batch_size"]
+                    )
+                    if embedding_stats(chunks)["with_vector"] != len(chunks):
+                        raise RuntimeError("Incomplete embeddings; previous profile output preserved")
+                save_profile_result(struct.doc_id, source_hash, profile["_fingerprint"], chunks)
+            return struct.file_name, {
+                "status": "SUCCESS", "chunks": len(chunks), "pages": struct.page_count,
+                "elapsed": time.time() - start,
+            }
+        except Exception as exc:
+            logger.exception("Existing-content processing failed for %s", document_key)
+            return str(document_key), {
+                "status": "ERROR", "error": str(exc), "chunks": 0,
+                "pages": 0, "elapsed": time.time() - start,
+            }
+
+    if dry_run:
+        for document_key in iter_document_ids(profile, max_docs=max_docs):
+            results.add("WOULD_PROCESS", str(document_key))
+        results.print()
+        return results
+
+    pending = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=doc_workers) as pool:
+        def finish(done):
+            for future in done:
+                doc_key = pending.pop(future)
+                try:
+                    name, result = future.result()
+                except Exception as exc:
+                    name, result = str(doc_key), {"status": "ERROR", "error": str(exc)}
+                results.add(result["status"], name, error=result.get("error"),
+                            chunks=result.get("chunks", 0),
+                            pages=result.get("pages", 0),
+                            elapsed=result.get("elapsed", 0))
+                if result["status"] != "SKIPPED":
+                    progress.record(result["status"])
+
+        for document_key in iter_document_ids(profile, max_docs=max_docs):
+            if _shutdown_requested:
+                break
+            future = pool.submit(process, document_key)
+            pending[future] = document_key
+            if len(pending) >= max(2, doc_workers * 2):
+                finished, _ = concurrent.futures.wait(
+                    pending, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                finish(finished)
+        while pending:
+            finished, _ = concurrent.futures.wait(
+                pending, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            finish(finished)
+    progress.final()
+    results.print()
+    return results
+
+
+def _run_profile_streamed(
+    crawler, dry_run: bool, summary: RunSummary, workers: int, doc_workers: int,
+    enable_embeddings: bool, profile: dict,
+) -> RunSummary:
+    """Process large archives with bounded memory; legacy runner remains unchanged."""
+    if doc_workers < 1 or workers < 1:
+        raise ValueError("Worker counts must be positive")
+    progress = ProgressTracker(total=None, report_every=50)
+    max_in_flight = max(2, doc_workers * 2)
+    submitted = 0
+
+    def record(completed):
+        for future in completed:
+            cr = pending.pop(future)
+            try:
+                _, result = future.result()
+            except Exception as exc:
+                result = {"status": "ERROR", "chunks": 0, "pages": 0,
+                          "elapsed": 0.0, "error": str(exc)}
+            summary.add(status=result["status"], file_name=cr.file_name,
+                        chunks=result.get("chunks", 0), pages=result.get("pages", 0),
+                        elapsed=result.get("elapsed", 0), error=result.get("error"))
+            if result["status"] != "SKIPPED":
+                progress.record(result["status"])
+
+    if dry_run:
+        for cr in crawler.crawl():
+            if _shutdown_requested:
+                break
+            summary.add("WOULD_PROCESS" if cr.should_process else "SKIPPED",
+                        cr.file_name, error=cr.error or cr.skip_reason)
+        summary.print()
+        return summary
+
+    pending = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=doc_workers) as pool:
+        for cr in crawler.crawl():
+            if _shutdown_requested:
+                break
+            if cr.error:
+                summary.add("ERROR", cr.file_name, error=cr.error)
+                continue
+            if not cr.should_process:
+                summary.add("SKIPPED", cr.file_name, error=cr.skip_reason)
+                continue
+            future = pool.submit(_process_doc_thread, (cr, workers, enable_embeddings, profile))
+            pending[future] = cr
+            submitted += 1
+            if len(pending) >= max_in_flight:
+                finished, _ = concurrent.futures.wait(
+                    pending, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                record(finished)
+        while pending:
+            finished, _ = concurrent.futures.wait(
+                pending, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            record(finished)
+    logger.info("Profile workers finished: submitted=%s profile=%s", submitted,
+                profile["_fingerprint"][:12])
+    progress.final()
+    summary.print()
+    return summary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 # Main orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
@@ -623,6 +814,7 @@ def run_pipeline(
     retry_errors:      bool           = False,
     source_type:       str            = None,     # "nas" | "s3" (default: from config)
     enable_embeddings: bool           = None,     # True/False (default: from config)
+    profile:           Optional[dict] = None,
 ) -> RunSummary:
     """
     Main pipeline runner.
@@ -650,13 +842,15 @@ def run_pipeline(
     doc_workers=16, workers=1   → 16 Vision threads  (max docs, serial OCR)
     """
     global summary
-    summary = RunSummary()
+    summary = RunSummary(max_rows=1000 if profile else None)
 
     # Apply config defaults for optional params
     if source_type is None:
         source_type = SOURCE_TYPE
     if enable_embeddings is None:
-        enable_embeddings = ENABLE_EMBEDDINGS
+        enable_embeddings = profile["embedding"]["enabled"] if profile else ENABLE_EMBEDDINGS
+    if profile:
+        profile = {**profile, "_force": force_reingest}
 
     # ── Warn if Vision concurrency is high ───────────────────────────────────
     total_vision = doc_workers * workers
@@ -692,7 +886,12 @@ def run_pipeline(
     # Must run even in dry-run mode because the crawler queries the DB
     # to decide what to skip (get_ingestion_record calls happen during crawl).
     logger.info("Initialising database schema…")
-    init_db()
+    if not dry_run:
+        init_db()
+        if profile:
+            init_profile_store()
+    else:
+        logger.info("Dry run: no database migrations or ingestion-state writes")
 
     # ── Connection pool + crash recovery — skip in dry-run ───────────────────
     if not dry_run:
@@ -703,7 +902,7 @@ def run_pipeline(
     # ── Single-file mode ─────────────────────────────────────────────────────
     if single_file:
         return _run_single_file(
-            single_file, dry_run, force_reingest, workers, enable_embeddings
+            single_file, dry_run, force_reingest, workers, enable_embeddings, profile
         )
 
     # ── Crawler ──────────────────────────────────────────────────────────────
@@ -712,7 +911,14 @@ def run_pipeline(
         root=root,
         force_reingest=force_reingest or retry_errors,
         max_files=max_files,
+        profile_hash=profile["_fingerprint"] if profile else None,
     )
+
+    if profile:
+        if retry_errors:
+            raise ValueError("--retry-errors is legacy-only; profile outputs retry automatically")
+        return _run_profile_streamed(crawler, dry_run, summary, workers,
+                                     doc_workers, enable_embeddings, profile)
 
     # If retrying errors only, override crawler to only return ERROR docs
     if retry_errors and not dry_run:
@@ -870,6 +1076,7 @@ def _run_single_file(
     force_reingest:    bool,
     workers:           int,
     enable_embeddings: bool = True,
+    profile: Optional[dict] = None,
 ) -> RunSummary:
     import datetime
 
@@ -894,7 +1101,7 @@ def _run_single_file(
             summary.print()
             return summary
         path_str  = file_path
-        file_hash = ""   # no local hash for S3 single-file mode
+        file_hash = hash_file_bytes(local_path) if profile else ""
         file_size = os.path.getsize(local_path)
         mtime     = datetime.datetime.now(tz=datetime.timezone.utc)
     else:
@@ -918,18 +1125,23 @@ def _run_single_file(
 
     doc_id = hash_file_path(path_str)
 
-    if not force_reingest and not is_s3:
-        process, reason = should_ingest(path_str, file_hash)
-        if not process:
-            logger.info(f"Skipping {file_name}: {reason}")
-            summary.add("SKIPPED", file_name, error=reason)
+    if profile:
+        if profile_is_current(doc_id, file_hash, profile["_fingerprint"]) and not force_reingest:
+            summary.add("SKIPPED", file_name, error="profile_current")
             summary.print()
             return summary
-
-    upsert_ingestion_log(
-        file_path=path_str, file_name=file_name, file_hash=file_hash,
-        file_size=file_size, last_modified=mtime, status="RUNNING",
-    )
+    else:
+        if not force_reingest and not is_s3:
+            process, reason = should_ingest(path_str, file_hash)
+            if not process:
+                logger.info(f"Skipping {file_name}: {reason}")
+                summary.add("SKIPPED", file_name, error=reason)
+                summary.print()
+                return summary
+        upsert_ingestion_log(
+            file_path=path_str, file_name=file_name, file_hash=file_hash,
+            file_size=file_size, last_modified=mtime, status="RUNNING",
+        )
 
     cr = CrawlResult(
         file_path=path_str, file_name=file_name, doc_id=doc_id,
@@ -938,7 +1150,12 @@ def _run_single_file(
     )
 
     try:
-        result = process_document(cr, workers=workers, enable_embeddings=enable_embeddings)
+        if profile:
+            with profile_document_lock(doc_id, profile["_fingerprint"]) as acquired:
+                result = (process_document(cr, workers=workers, enable_embeddings=enable_embeddings, profile=profile)
+                          if acquired else {"status":"SKIPPED", "chunks":0, "pages":0, "elapsed":0, "error":"already_processing_profile"})
+        else:
+            result = process_document(cr, workers=workers, enable_embeddings=enable_embeddings)
     finally:
         if local_path and os.path.exists(local_path):
             try:
@@ -1007,6 +1224,13 @@ Examples:
   python main.py --stats
         """,
     )
+    ap.add_argument("--profile", type=str, help="Optional JSON processing profile")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="Override an allowed profile setting; repeatable")
+    ap.add_argument("--embed-existing", action="store_true",
+                    help="Embed mapped existing PostgreSQL chunks without PDF extraction")
+    ap.add_argument("--rechunk-extracted", action="store_true",
+                    help="Create profile chunks from mapped extracted-content table without PDF/OCR")
     ap.add_argument("--root",         type=str,  help="Override DOCS_ROOT from config (NAS mode)")
     ap.add_argument("--file",         type=str,  help="Process a single file (local path or s3://bucket/key)")
     ap.add_argument("--dry-run",      action="store_true", help="Preview only, no DB writes")
@@ -1047,6 +1271,24 @@ Examples:
 if __name__ == "__main__":
     args = _parse_args()
 
+    if args.rechunk_extracted:
+        if not args.profile:
+            raise SystemExit("--rechunk-extracted requires --profile")
+        profile = load_profile(
+            args.profile, args.set + (["embedding.enabled=false"] if args.no_embed else [])
+        )
+        _run_extracted_profile(profile, args.dry_run, args.max_files, args.doc_workers,
+                               profile["embedding"]["enabled"])
+        sys.exit(0)
+
+    if args.embed_existing:
+        if not args.profile:
+            raise SystemExit("--embed-existing requires --profile")
+        from existing_embeddings import embed_existing
+        profile = load_profile(args.profile, args.set)
+        print(embed_existing(profile, dry_run=args.dry_run, max_chunks=args.max_files))
+        sys.exit(0)
+
     if args.stats:
         init_db()
         _print_db_stats()
@@ -1069,4 +1311,7 @@ if __name__ == "__main__":
         retry_errors      = args.retry_errors,
         source_type       = args.source,           # None → use config.ini value
         enable_embeddings = not args.no_embed if args.no_embed else None,
+        profile = load_profile(
+            args.profile, args.set + (["embedding.enabled=false"] if args.no_embed and args.profile else [])
+        ),
     )

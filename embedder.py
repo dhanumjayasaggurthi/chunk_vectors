@@ -102,7 +102,10 @@ def _extract_retry_after(error_str: str) -> Optional[float]:
 # Core embedding call with retry
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _embed_batch(texts: list[str]) -> Optional[list[list[float]]]:
+def _embed_batch(
+    texts: list[str], *, dimensions: int | None = None,
+    deployment: str | None = None, model: str | None = None,
+) -> Optional[list[list[float]]]:
     """
     Call get_embeddings() for a batch of texts.
     Returns list of vectors on success, None on permanent failure.
@@ -113,19 +116,23 @@ def _embed_batch(texts: list[str]) -> Optional[list[list[float]]]:
       - On 429: honour Retry-After header if present
     """
     from azure_client import get_embeddings
+    expected_dimensions = dimensions if dimensions is not None else EMBEDDING_DIM
 
     last_error = ""
     for attempt in range(1, API_MAX_RETRIES + 1):
         try:
-            vectors = get_embeddings(texts)
+            if dimensions is None and deployment is None and model is None:
+                vectors = get_embeddings(texts)
+            else:
+                vectors = get_embeddings(texts, dimensions=dimensions, deployment=deployment, model=model)
 
             # Validate response shape
             if not vectors or len(vectors) != len(texts):
                 raise ValueError(
                     f"Expected {len(texts)} vectors, got {len(vectors) if vectors else 0}"
                 )
-            if any(len(v) != EMBEDDING_DIM for v in vectors):
-                bad = [i for i, v in enumerate(vectors) if len(v) != EMBEDDING_DIM]
+            if any(len(v) != expected_dimensions for v in vectors):
+                bad = [i for i, v in enumerate(vectors) if len(v) != expected_dimensions]
                 raise ValueError(f"Wrong vector dim at indices {bad}")
 
             return vectors

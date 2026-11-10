@@ -1,0 +1,50 @@
+{
+  "name": "regulatory_v1",
+  "version": 1,
+  "chunking": {
+    "strategy": "toc_then_semantic",
+    "min_tokens": 200,
+    "max_tokens": 800,
+    "overlap_tokens": 100,
+    "preserve_headers": true,
+    "tokenizer": "cl100k_base",
+    "small_section_policy": "merge_forward"
+  },
+  "metadata": {
+    "inherit_document_fields": true,
+    "document": {
+      "indication": {
+        "method": "label",
+        "label": "Indication",
+        "first_pages": 3
+      },
+      "application_type": {
+        "method": "regex",
+        "pattern": "\\b(NDA|BLA|IND)\\b",
+        "first_pages": 3
+      },
+      "application_number": {
+        "method": "regex",
+        "pattern": "(?i)Application\\s+(?:Number|No\\.?):?\\s*([A-Z0-9-]+)",
+        "first_pages": 3
+      },
+      "protocol_number": {
+        "method": "regex",
+        "pattern": "(?i)Protocol\\s+(?:Number|No\\.?):?\\s*([A-Z0-9-]+)",
+        "first_pages": 3
+      }
+    },
+    "chunk": {
+      "application_number": {
+        "method": "regex",
+        "pattern": "(?i)Application\\s+(?:Number|No\\.?):?\\s*([A-Z0-9-]+)"
+      }
+    }
+  },
+  "embedding": {
+    "enabled": true,
+    "reuse_existing": true,
+    "batch_size": 16
+  },
+  "output": {}
+}

@@ -8,3 +8,4 @@ psycopg2-binary
 pgvector
 openai
 boto3
+tiktoken>=0.7,<1

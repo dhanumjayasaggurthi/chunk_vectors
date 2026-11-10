@@ -322,18 +322,32 @@ def transcribe_audio(
 #     Section: AZURE_OPENAI_EMBEDDING  (singular)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_embeddings(texts: List[str]) -> List[List[float]]:
-    """
-    POST embeddings for a list of strings.
-    Returns list of float vectors (1536-dim for text-embedding-3-small).
+def get_embeddings(
+    texts: List[str], *,
+    dimensions: Optional[int] = None,
+    deployment: Optional[str] = None,
+    model: Optional[str] = None,
+) -> List[List[float]]:
+    """POST a batch to the configured Azure embedding deployment.
+
+    Optional per-run overrides apply only to this call; they never change the
+    global config or affect concurrent workloads using other profiles.
     """
     c = _load("AZURE_OPENAI_EMBEDDING")
+    selected_deployment = deployment or c["deployment"]
     payload = {
-        "model": c.get("model", c["deployment"]),
+        "model": model or c.get("model", selected_deployment),
         "input": texts,
     }
+    selected_dimensions = dimensions
+    if selected_dimensions is None and c.get("dimensions"):
+        selected_dimensions = int(c["dimensions"])
+    if selected_dimensions is not None:
+        if type(selected_dimensions) is not int or not 1 <= selected_dimensions <= 16000:
+            raise ValueError("Invalid requested embedding dimensions")
+        payload["dimensions"] = selected_dimensions
     resp = requests.post(
-        _url(c["api_base"], c["deployment"], "embeddings", c["api_version"]),
+        _url(c["api_base"], selected_deployment, "embeddings", c["api_version"]),
         headers=_json_headers(c["api_key"]),
         json=payload,
         timeout=60,

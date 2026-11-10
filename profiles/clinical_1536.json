@@ -1,0 +1,20 @@
+{
+  "name": "clinical_small",
+  "version": 1,
+  "existing_chunks": {
+    "schema": "palm_paw",
+    "table": "palm_pah_jnj_search_results_doc_chunks_clinical",
+    "id_column": "doc_id",
+    "text_column": "chunk_text",
+    "vector_column": "chunk_vector",
+    "note_column": "embedding_processing_note"
+  },
+  "embedding": {
+    "enabled": true,
+    "reuse_existing": true,
+    "batch_size": 16,
+    "progress_every_batches": 1,
+    "dimensions": 1536,
+    "model": "text-embedding-3-small"
+  }
+}
