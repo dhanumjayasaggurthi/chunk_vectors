@@ -8,6 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BACK_DIR="${BACK_DIR:-$SCRIPT_DIR}"
 PROFILE="${EMBED_PROFILE:-$BACK_DIR/profiles/immbot_approved_1536.json}"
+# Relative profile paths are always resolved from this checkout.
+if [[ "$PROFILE" != /* ]]; then PROFILE="$BACK_DIR/$PROFILE"; fi
 WORKERS="${EMBED_WORKERS:-4}"
 MODE="${EMBED_MODE:-pilot}"  # pilot | full | dry-run
 PIDFILE="${EMBED_PIDFILE:-$BACK_DIR/embed.pid}"
@@ -45,7 +47,7 @@ for pair in \
   profile_key="${pair#*:}"
   value="${!env_key:-}"
   if [[ -n "$value" ]]; then
-    if [[ ! "$value" =~ ^[0-9]+$ ]] || (( value < 1 )); then
+    if [[ ! "$value" =~ ^[0-9]+$ ]] || (( 10#$value < 1 )); then
       echo "$env_key must be a positive integer" >&2; exit 2
     fi
     ARGS+=(--set "$profile_key=$value")
