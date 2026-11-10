@@ -105,6 +105,33 @@ after initialization, coordinate a maintenance window for all workers
 and update the configured quota consistently. Do not simply launch
 concurrent workers with different limits.
 
+## Current full-run settings (after performance tuning)
+
+The pilot measurements above are historical. After running the Linux
+backfill, the shared quota was raised from **750,000 to 900,000 TPM**
+with RPM unchanged at **30**, adaptive multiplier `1.0`, and no
+cooldown at the observed snapshot. Eight workers with 48,000-token
+batches achieved **677.9 successful rows/min** in one 10-minute window.
+This is a measured observation, not a 12-hour SLA.
+
+The latest immbot profile defaults now match the 900,000-TPM database
+quota and 48,000-token batch setting. Keep `EMBED_WORKERS=8` explicit
+for this tuned full run. A process launched using the old 750,000-TPM
+profile will fail startup if the shared database quota has already been
+changed to 900,000 TPM; use CLI overrides or pull the updated profile
+before restarting. Never reinitialize the quota table to change caps.
+
+```bash
+# After stopping the original Linux worker and verifying it has exited:
+EMBED_MODE=full EMBED_CONFIRM_FULL=YES EMBED_WORKERS=8 \
+EMBED_RPM=30 EMBED_TPM=900000 EMBED_BATCH_TOKENS=48000 \
+bash start_embed.sh
+```
+
+The changed throttle and batch size do not change the job identity,
+so the same full-run ledger is resumed. Do not enable failure retries
+or source rescan as part of a normal restart.
+
 ## 3. Prerequisites
 
 - PostgreSQL with pgvector and enough WAL/disk space for the vector writes,
@@ -186,9 +213,9 @@ maintain a second independent quota configuration.
 | Profile property | Current value | Meaning |
 | --- | ---: | --- |
 | `embedding.rpm` | 30 | Conservative deployment-wide requests/min |
-| `embedding.tpm` | 750000 | Conservative deployment-wide tokens/min |
+| `embedding.tpm` | 900000 | Tuned shared deployment cap; below 1M gateway header |
 | `embedding.batch_size` | 128 | Maximum inputs/request |
-| `embedding.batch_tokens` | 24000 | Input token cap across the request |
+| `embedding.batch_tokens` | 48000 | Tuned input token cap across the request |
 | `embedding.max_attempts` | 5 | Maximum HTTP attempts per batch |
 | `embedding.timeout_seconds` | 90 | API read timeout |
 | `embedding.lease_seconds` | 300 | Database claim lease |
@@ -312,8 +339,8 @@ Long inputs need a reviewed chunk-splitting or aggregate-embedding design.
 ## 8. Why this can be slow, and what to measure
 
 - Each 128-ID claim is batched and committed as a short transaction.
-- A token budget of 24,000 with ~990 tokens per chunk yields **about 24
-  inputs per full request**, rather than 128.
+- A token budget of 48,000 with ~990 tokens per chunk yields **about 48
+  inputs per full request**, rather than 128; this is an approximation.
 - There are at least two task-ledger status changes per processed row
   (claim and completion), plus necessary vector writes, discovery and
   quota reservations. The ledger can generate significant WAL at million-row
