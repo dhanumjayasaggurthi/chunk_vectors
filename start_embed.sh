@@ -93,7 +93,8 @@ fi
 
 echo "Starting $MODE embeddings: profile=$PROFILE workers=$WORKERS"
 echo "Quota/batch defaults come from profile; explicit EMBED_* overrides take precedence."
-nohup "$PY" -u main.py "${ARGS[@]}" > "$LOGFILE" 2>&1 < /dev/null &
+printf '\n----- %s mode=%s profile=%s workers=%s -----\n' "$(date -Is)" "$MODE" "$PROFILE" "$WORKERS" >> "$LOGFILE"
+nohup "$PY" -u main.py "${ARGS[@]}" >> "$LOGFILE" 2>&1 < /dev/null &
 echo "$!" > "$PIDFILE"
 echo "Started PID $(cat "$PIDFILE"); monitor: tail -f '$LOGFILE'"
 if [[ "$MODE" == "full" ]]; then
