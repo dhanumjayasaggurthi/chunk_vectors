@@ -12,6 +12,11 @@ hosts, active claims, completed/failed/pending counts, progress, a recent
 rows/minute trend, error reasons/history, and configured RPM/TPM caps.
 
 ```bash
+# Background dashboard on port 8501:
+bash start_dashboard.sh
+tail -f dashboard.log
+
+# Alternatively, run interactively:
 ./venv/bin/python -m streamlit run embedding_dashboard.py \
   --server.address 127.0.0.1 --server.port 8501
 ```
