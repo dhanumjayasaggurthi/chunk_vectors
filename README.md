@@ -98,6 +98,18 @@ Do **not** change deployment RPM/TPM on a live shared quota ledger: the engine
 persists them in PostgreSQL and rejects inconsistent process settings.
 Coordinate configuration changes when workers are stopped.
 
+### Logs and progress
+
+Linux `start_embed.sh` detaches the process with `nohup`. Check it
+using `ps -fp "$(cat embed.pid)"`; watch output with
+`tail -f embedlogs.log`. The centralized logger also writes
+`logs/epod_pipeline.log`. New process starts print an
+`embedding_started` record containing `job_key`, then one
+`embedding_progress` record every **60 seconds** and a final summary.
+These log enhancements do not affect an already-running worker; consult
+the PostgreSQL `embedding_runtime.runs` (created_at) and
+`embedding_runtime.tasks` (updated_at) tables immediately.
+
 ### Failures, recovery and progress
 
 A bad row does not stop healthy rows. Failure reasons are stored in
