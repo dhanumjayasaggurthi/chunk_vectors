@@ -13,7 +13,7 @@
     "enabled": true,
     "reuse_existing": true,
     "batch_size": 128,
-    "batch_tokens": 24000,
+    "batch_tokens": 48000,
     "dimensions": 1536,
     "model": "text-embedding-3-small",
     "max_attempts": 5,
@@ -21,6 +21,6 @@
     "lease_seconds": 300,
     "progress_every_batches": 1,
     "rpm": 30,
-    "tpm": 750000
+    "tpm": 900000
   }
 }
