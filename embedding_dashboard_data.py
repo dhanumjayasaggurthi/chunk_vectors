@@ -111,8 +111,10 @@ def fetch_overview(job_limit=MAX_JOBS):
             ORDER BY r.created_at DESC
             LIMIT %s
         """, (job_limit,))
+        database = _rows(conn, "SELECT current_database() AS name")[0]["name"]
         keys = [j["job_key"] for j in jobs]
         snapshot = {
+            "database": database,
             "at": datetime.now(timezone.utc),
             "jobs": jobs,
             "counts": {},
