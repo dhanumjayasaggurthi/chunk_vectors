@@ -203,6 +203,50 @@ EMBED_MODE=full EMBED_CONFIRM_FULL=YES EMBED_WORKERS=4 ./start_embed.sh
 
 ## 7. Progress, failure history, retry and restart
 
+**Linux background process and logs.** `start_embed.sh` launches the worker
+with `nohup`, so it generally survives closing an SSH terminal; terminal
+`tail -f` can be stopped with Ctrl+C without stopping embeddings. On
+Linux, `embed.pid` holds the process ID and `embedlogs.log` receives
+stdout/stderr. The central logger also writes `logs/epod_pipeline.log`
+and warning/error records to `logs/epod_pipeline.jsonl`.
+
+```bash
+ps -fp "$(cat embed.pid)"
+tail -f embedlogs.log
+tail -f logs/epod_pipeline.log
+```
+
+**Progress logs added after the first 10k Linux pilot was started**:
+newly started workers log `embedding_started` with the `job_key`,
+profile target, worker count and quota, then one read-only
+`embedding_progress` snapshot every 60 seconds, and
+`embedding_finished` when complete. Progress includes queued/running,
+successful/failed/skipped counts and recent successful rows/minute.
+These messages are emitted to both the console and the configured file
+logger. An already-running Python process does not gain these changes
+automatically; do not restart an active backfill merely to update logging.
+
+Query the persistent job ledger to distinguish the existing 1,000-row
+pilot, 10,000-row Linux pilot and full run. `runs.created_at`
+indicates the original job creation; `tasks.updated_at` indicates
+the last task change. A resumed run reuses its original `job_key`
+and `created_at`, so look at task activity too.
+
+```sql
+SELECT r.job_key, r.created_at, r.discovery_done,
+       MAX(t.updated_at) AS last_task_update,
+       COUNT(t.row_id) AS task_count,
+       COUNT(*) FILTER (WHERE t.status='PENDING') AS pending,
+       COUNT(*) FILTER (WHERE t.status='RUNNING') AS running,
+       COUNT(*) FILTER (WHERE t.status='SUCCESS') AS success,
+       COUNT(*) FILTER (WHERE t.status='FAILED') AS failed,
+       COUNT(*) FILTER (WHERE t.status='SKIPPED') AS skipped
+FROM embedding_runtime.runs r
+LEFT JOIN embedding_runtime.tasks t ON t.job_key=r.job_key
+GROUP BY r.job_key,r.created_at,r.discovery_done
+ORDER BY r.created_at DESC;
+```
+
 ```sql
 -- Use job_key to distinguish the 1,000-row pilot from the full job.
 SELECT job_key, status, COUNT(*) AS tasks
