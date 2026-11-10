@@ -119,6 +119,7 @@ def fetch_overview(job_limit=MAX_JOBS):
             "jobs": jobs,
             "counts": {},
             "active": {},
+            "worker_claims": [],
             "quotas": [],
         }
         if not keys:
@@ -136,13 +137,21 @@ def fetch_overview(job_limit=MAX_JOBS):
         snapshot["counts"] = dict(grouped)
 
         claims = _rows(conn, """
-            SELECT job_key, count(*)::bigint AS active_claims,
+            SELECT job_key, owner, count(*)::bigint AS active_claims,
                    max(lease_until) AS latest_lease
             FROM embedding_runtime.tasks
             WHERE job_key=ANY(%s) AND status='RUNNING' AND lease_until>now()
-            GROUP BY job_key
+            GROUP BY job_key, owner
         """, (keys,))
-        snapshot["active"] = {item["job_key"]: item for item in claims}
+        snapshot["worker_claims"] = claims
+        active = {}
+        for claim in claims:
+            key = claim["job_key"]
+            state = active.setdefault(key, {"active_claims": 0, "latest_lease": None})
+            state["active_claims"] += int(claim["active_claims"])
+            if state["latest_lease"] is None or claim["latest_lease"] > state["latest_lease"]:
+                state["latest_lease"] = claim["latest_lease"]
+        snapshot["active"] = active
 
         if _table_exists(conn, "quota"):
             snapshot["quotas"] = _rows(conn, """
