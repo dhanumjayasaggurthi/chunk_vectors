@@ -19,6 +19,8 @@
     "max_attempts": 5,
     "timeout_seconds": 90,
     "lease_seconds": 300,
-    "progress_every_batches": 1
+    "progress_every_batches": 1,
+    "rpm": 30,
+    "tpm": 750000
   }
 }
