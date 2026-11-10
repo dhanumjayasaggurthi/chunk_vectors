@@ -491,6 +491,34 @@ def status(c):
     return dict(rows),bool(txn("SELECT discovery_done FROM embedding_runtime.runs WHERE job_key=%s",
                               (c["job"],),True)[0][0])
 
+def progress_reporter(c, stop, interval_seconds=60):
+    """Read-only progress logs; one lightweight summary per process per minute."""
+    try:
+        initial, _ = status(c)
+        previous_success = initial.get("SUCCESS", 0)
+    except Exception:
+        LOG.exception("Unable to read initial embedding progress")
+        previous_success = 0
+    previous_at = time.monotonic()
+    while not stop.wait(interval_seconds):
+        try:
+            states, discovered = status(c)
+            now = time.monotonic()
+            successes = states.get("SUCCESS", 0)
+            rows_per_min = max(0, successes - previous_success) * 60 / max(1, now - previous_at)
+            LOG.info(
+                "embedding_progress job_key=%s discovered=%s queued=%s running=%s "
+                "success=%s failed=%s skipped=%s successful_rows_per_min=%.1f",
+                c["job"], discovered, states.get("PENDING", 0),
+                states.get("RUNNING", 0), successes, states.get("FAILED", 0),
+                states.get("SKIPPED", 0), rows_per_min,
+            )
+            previous_success, previous_at = successes, now
+        except Exception:
+            # Progress reporting must never interrupt embedding workers.
+            LOG.exception("Embedding progress reporting failed")
+
+
 def worker(c,owner,stop):
     session=requests.Session()
     try:
@@ -569,6 +597,12 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
             for sig in (signal.SIGINT,signal.SIGTERM):
                 handlers[sig]=signal.getsignal(sig)
                 signal.signal(sig,lambda _s,_f:stop.set())
+        LOG.info(
+            "embedding_started job_key=%s table=%s workers=%s rpm=%s tpm=%s "
+            "batch_size=%s batch_tokens=%s max_chunks=%s",
+            job, c["table"], workers, rpm, tpm, c["batch_size"],
+            c["batch_tokens"], max_chunks if max_chunks is not None else "all",
+        )
         errors=[]
         def producer():
             try:discover(c,stop,max_chunks)
@@ -577,8 +611,10 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
                 stop.set()
         discovery=threading.Thread(target=producer,daemon=True)
         beat=threading.Thread(target=heartbeat,args=(c,owner,stop),daemon=True)
+        progress=threading.Thread(target=progress_reporter,args=(c,stop),daemon=True)
         discovery.start()
         beat.start()
+        progress.start()
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures=[pool.submit(worker,c,owner,stop) for _ in range(workers)]
@@ -589,11 +625,14 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
                         raise
             if errors:raise errors[0]
             states,done=status(c)
+            LOG.info("embedding_finished job_key=%s states=%s discovery_done=%s",
+                     job, states, done)
             return dict(job_key=job,states=states,discovery_done=done)
         finally:
             stop.set()
             discovery.join(timeout=5)
             beat.join(timeout=5)
+            progress.join(timeout=5)
             txn("""UPDATE embedding_runtime.tasks SET status='PENDING',owner=NULL,
                 claim_token=NULL,lease_until=NULL,updated_at=now()
                 WHERE job_key=%s AND owner=%s AND status='RUNNING'""",(job,owner))
