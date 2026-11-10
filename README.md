@@ -90,8 +90,8 @@ python -m pip install -r requirements.txt
 ### Configuration
 
 **The profile is the canonical source for embedding settings.** The immbot
-profile currently contains `rpm=30`, `tpm=750000`, `batch_size=128`,
-`batch_tokens=24000`, `max_attempts=5`, `timeout_seconds=90`, and
+profile currently contains `rpm=30`, `tpm=900000`, `batch_size=128`,
+`batch_tokens=48000`, `max_attempts=5`, `timeout_seconds=90`, and
 `lease_seconds=300`. `start_embed.sh` uses 4 workers by default and honors
 optional environment overrides:
 
@@ -113,7 +113,7 @@ Example **only after checking live quota and coordinating workers**:
 
 ```bash
 EMBED_MODE=full EMBED_CONFIRM_FULL=YES EMBED_WORKERS=8 \
-EMBED_RPM=30 EMBED_TPM=750000 ./start_embed.sh
+EMBED_RPM=30 EMBED_TPM=900000 EMBED_BATCH_TOKENS=48000 ./start_embed.sh
 ```
 
 Do **not** change deployment RPM/TPM on a live shared quota ledger: the engine
@@ -131,6 +131,24 @@ using `ps -fp "$(cat embed.pid)"`; watch output with
 These log enhancements do not affect an already-running worker; consult
 the PostgreSQL `embedding_runtime.runs` (created_at) and
 `embedding_runtime.tasks` (updated_at) tables immediately.
+
+### Updated full-backfill tuning (after the original pilots)
+
+The original pilot used 4 workers, 30 RPM / 750,000 TPM and 24k-token
+batches. Subsequent Linux tuning used **8 workers**, **48,000 tokens/batch**,
+and a manually raised shared DB quota of **900,000 TPM**. The observed
+10-minute successful rate was **677.9 rows/min**, with `multiplier=1`
+and no gateway cooldown at that snapshot.
+
+The immbot profile now persists `embedding.tpm=900000` and
+`embedding.batch_tokens=48000` to match the approved running quota.
+**These settings are caps, not verified sustained provider allowances.**
+The Linux launcher still defaults to four workers for safe pilots. Use
+`EMBED_WORKERS=8` explicitly for the full-backfill configuration.
+All workers using this Azure deployment and coordination database must
+agree with the shared `embedding_runtime.quota` values. For existing
+jobs, safely stop the process before restarting with new settings; the
+same job key resumes committed work.
 
 ### Failures, recovery and progress
 
