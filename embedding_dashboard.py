@@ -1,8 +1,7 @@
-"""Read-only Streamlit dashboard for PostgreSQL embedding backfills.
+"""Executive and engineering views for distributed embedding backfills.
 
-Run: python -m streamlit run embedding_dashboard.py --server.address 127.0.0.1
-For remote access use SSH local forwarding; do not expose this unauthenticated
-app to a public interface.
+Read-only source-table rollups are cached for 10 minutes to avoid repeatedly
+aggregating a million-row table while PostgreSQL is writing vectors.
 """
 from __future__ import annotations
 
@@ -15,23 +14,48 @@ import psycopg2
 import streamlit as st
 
 from embedding_dashboard_data import (
-    fetch_failure_history,
-    fetch_failures,
-    fetch_overview,
-    summarize_job,
+    fetch_failure_history, fetch_failures, fetch_overview, summarize_job,
+)
+from embedding_dashboard_docs import (
+    DOCUMENT_CACHE_SECONDS,
+    calculate_coverage,
+    datasets_from_profiles,
+    document_stage,
+    fetch_document_details,
+    fetch_document_rollup,
 )
 
 st.set_page_config(
-    page_title="Embedding Operations",
+    page_title="Document Embedding Intelligence",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
+def apply_theme():
+    st.markdown("""
+    <style>
+    .block-container {max-width: 1440px; padding-top: 1.6rem; padding-bottom: 3rem;}
+    h1, h2, h3 {letter-spacing: -.025em;}
+    div[data-testid="stMetric"] {
+        padding: 15px 16px; border: 1px solid rgba(125,145,167,.18);
+        border-radius: 13px; background: var(--secondary-background-color);
+    }
+    div[data-testid="stMetricLabel"] {font-weight: 600;}
+    div[data-testid="stMetricValue"] {letter-spacing: -.035em;}
+    div[data-testid="stSidebar"] {border-right: 1px solid rgba(125,145,167,.18);}
+    .leadership-kicker {font-weight: 700; letter-spacing: .12em;
+      text-transform: uppercase; font-size: .74rem; opacity: .7;}
+    .leadership-intro {font-size: 1.02rem; line-height: 1.7; opacity: .86;}
+    .leadership-section {font-weight: 700; letter-spacing: .035em; font-size: .84rem;
+      text-transform: uppercase; opacity: .65; margin-top: .8rem;}
+    </style>
+    """, unsafe_allow_html=True)
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def read_snapshot(job_limit):
-    # Cache protects the DB from refresh storms across browser sessions.
     return fetch_overview(job_limit)
 
 
@@ -40,312 +64,451 @@ def read_failed_rows(job_key, limit):
     return fetch_failures(job_key, limit)
 
 
-def display_job(job):
-    source = ".".join(str(x) for x in (job.get("source_schema"), job.get("source_table")) if x)
-    if not source:
-        source = "Unknown table (older run)"
-    name = job.get("profile_name")
-    label = f"{source} · {job['job_key'][:12]}"
-    if name:
-        label = f"{name} · {label}"
-    if job.get("max_chunks"):
-        label += f" · pilot ≤{job['max_chunks']:,}"
-    return label
+@st.cache_data(ttl=DOCUMENT_CACHE_SECONDS, show_spinner=False)
+def read_document_rollup(schema, table, vector_column, id_column):
+    return fetch_document_rollup({
+        "schema": schema, "table": table,
+        "vector_column": vector_column, "id_column": id_column,
+    })
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def read_document_detail(schema, table, vector_column, id_column, doc_id):
+    return fetch_document_details({
+        "schema":schema, "table":table, "vector_column":vector_column,
+        "id_column":id_column,
+    },doc_id)
 
 
 def safe_csv(rows):
-    """Avoid Excel formula execution when an operator downloads error records."""
     if not rows:
         return ""
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+    output=io.StringIO()
+    writer=csv.DictWriter(output,fieldnames=list(rows[0].keys()))
     writer.writeheader()
     for row in rows:
-        clean = {}
-        for key, value in row.items():
-            text = str(value) if value is not None else ""
-            if text.lstrip().startswith(("=", "+", "-", "@")):
-                text = "'" + text
-            clean[key] = text
+        clean={}
+        for key,value in row.items():
+            cell=str(value) if value is not None else ""
+            if cell.lstrip().startswith(("=","+","-","@")):
+                cell="'"+cell
+            clean[key]=cell
         writer.writerow(clean)
     return output.getvalue()
 
 
-def remember_sample(job_key, successes, timestamp):
-    """In-browser sample history only; no monitoring-table writes."""
-    if "embedding_history" not in st.session_state:
-        st.session_state["embedding_history"] = {}
-    history = st.session_state["embedding_history"].setdefault(job_key, [])
-    ts = timestamp.timestamp()
-    if history and (ts - history[-1][0]) < 10:
+def remember_sample(job_key, success, timestamp):
+    history=st.session_state.setdefault("embedding_history",{}).setdefault(job_key,[])
+    t=timestamp.timestamp()
+    if history and t-history[-1][0]<10:
         return history
-    history.append((ts, int(successes)))
+    history.append((t,int(success)))
     del history[:-60]
     return history
 
 
 def observed_rate(history):
-    if len(history) < 2:
+    if len(history)<2:
         return None
-    start, end = history[-2], history[-1]
-    duration = end[0] - start[0]
-    if duration <= 0:
-        return None
-    return max(0, end[1] - start[1]) * 60.0 / duration
+    elapsed=history[-1][0]-history[-2][0]
+    return max(0,history[-1][1]-history[-2][1])*60/elapsed if elapsed>0 else None
 
 
-def render_dashboard(job_limit):
-    with st.spinner("Reading embedding job ledger..."):
-        snapshot = read_snapshot(job_limit)
+def job_label(job):
+    source=".".join(str(x) for x in (job.get("source_schema"),job.get("source_table")) if x)
+    source=source or "Older job · target unlabeled"
+    profile=job.get("profile_name")
+    label=f"{source} · {job['job_key'][:12]}"
+    if profile:
+        label=f"{profile} · {label}"
+    if job.get("max_chunks"):
+        label+=f" · pilot ≤{job['max_chunks']:,}"
+    return label
+
+
+def read_docs(dataset):
+    with st.spinner(
+        "Calculating documents and chunk coverage from source rows. "
+        "This runs at most once every 10 minutes per dataset..."
+    ):
+        return read_document_rollup(
+            dataset["schema"],dataset["table"],
+            dataset["vector_column"],dataset["id_column"],
+        )
+
+
+def frame_priorities(rows):
+    if not rows:
+        return pd.DataFrame(columns=["Document ID","File","Chunks","Embedded",
+                                     "Remaining","Coverage %","Attention notes"])
+    return pd.DataFrame([{
+        "Document ID": row["document_id"],
+        "File": row.get("file_name") or "—",
+        "Chunks": int(row["total_chunks"]),
+        "Embedded": int(row["embedded_chunks"]),
+        "Remaining": int(row["remaining_chunks"]),
+        "Coverage %": round(
+            100*calculate_coverage(int(row["embedded_chunks"]),int(row["total_chunks"])),1),
+        "Attention notes": int(row.get("noted_chunks") or 0),
+    } for row in rows])
+
+
+def executive_view(dataset, snapshot):
+    st.markdown('<div class="leadership-kicker">Portfolio readiness</div>',
+                unsafe_allow_html=True)
+    st.title("Document embedding coverage")
+    st.markdown(
+        '<div class="leadership-intro">How much of our searchable document '
+        'collection is ready for vector retrieval?</div>', unsafe_allow_html=True
+    )
+    st.caption(
+        f"Source of truth: {dataset['schema']}.{dataset['table']} "
+        f"· PostgreSQL database: {snapshot['database']} "
+        "· Source coverage is across all jobs, including embeddings that existed before the current run."
+    )
+    report=read_docs(dataset)
+    total_docs=int(report["total_documents"])
+    done=int(report["completed_documents"])
+    partial=int(report["partial_documents"])
+    untouched=int(report["untouched_documents"])
+    attention=int(report["attention_documents"])
+    total_chunks=int(report["total_chunks"])
+    embedded=int(report["embedded_chunks"])
+    remaining=int(report["missing_chunks"])
+    doc_coverage=calculate_coverage(done,total_docs)
+    chunk_coverage=calculate_coverage(embedded,total_chunks)
+
+    st.markdown('<div class="leadership-section">Document readiness</div>',
+                unsafe_allow_html=True)
+    a,b,c,d,e=st.columns(5,gap="small")
+    a.metric("Total documents",f"{total_docs:,}")
+    b.metric("Fully embedded",f"{done:,}",help="Every chunk in the document has a stored vector.")
+    c.metric("Partially embedded",f"{partial:,}",help="At least one chunk, but not all, has a vector.")
+    d.metric("Not started",f"{untouched:,}",help="No chunks in these documents have vectors.")
+    e.metric("Needs attention",f"{attention:,}",help="Documents with NULL vectors and non-NULL processing notes; not necessarily fatal errors.")
+
+    st.progress(doc_coverage,text=f"{doc_coverage:.1%} of documents fully embedded")
+    st.markdown('<div class="leadership-section">Chunk coverage</div>',
+                unsafe_allow_html=True)
+    x,y,z=st.columns(3)
+    x.metric("Total chunks",f"{total_chunks:,}")
+    y.metric("Vectors available",f"{embedded:,}")
+    z.metric("Chunks still missing vectors",f"{remaining:,}")
+    st.progress(chunk_coverage,
+                text=f"{chunk_coverage:.1%} of source chunks have stored embeddings")
+
+    if total_docs:
+        if done==total_docs and remaining==0:
+            st.success("All identifiable documents are fully embedded at this snapshot.")
+        elif partial:
+            st.info(
+                f"{partial:,} documents are partially searchable but **not yet fully ready**. "
+                f"{remaining:,} chunks still need vectors across this source table."
+            )
+
+    if int(report.get("unmapped_chunks") or 0)>0:
+        st.warning(
+            f"{int(report['unmapped_chunks']):,} chunks have no usable doc_id. "
+            "They are included in chunk totals but excluded from document counts."
+        )
+
+    st.markdown('<div class="leadership-section">Where documents stand</div>',
+                unsafe_allow_html=True)
+    left,right=st.columns([1,1.5],gap="large")
+    with left:
+        phases=pd.DataFrame({
+            "Readiness":["Fully embedded","Partially embedded","Not started"],
+            "Documents":[done,partial,untouched],
+        })
+        st.bar_chart(phases,x="Readiness",y="Documents",height=245)
+        st.caption("A document is fully ready only when all its chunk vectors are present.")
+    with right:
+        priority=frame_priorities(report.get("priority_documents") or [])
+        st.markdown("**Largest unfinished documents**")
+        st.caption(
+            "Up to 25 documents with the most missing chunks. "
+            "File name is a representative value, not necessarily a unique document name."
+        )
+        if priority.empty:
+            st.success("No unfinished document IDs found.")
+        else:
+            st.dataframe(
+                priority[["Document ID","File","Chunks","Embedded",
+                          "Remaining","Coverage %","Attention notes"]],
+                hide_index=True,use_container_width=True,height=245,
+                column_config={
+                    "Coverage %":st.column_config.ProgressColumn(
+                        "Coverage %",min_value=0,max_value=100,format="%.1f%%"
+                    ),
+                },
+            )
 
     st.caption(
-        f"Database: {snapshot['database']} · "
-        f"Snapshot: {snapshot['at'].strftime('%Y-%m-%d %H:%M:%S UTC')} · "
-        "Read-only · 60-second auto-refresh if enabled"
+        f"Source snapshot: {report['snapshot_at'].strftime('%Y-%m-%d %H:%M:%S UTC')}. "
+        "Document rollups are cached for 10 minutes to protect PostgreSQL. "
+        "New ingestions can increase the total. This is source-table coverage, "
+        "not one embedding job's task-completion percentage."
     )
 
-    jobs = snapshot["jobs"]
-    if not jobs:
-        st.info("No embedding jobs found in this database. Start a pilot or full run first.")
+
+def document_explorer(dataset):
+    st.markdown('<div class="leadership-kicker">Document explorer</div>',
+                unsafe_allow_html=True)
+    st.title("Verify individual documents")
+    st.write(
+        "Every document is identified by doc_id. Search by the exact doc_id or "
+        "choose one of the documents with the most missing chunks."
+    )
+    report=read_docs(dataset)
+    priorities=report.get("priority_documents") or []
+    options=["Enter a document ID"]+[p["document_id"] for p in priorities]
+    selected=st.selectbox(
+        "Suggested unfinished documents",options,
+        format_func=lambda x: x if x=="Enter a document ID"
+                      else f"{x[:48]}… — {next(p['remaining_chunks'] for p in priorities if p['document_id']==x)} chunks left"
+    )
+    prefill="" if selected==options[0] else selected
+    requested=st.text_input(
+        "Exact doc_id",value=prefill,
+        key=f"document_input_{dataset['profile']}_{prefill}",
+        placeholder="Paste an existing doc_id from the source table",
+    )
+    if not st.button("Inspect document",type="primary",disabled=not requested.strip()):
+        st.caption("Document lookup is read-only and uses the indexed doc_id column.")
         return
 
-    counts = snapshot["counts"]
-    active = snapshot["active"]
-    rows = []
+    with st.spinner("Reading this document's chunks..."):
+        data=read_document_detail(
+            dataset["schema"],dataset["table"],
+            dataset["vector_column"],dataset["id_column"],requested,
+        )
+    total=int(data["summary"]["total_chunks"])
+    embedded=int(data["summary"]["embedded_chunks"])
+    noted=int(data["summary"]["noted_chunks"])
+    remaining=total-embedded
+    if not total:
+        st.warning("No source chunks found with that exact doc_id.")
+        return
+    st.subheader("Document readiness")
+    a,b,c,d=st.columns(4)
+    a.metric("Total chunks",f"{total:,}")
+    b.metric("Embedded",f"{embedded:,}")
+    c.metric("Remaining",f"{remaining:,}")
+    d.metric("Unresolved notes",f"{noted:,}")
+    st.progress(calculate_coverage(embedded,total),
+                text=f"{document_stage(total,embedded)} · {embedded:,}/{total:,} chunks embedded")
+    declared=data["summary"].get("declared_chunk_total")
+    if declared is not None and int(declared)!=total:
+        st.warning(
+            f"Data-quality check: source chunk_total reports {int(declared):,}, "
+            f"but {total:,} chunk rows currently exist for this doc_id."
+        )
+    if data["truncated"]:
+        st.info("Showing only the first 200 chunks; totals include all chunks.")
+    table=pd.DataFrame([{
+        "Chunk ID":row["chunk_id"],
+        "Index":row.get("chunk_index"),
+        "Ready": "Embedded" if row["embedded"] else "Missing",
+        "Processing note":row.get("note") or "",
+        "Last source update":row.get("updated_at"),
+    } for row in data["rows"]])
+    st.dataframe(table,use_container_width=True,hide_index=True)
+    st.caption(
+        "This page intentionally does not display source text or embedding vectors. "
+        "Last source update may not equal embedding generation time."
+    )
+
+
+def operational_view(snapshot,job_limit):
+    st.markdown('<div class="leadership-kicker">Engineering operations</div>',
+                unsafe_allow_html=True)
+    st.title("Workers, jobs and exceptions")
+    st.caption(
+        f"{snapshot['database']} · Snapshot {snapshot['at'].strftime('%Y-%m-%d %H:%M:%S UTC')}. "
+        "These are task records, not document counts."
+    )
+    jobs=snapshot["jobs"]
+    if not jobs:
+        st.info("No embedding jobs found.")
+        return
+    count=snapshot["counts"]
+    active=snapshot["active"]
+    grid=[]
     for j in jobs:
-        key = j["job_key"]
-        summary = summarize_job(j, counts.get(key, {}), active.get(key, {}).get("active_claims", 0))
-        rows.append({
-            "Job": key[:14] + "…",
-            "Source": (
-                f"{j['source_schema']}.{j['source_table']}"
-                if j.get("source_schema") and j.get("source_table")
-                else "Unknown (older job)"
-            ),
-            "Type": (f"Pilot ({j['max_chunks']:,})" if j.get("max_chunks")
-                     else ("Full" if j.get("source_table") else "Unknown (older job)")),
-            "Phase": summary["phase"],
-            "Discovered": summary["total"],
-            "Successful": summary["SUCCESS"],
-            "Failed": summary["FAILED"],
-            "Skipped": summary["SKIPPED"],
-            "Pending": summary["PENDING"],
-            "Running": summary["RUNNING"],
-            "Active leases": summary["active_claims"],
-            "Created (UTC)": j["created_at"],
+        key=j["job_key"]
+        summary=summarize_job(j,count.get(key,{}),
+                              active.get(key,{}).get("active_claims",0))
+        grid.append({
+            "Job":key[:14]+"…",
+            "Source":(f"{j['source_schema']}.{j['source_table']}"
+                      if j.get("source_schema") and j.get("source_table")
+                      else "Unlabeled legacy job"),
+            "Type":(f"Pilot ≤{int(j['max_chunks']):,}" if j.get("max_chunks")
+                    else "Full / unknown"),
+            "State":summary["phase"],
+            "Discovered":summary["total"],
+            "Success":summary["SUCCESS"],
+            "Failed":summary["FAILED"],
+            "Queued":summary["PENDING"],
+            "Running":summary["RUNNING"],
+            "Active claims":summary["active_claims"],
+            "Created UTC":j["created_at"],
         })
+    st.dataframe(pd.DataFrame(grid),hide_index=True,use_container_width=True)
+    st.caption("Job discovery counts can overlap between historical pilots and full runs.")
 
-    st.subheader("All embedding jobs")
-    st.caption(
-        "Discovered is the number of task rows in this job, not necessarily the total "
-        "source-table backlog. Active leases are evidence of recently claimed work, "
-        "not a guarantee the process is healthy."
-    )
-    st.dataframe(
-        pd.DataFrame(rows),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Discovered": st.column_config.NumberColumn(format="%d"),
-            "Successful": st.column_config.NumberColumn(format="%d"),
-            "Failed": st.column_config.NumberColumn(format="%d"),
-            "Pending": st.column_config.NumberColumn(format="%d"),
-        },
-    )
-
-    ordered_jobs = sorted(
-        jobs,
-        key=lambda j: (
-            bool(active.get(j["job_key"], {}).get("active_claims", 0)),
-            j["created_at"] or datetime.min.replace(tzinfo=timezone.utc),
-        ),
-        reverse=True,
-    )
-    st.divider()
-    st.subheader("Selected job")
-    chosen = st.selectbox(
-        "Choose a job to investigate",
-        options=[j["job_key"] for j in ordered_jobs],
-        format_func=lambda key: display_job(next(j for j in ordered_jobs if j["job_key"] == key)),
-        key="embedding_selected_job",
-    )
-    job = next(j for j in jobs if j["job_key"] == chosen)
-    summary = summarize_job(job, counts.get(chosen, {}), active.get(chosen, {}).get("active_claims", 0))
-    st.code(chosen, language=None)
-    st.caption(
-        f"Status: {summary['phase']} · "
-        f"Discovered: {'complete' if job.get('discovery_done') else 'in progress / unknown'} · "
-        f"Model: {job.get('model_name') or 'Not recorded for this older job'}"
-    )
-
-    metric_cols = st.columns(6)
-    for col, label, value in zip(
-        metric_cols,
-        ["Discovered", "Successful", "Failed", "Skipped", "Pending", "Running"],
-        [summary["total"], summary["SUCCESS"], summary["FAILED"],
-         summary["SKIPPED"], summary["PENDING"], summary["RUNNING"]],
-    ):
-        col.metric(label, f"{value:,}")
-
-    st.progress(
-        float(summary["progress"]),
-        text=f"{summary['processed']:,} / {summary['total']:,} discovered tasks have terminal outcomes "
-             f"({summary['progress']:.1%})",
-    )
+    ordered=sorted(jobs,key=lambda j:(
+        bool(active.get(j["job_key"],{}).get("active_claims",0)),
+        j.get("created_at") or datetime.min.replace(tzinfo=timezone.utc)),reverse=True)
+    chosen=st.selectbox("Inspect one job",options=[j["job_key"] for j in ordered],
+                        format_func=lambda k:job_label(next(j for j in ordered if j["job_key"]==k)))
+    job=next(j for j in jobs if j["job_key"]==chosen)
+    info=summarize_job(job,count.get(chosen,{}),
+                       active.get(chosen,{}).get("active_claims",0))
+    st.code(chosen,language=None)
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("Successful tasks",f"{info['SUCCESS']:,}")
+    c2.metric("Pending tasks",f"{info['PENDING']:,}")
+    c3.metric("Failed tasks",f"{info['FAILED']:,}")
+    c4.metric("Active claimed rows",f"{info['active_claims']:,}")
+    st.progress(info["progress"],
+                text=f"{info['progress']:.1%} of discovered tasks have terminal outcomes")
     if not job.get("discovery_done"):
-        st.caption("Discovery is not complete; the progress percentage can decrease as new tasks are discovered.")
-
-    history = remember_sample(chosen, summary["SUCCESS"], snapshot["at"])
-    rate = observed_rate(history)
-    left, right = st.columns([1, 2])
+        st.caption("Discovery is still running; percentage can decrease as more rows are discovered.")
+    trend=remember_sample(chosen,info["SUCCESS"],snapshot["at"])
+    rate=observed_rate(trend)
+    left,right=st.columns([1,2])
     with left:
-        st.metric(
-            "Successful rows/minute",
-            f"{rate:,.1f}" if rate is not None else "Collecting samples",
-        )
-        st.caption("Measured between dashboard refreshes, not a provider token-rate metric.")
-        last_start = job.get("last_started_at") or job.get("created_at")
-        st.write("**Job created:**", job["created_at"])
-        st.write("**Last worker start:**", last_start)
-        lease = active.get(chosen, {}).get("latest_lease")
-        st.write("**Latest active lease:**", lease if lease else "None currently")
+        st.metric("Recent successes/min",f"{rate:,.1f}" if rate is not None else "Collecting")
+        st.write("**Original job creation:**",job["created_at"])
+        st.write("**Last worker startup:**",
+                 job.get("last_started_at") or "Not recorded")
+        st.write("**Current phase:**",info["phase"])
     with right:
-        if len(history) > 1:
-            chart = pd.DataFrame(
-                {"UTC time": [datetime.fromtimestamp(t,timezone.utc) for t, _ in history],
-                 "Successful rows": [value for _, value in history]}
-            ).set_index("UTC time")
-            st.line_chart(chart)
+        if len(trend)>1:
+            chart=pd.DataFrame({
+                "UTC time":[datetime.fromtimestamp(t,timezone.utc) for t,_ in trend],
+                "Successful chunks":[v for _,v in trend],
+            }).set_index("UTC time")
+            st.line_chart(chart,height=190)
         else:
-            st.info("A small throughput trend will appear after the next refresh.")
+            st.info("Throughput history appears after the next dashboard refresh.")
 
-    worker_claims = [
-        item for item in snapshot.get("worker_claims", [])
-        if item["job_key"] == chosen
-    ]
-    with st.expander(f"Active worker claims ({len(worker_claims)} processes)", expanded=False):
-        if worker_claims:
-            st.dataframe(
-                pd.DataFrame([{
-                    "Worker / host": item["owner"] or "Unknown",
-                    "Claimed rows": item["active_claims"],
-                    "Lease until (UTC)": item["latest_lease"],
-                } for item in worker_claims]),
-                hide_index=True,
-                use_container_width=True,
-            )
-            st.caption(
-                "Hostnames appear for workers started with the updated runtime; "
-                "older workers show their UUID. A valid claim does not guarantee "
-                "the process is healthy."
-            )
+    claims=[item for item in snapshot.get("worker_claims",[]) if item["job_key"]==chosen]
+    with st.expander(f"Worker ownership · {len(claims)} active processes"):
+        if claims:
+            st.dataframe(pd.DataFrame([{
+                "Worker / host":c["owner"] or "Unlabeled",
+                "Rows claimed":int(c["active_claims"]),
+                "Lease expires":c["latest_lease"],
+            } for c in claims]),hide_index=True,use_container_width=True)
         else:
-            st.info("No unexpired task claims right now. This does not prove the job has stopped.")
+            st.caption("No unexpired leases right now.")
 
-    st.divider()
-    st.subheader("Failures")
-    st.caption("Failures are per task; a failed chunk does not stop other chunks.")
-
-    left, right = st.columns([1, 3])
-    with left:
-        limit = st.selectbox("Rows to inspect", [20, 50, 100, 200], index=1)
-        details = st.checkbox("Show detailed error messages", value=False)
-    failure_data = read_failed_rows(chosen, limit) if summary["FAILED"] else {"rows":[],"reasons":[]}
-    if failure_data["reasons"]:
-        with right:
-            st.dataframe(
-                pd.DataFrame(failure_data["reasons"]).rename(
-                    columns={"reason": "Failure reason", "amount": "Rows"}
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
+    st.subheader("Errors and recovery")
+    limit=st.selectbox("Recent failed tasks",[20,50,100,200],index=1)
+    show_detail=st.checkbox("Show detailed exception text",value=False)
+    failures=read_failed_rows(chosen,limit) if info["FAILED"] else {"rows":[],"reasons":[]}
+    if failures["reasons"]:
+        st.dataframe(pd.DataFrame(failures["reasons"]).rename(
+            columns={"reason":"Failure reason","amount":"Chunks"}),
+            hide_index=True,use_container_width=True)
     else:
-        st.success("No current FAILED tasks for this job.")
-
-    if failure_data["rows"]:
-        fields = ["row_id","attempts","error_code","processing_comment","updated_at"]
-        if details:
-            fields.insert(3,"error_message")
-        st.dataframe(
-            pd.DataFrame(failure_data["rows"])[fields],
-            hide_index=True,
-            use_container_width=True,
-        )
-        st.download_button(
-            "Download displayed failure rows (CSV)",
-            safe_csv([{field: row[field] for field in fields} for row in failure_data["rows"]]),
-            file_name=f"embedding_failures_{chosen[:12]}.csv",
-            mime="text/csv",
-        )
-
-    if st.checkbox("Load historical failure events", value=False):
-        # This is a separate opt-in query; it isn't executed on every normal refresh.
-        with st.spinner("Reading failure history..."):
-            records = fetch_failure_history(chosen, limit=50)
-        if records:
-            cols = ["row_id","error_code","processing_comment","occurred_at"]
-            if details:
+        st.success("No current FAILED tasks in this job.")
+    if failures["rows"]:
+        cols=["row_id","attempts","error_code","processing_comment","updated_at"]
+        if show_detail:
+            cols.insert(3,"error_message")
+        error_rows=[{k:r[k] for k in cols} for r in failures["rows"]]
+        st.dataframe(pd.DataFrame(error_rows),hide_index=True,use_container_width=True)
+        st.download_button("Download displayed failures",safe_csv(error_rows),
+                           file_name=f"embedding_failures_{chosen[:12]}.csv",
+                           mime="text/csv")
+    if st.checkbox("Show previous failure events",value=False):
+        events=fetch_failure_history(chosen,limit=50)
+        if events:
+            cols=["row_id","error_code","processing_comment","occurred_at"]
+            if show_detail:
                 cols.insert(2,"error_message")
-            st.dataframe(pd.DataFrame(records)[cols], hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(events)[cols],hide_index=True,use_container_width=True)
         else:
-            st.info("No failure history found for this job.")
+            st.info("No historical errors found.")
 
-    with st.expander("Deployment quota settings (database-shared)", expanded=False):
-        if snapshot["quotas"]:
-            st.dataframe(
-                pd.DataFrame([{
-                    "Deployment key": q["deployment_key"][:14] + "…",
-                    "RPM cap": q["rpm"],
-                    "TPM cap": q["tpm"],
-                    "Adaptive multiplier": round(float(q["multiplier"] or 1), 3),
-                    "Cooldown until": q["cooldown"],
-                } for q in snapshot["quotas"]]),
-                hide_index=True,
-                use_container_width=True,
-            )
-            st.caption(
-                "Shared among workers using the same deployment and coordination database. "
-                "Limits are configured caps, not verified Azure entitlements."
-            )
+    with st.expander("Shared deployment quota caps"):
+        quotas=snapshot.get("quotas") or []
+        if quotas:
+            st.dataframe(pd.DataFrame([{
+                "Deployment key":q["deployment_key"][:14]+"…",
+                "RPM cap":q["rpm"],"TPM cap":q["tpm"],
+                "Adaptive multiplier":round(float(q["multiplier"] or 1),3),
+                "Cooldown":q["cooldown"],
+            } for q in quotas]),hide_index=True,use_container_width=True)
+            st.caption("Database-shared configured caps, not guaranteed Azure entitlements.")
         else:
-            st.info("No deployment quotas found.")
-
-    st.caption(
-        "Security: Restrict access to an internal network or authenticated proxy. "
-        "Use a PostgreSQL SELECT-only account. The dashboard never reads source chunk "
-        "text or vector values, and it never launches, stops, or retries jobs."
-    )
+            st.info("No quota records reported.")
 
 
 def main():
-    st.title("Embedding Operations")
-    st.write("Monitor PostgreSQL embedding backfills across servers, tables and profiles.")
-
+    apply_theme()
+    datasets=datasets_from_profiles()
     with st.sidebar:
-        st.header("Monitor")
-        auto = st.toggle("Auto-refresh", value=True)
-        job_limit = st.selectbox("Show latest jobs", [5, 10, 20, 30], index=2)
-        st.caption("One snapshot each minute. PostgreSQL is queried only while the dashboard is open.")
-        if st.button("Refresh now", use_container_width=True):
+        st.markdown("### Embedding Intelligence")
+        page=st.radio("View",[
+            "Executive overview","Document explorer","Engineering operations"
+        ],label_visibility="collapsed")
+        selected=None
+        if datasets:
+            selected=st.selectbox(
+                "Source dataset",
+                options=range(len(datasets)),
+                format_func=lambda i:f"{datasets[i]['schema']}.{datasets[i]['table']}",
+            )
+        refresh=st.toggle("Auto-refresh (60 seconds)",value=True)
+        job_limit=st.select_slider("Job history depth",options=[5,10,20,30],value=10)
+        if st.button("Refresh data",use_container_width=True):
             read_snapshot.clear()
+            read_document_rollup.clear()
+            read_document_detail.clear()
             read_failed_rows.clear()
         st.divider()
-        st.caption("Read-only dashboard. Source documents and API credentials are not displayed.")
+        st.caption(
+            "Read-only monitoring. Document metrics use source-table vectors; "
+            "the operations page uses embedding_runtime. "
+            "Use an SSH tunnel or authenticated internal proxy."
+        )
+
+    if page!="Engineering operations" and not datasets:
+        st.warning("No existing-table embedding profiles found under profiles/.")
+        return
+
+    def render():
+        snapshot=read_snapshot(job_limit)
+        if page=="Executive overview":
+            executive_view(datasets[selected],snapshot)
+        elif page=="Document explorer":
+            document_explorer(datasets[selected])
+        else:
+            operational_view(snapshot,job_limit)
 
     try:
-        if auto and hasattr(st, "fragment"):
-            # Streamlit 1.37+ supports scheduled fragment reruns.
-            st.fragment(run_every="60s")(render_dashboard)(job_limit)
+        if refresh and hasattr(st,"fragment"):
+            st.fragment(run_every="60s")(render)()
         else:
-            if auto:
-                st.info("Auto-refresh needs Streamlit with st.fragment; use Refresh now on older versions.")
-            render_dashboard(job_limit)
-    except (psycopg2.Error, ValueError) as error:
-        # Never display a DSN, password, internal host or SQL details.
-        st.error(f"Could not read embedding_runtime tables ({type(error).__name__}).")
-        st.info("Check config.ini, PostgreSQL connectivity, read permissions and statement timeout.")
+            render()
+    except psycopg2.errors.QueryCanceled:
+        st.warning(
+            "The document aggregate exceeded its 60-second database budget. "
+            "Embedding workers are unaffected. Try again later or use "
+            "pre-aggregated document metrics for continuous executive reporting."
+        )
+    except (psycopg2.Error,ValueError) as exc:
+        st.error(f"Dashboard query unavailable ({type(exc).__name__}).")
+        st.caption(
+            "Check that the selected profile has a doc_id column and the dashboard "
+            "user has SELECT permissions on its source table and embedding_runtime. "
+            "Do not expose database credentials in the UI."
+        )
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
