@@ -30,7 +30,16 @@ DDL = """
 CREATE SCHEMA IF NOT EXISTS embedding_runtime;
 CREATE TABLE IF NOT EXISTS embedding_runtime.runs(
  job_key text PRIMARY KEY, cursor_id text, discovery_done boolean DEFAULT false,
- created_at timestamptz DEFAULT now());
+ created_at timestamptz DEFAULT now(),
+ source_schema text, source_table text, profile_name text, model_name text,
+ max_chunks bigint, last_started_at timestamptz);
+-- Additive migration for existing runs from earlier deployment versions.
+ALTER TABLE embedding_runtime.runs ADD COLUMN IF NOT EXISTS source_schema text;
+ALTER TABLE embedding_runtime.runs ADD COLUMN IF NOT EXISTS source_table text;
+ALTER TABLE embedding_runtime.runs ADD COLUMN IF NOT EXISTS profile_name text;
+ALTER TABLE embedding_runtime.runs ADD COLUMN IF NOT EXISTS model_name text;
+ALTER TABLE embedding_runtime.runs ADD COLUMN IF NOT EXISTS max_chunks bigint;
+ALTER TABLE embedding_runtime.runs ADD COLUMN IF NOT EXISTS last_started_at timestamptz;
 CREATE TABLE IF NOT EXISTS embedding_runtime.tasks(
  job_key text NOT NULL REFERENCES embedding_runtime.runs(job_key),
  row_id text NOT NULL, status text NOT NULL DEFAULT 'PENDING',
@@ -144,12 +153,24 @@ def validate(profile, azure, max_chunks):
                     if src.get("note_column") and columns[src["note_column"]][1]>=4 else 400,
                 idtype=idtype,dim=dimensions)
 
-def initialize(job, quota_key, rpm, tpm, batch_tokens):
+def initialize(job, quota_key, rpm, tpm, batch_tokens, metadata=None):
     conn=db()
     try:
         with conn.cursor() as cur:
             cur.execute(DDL)
-            cur.execute("INSERT INTO embedding_runtime.runs(job_key) VALUES(%s) ON CONFLICT DO NOTHING",(job,))
+            metadata = metadata or {}
+            cur.execute("""INSERT INTO embedding_runtime.runs(
+                job_key,source_schema,source_table,profile_name,model_name,max_chunks,last_started_at)
+                VALUES (%s,%s,%s,%s,%s,%s,now())
+                ON CONFLICT (job_key) DO UPDATE SET
+                source_schema=COALESCE(EXCLUDED.source_schema,embedding_runtime.runs.source_schema),
+                source_table=COALESCE(EXCLUDED.source_table,embedding_runtime.runs.source_table),
+                profile_name=COALESCE(EXCLUDED.profile_name,embedding_runtime.runs.profile_name),
+                model_name=COALESCE(EXCLUDED.model_name,embedding_runtime.runs.model_name),
+                last_started_at=now()""",
+                (job,metadata.get("source_schema"),metadata.get("source_table"),
+                 metadata.get("profile_name"),metadata.get("model_name"),
+                 metadata.get("max_chunks")))
             cur.execute("""INSERT INTO embedding_runtime.quota
               (deployment_key,rpm,tpm,requests,tokens,last_refill)
               VALUES(%s,%s,%s,%s,%s,now()) ON CONFLICT DO NOTHING""",
@@ -586,7 +607,13 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
             where=f"WHERE {c['vec']} IS NULL" if c["reuse"] else ""
             n=txn(f"SELECT count(*) FROM {c['table']} {where}",fetch=True)[0][0]
             return dict(dry_run=True,eligible=min(n,max_chunks) if max_chunks else n)
-        initialize(job,quota,rpm,tpm,c['batch_tokens'])
+        initialize(job,quota,rpm,tpm,c['batch_tokens'],{
+            "source_schema": profile["existing_chunks"]["schema"],
+            "source_table": profile["existing_chunks"]["table"],
+            "profile_name": profile.get("name", "unnamed"),
+            "model_name": c["model"],
+            "max_chunks": max_chunks,
+        })
         if retry_failed:
             txn("""UPDATE embedding_runtime.tasks SET status='PENDING',updated_at=now(),
                processing_comment='Explicitly requeued; prior failure reason retained'
