@@ -19,6 +19,24 @@ called by `main.py --embed-existing`.
 - Use a stable, finalized model/deployment; do not mix embedding models in
   the same vector column.
 
+## Discover the embedding RPM/TPM before running
+
+```bash
+python probe_embedding_quota.py --profile profiles/clinical_1536.json
+```
+
+The probe sends one tiny synthetic embedding request, outputs only the HTTP
+status and rate-limit headers, and does not touch source data or print API
+credentials. It reads your existing local `config.ini`. If the enterprise
+gateway strips Azure's `x-ratelimit-limit-requests` and
+`x-ratelimit-limit-tokens` headers, do not infer a quota from the result.
+Use the Azure portal/internal gateway allocation or a small, controlled,
+instrumented load test. Quota may be shared with other applications.
+
+Start a pilot at no more than 70-80% of verified limits, allowing for
+other clients on the same deployment. Configure both RPM and TPM, and
+keep `embedding.batch_tokens <= embedding.tpm`.
+
 ## Linux
 
 ```bash
