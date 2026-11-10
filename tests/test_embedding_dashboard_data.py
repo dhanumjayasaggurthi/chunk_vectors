@@ -39,23 +39,24 @@ class DashboardLogicTests(unittest.TestCase):
         self.assertEqual(state["phase"], "Pending / no active lease")
 
     def test_only_latest_30_jobs_requested(self):
-        fake_connection = object()
+        connection = type("FakeConnection", (), {"close": lambda self: None})()
         seen_queries = []
         def fake_rows(conn, sql, params=()):
-            seen_queries.append((sql,params))
+            seen_queries.append((sql, params))
             if "information_schema.columns" in sql:
                 return []
             if "FROM embedding_runtime.runs r" in sql:
                 return []
+            if "current_database()" in sql:
+                return [{"name": "testdb"}]
             self.fail("Unexpected query")
-        with patch.object(dashboard,"connect_readonly",return_value=fake_connection), \
-             patch.object(dashboard,"_rows",side_effect=fake_rows):
-            # A fake object lacking close is patched below for cleanup.
-            fake_connection = type("Fake",(),{"close":lambda self:None})()
-            with patch.object(dashboard,"connect_readonly",return_value=fake_connection):
-                result=dashboard.fetch_overview(9999)
-        self.assertEqual(result["jobs"],[])
-        self.assertEqual(seen_queries[-1][1],(30,))
+        with patch.object(dashboard, "connect_readonly", return_value=connection), \
+             patch.object(dashboard, "_rows", side_effect=fake_rows):
+            result = dashboard.fetch_overview(9999)
+        self.assertEqual(result["jobs"], [])
+        self.assertEqual(result["database"], "testdb")
+        self.assertEqual([params for sql, params in seen_queries
+                          if "FROM embedding_runtime.runs r" in sql], [(30,)])
 
     def test_no_job_is_terminal_with_zero_tasks(self):
         state = dashboard.summarize_job({"discovery_done": True},{})
