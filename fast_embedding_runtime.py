@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS embedding_runtime.tasks(
  PRIMARY KEY(job_key,row_id));
 CREATE INDEX IF NOT EXISTS embed_claim_idx ON embedding_runtime.tasks
  (job_key,status,lease_until,row_id);
+CREATE TABLE IF NOT EXISTS embedding_runtime.failure_events(
+ event_id bigserial PRIMARY KEY,
+ job_key text NOT NULL,
+ row_id text NOT NULL,
+ error_code text NOT NULL,
+ error_message text,
+ processing_comment text,
+ occurred_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS embed_failure_events_idx ON embedding_runtime.failure_events
+ (job_key,row_id,occurred_at);
 CREATE TABLE IF NOT EXISTS embedding_runtime.quota(
  deployment_key text PRIMARY KEY, rpm int NOT NULL, tpm int NOT NULL,
  requests float8 NOT NULL, tokens float8 NOT NULL,
@@ -228,6 +238,11 @@ def mark(c, token, row_id, status, code=None, message=None, comment=None):
               AND claim_token=%s AND status='RUNNING' RETURNING row_id""",
               (status,code,(message or "")[:1500],(comment or "")[:1000],c["job"],row_id,token))
             owned=bool(cur.fetchone())
+            if owned and status == 'FAILED' and code:
+                cur.execute("""INSERT INTO embedding_runtime.failure_events
+                     (job_key,row_id,error_code,error_message,processing_comment)
+                     VALUES (%s,%s,%s,%s,%s)""",
+                     (c["job"],row_id,code,(message or "")[:1500],(comment or "")[:1000]))
             if owned and c["note"] and code:
                 text=(code+": "+(message or ""))[:c["note_limit"]]
                 where=f" AND {c['vec']} IS NULL" if c["reuse"] else ""
