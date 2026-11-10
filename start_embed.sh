@@ -96,4 +96,8 @@ echo "Quota/batch defaults come from profile; explicit EMBED_* overrides take pr
 nohup "$PY" -u main.py "${ARGS[@]}" > "$LOGFILE" 2>&1 < /dev/null &
 echo "$!" > "$PIDFILE"
 echo "Started PID $(cat "$PIDFILE"); monitor: tail -f '$LOGFILE'"
-echo "WARNING: Full mode modifies missing vectors in the source table."
+if [[ "$MODE" == "full" ]]; then
+  echo "WARNING: Full mode has no row cap and writes source vectors."
+else
+  echo "Mode=$MODE; review embedlogs.log and PostgreSQL task statuses for progress."
+fi
