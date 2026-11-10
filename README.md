@@ -4,6 +4,23 @@ Existing PDF ingestion/RAG plus an opt-in **distributed, resumable PostgreSQL
 embedding backfill**. Normal document ingestion remains the default when
 `--embed-existing` is not specified.
 
+## Live embedding dashboard (Streamlit)
+
+A **read-only monitoring UI** now shows all recent jobs in your PostgreSQL
+coordination database, including pilots/full runs across Linux and Windows
+hosts, active claims, completed/failed/pending counts, progress, a recent
+rows/minute trend, error reasons/history, and configured RPM/TPM caps.
+
+```bash
+./venv/bin/python -m streamlit run embedding_dashboard.py \
+  --server.address 127.0.0.1 --server.port 8501
+```
+
+For remote access, forward port 8501 securely over SSH; **do not expose
+Streamlit directly on an unauthenticated public interface**.
+This dashboard is read-only; it cannot pause/restart a running backfill.
+See [dashboard deployment and monitoring](docs/EMBEDDING_DASHBOARD.md).
+
 ## Quick start: immbot approved embeddings
 
 Use `profiles/immbot_approved_1536.json` for
