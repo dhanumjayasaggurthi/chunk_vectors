@@ -67,8 +67,10 @@ python main.py --embed-existing --profile profiles/clinical_1536.json \
 
 The durable ledger stores `status`, `attempts`, `error_code`,
 `error_message`, `processing_comment`, `owner`, `claim_token`,
-`lease_until` and `updated_at`. If a profile declares a text note column,
-a concise error note is also stored on the original source row.
+`lease_until` and `updated_at`. Failed attempts are also saved to the
+append-only `embedding_runtime.failure_events` table, so their reasons remain
+available after the row is later retried successfully. A configured text note
+column gets a concise current error on the original source row.
 
 Inspect results with read-only SQL:
 
@@ -79,6 +81,10 @@ SELECT row_id, error_code, error_message, processing_comment, attempts
 FROM embedding_runtime.tasks
 WHERE job_key = '<job_key_returned_by_cli>' AND status = 'FAILED'
 ORDER BY updated_at DESC LIMIT 100;
+SELECT row_id, error_code, error_message, processing_comment, occurred_at
+FROM embedding_runtime.failure_events
+WHERE job_key = '<job_key_returned_by_cli>'
+ORDER BY occurred_at DESC LIMIT 100;
 ```
 
 Failures in one input generate a recorded FAILED task and do not block other
