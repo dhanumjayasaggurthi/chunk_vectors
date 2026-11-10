@@ -55,6 +55,9 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "existing_chunks.id_column", "existing_chunks.text_column",
             "existing_chunks.vector_column", "existing_chunks.note_column",
             "embedding.progress_every_batches",
+            "embedding.batch_tokens", "embedding.rpm", "embedding.tpm",
+            "embedding.max_attempts", "embedding.timeout_seconds",
+            "embedding.lease_seconds", "embedding.enqueue_page_size",
             "extracted_content.schema", "extracted_content.table",
             "extracted_content.doc_id_column", "extracted_content.text_column",
             "extracted_content.page_column", "extracted_content.position_column",
@@ -80,7 +83,9 @@ def validate_profile(profile: dict) -> None:
         "chunking": {"strategy", "min_tokens", "max_tokens", "overlap_tokens",
                      "small_section_policy", "preserve_headers", "tokenizer"},
         "embedding": {"enabled", "reuse_existing", "batch_size",
-                      "dimensions", "deployment", "model", "progress_every_batches"},
+                      "dimensions", "deployment", "model", "progress_every_batches",
+                      "batch_tokens", "rpm", "tpm", "max_attempts",
+                      "timeout_seconds", "lease_seconds", "enqueue_page_size"},
         "metadata": {"document", "chunk", "inherit_document_fields"},
         "existing_chunks": {"schema", "table", "id_column", "text_column",
                             "vector_column", "note_column"},
@@ -111,8 +116,19 @@ def validate_profile(profile: dict) -> None:
     emb = profile["embedding"]
     if type(emb.get("enabled")) is not bool or type(emb.get("reuse_existing")) is not bool:
         raise ValueError("embedding flags must be boolean")
-    if type(emb.get("batch_size")) is not int or not 1 <= emb["batch_size"] <= 128:
-        raise ValueError("embedding.batch_size must be between 1 and 128")
+    if type(emb.get("batch_size")) is not int or not 1 <= emb["batch_size"] <= 2048:
+        raise ValueError("embedding.batch_size must be between 1 and 2048")
+    bounds = {
+        "batch_tokens": (1, 300000), "rpm": (0, 10000000),
+        "tpm": (0, 1000000000), "max_attempts": (1, 20),
+        "timeout_seconds": (5, 600), "lease_seconds": (40, 3600),
+        "enqueue_page_size": (100, 10000),
+    }
+    for key, (low, high) in bounds.items():
+        if key in emb and (type(emb[key]) is not int or not low <= emb[key] <= high):
+            raise ValueError(f"Invalid embedding.{key}; expected integer {low}..{high}")
+    if emb.get("lease_seconds", 300) <= emb.get("timeout_seconds", 90) + 30:
+        raise ValueError("embedding.lease_seconds must exceed timeout_seconds by at least 30s")
     if "dimensions" in emb and (
         type(emb["dimensions"]) is not int or not 1 <= emb["dimensions"] <= 16000
     ):
