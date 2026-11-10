@@ -107,8 +107,10 @@ Do not treat local tests as a substitute for staging database/AI integration, so
 
 Configure `[AZURE_OPENAI_EMBEDDING]` in the existing private config.ini to point at your text-embedding-3-large deployment, then run:
 
-    python main.py --profile profiles/haq_question_3072.json --embed-existing --dry-run --max-files 100
+    python main.py --profile profiles/haq_question_3072.json --embed-existing --set embedding.rpm=YOUR_HAQ_APPROVED_RPM --set embedding.tpm=YOUR_HAQ_APPROVED_TPM --dry-run --max-files 100
     python main.py --profile profiles/haq_question_3072.json --embed-existing
+
+Do not use the immbot gateway limits for a different HAQ Azure deployment without verifying and coordinating its actual quota. The HAQ profile intentionally omits RPM/TPM, so production embedding requires both overrides (or equivalent approved values in that profile).
 
 The example uses `public.haq_query(id, question, question_embedding)`; update schema/column names for your actual table. The target column must be `vector(3072)` already; no schema changes or PDF extraction are performed by `--embed-existing`. The existing 1536-dimensional pipeline remains the default when a dimension is not configured. A dimension mismatch is rejected before sending anything to Azure. A custom Azure deployment can be selected using `embedding.deployment` in the profile; if Azure's model is `text-embedding-3-large`, keep the profile's model selection. Only NULL vectors are incrementally processed; changed already-embedded questions still require a separate fingerprint-based refresh feature.
 
