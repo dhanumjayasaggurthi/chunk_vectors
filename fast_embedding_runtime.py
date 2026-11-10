@@ -130,6 +130,8 @@ def validate(profile, azure, max_chunks):
         release(conn)
     return dict(table=table,id=id_col,text=txt_col,vec=vec_col,
                 note=_safe_identifier(src["note_column"]) if src.get("note_column") else None,
+                note_limit=max(1,min(400,columns[src["note_column"]][1]-4))
+                    if src.get("note_column") and columns[src["note_column"]][1]>=4 else 400,
                 idtype=idtype,dim=dimensions)
 
 def initialize(job, quota_key, rpm, tpm):
@@ -222,7 +224,7 @@ def mark(c, token, row_id, status, code=None, message=None, comment=None):
               (status,code,(message or "")[:1500],(comment or "")[:1000],c["job"],row_id,token))
             owned=bool(cur.fetchone())
             if owned and c["note"] and code:
-                text=(code+": "+(message or ""))[:400]
+                text=(code+": "+(message or ""))[:c["note_limit"]]
                 where=f" AND {c['vec']} IS NULL" if c["reuse"] else ""
                 cur.execute(f"UPDATE {c['table']} SET {c['note']}=%s WHERE {c['id']}=%s::{c['idtype']}{where}",
                             (text,row_id))
@@ -334,6 +336,16 @@ def call(c, session, texts):
         raise ApiError(type(ex).__name__+": "+str(ex)[:250]) from ex
     if response.status_code in (401,403,404):
         raise FatalApiError(f"Authentication/deployment configuration HTTP {response.status_code}")
+    if response.status_code in (400,422):
+        try:
+            detail=response.json().get("error",{})
+            parameter=str(detail.get("param","")).lower()
+            reason=str(detail.get("code","")).lower()
+            if parameter in ("model","dimensions","deployment") or reason in (
+                "deploymentnotfound","invalidmodel","invaliddeployment"):
+                raise FatalApiError("Embedding configuration error: "+str(detail)[:300])
+        except (TypeError,ValueError,AttributeError):
+            pass
     if not response.ok:
         delay=2
         for key,factor in (("retry-after-ms",.001),("Retry-After",1)):
@@ -365,6 +377,8 @@ def do_batch(c,session,token,items,stop):
         try:
             vectors=call(c,session,[x[1] for x in items])
             persist(c,token,[(x[0],x[2],v) for x,v in zip(items,vectors)])
+            txn("""UPDATE embedding_runtime.quota SET multiplier=LEAST(1,multiplier+.002)
+                    WHERE deployment_key=%s""",(c["quota"],))
             return
         except ApiError as ex:
             err=ex
@@ -492,6 +506,8 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
         if not 1<=c["batch_size"]<=2048 or not 1<=c["batch_tokens"]<=300000:
             raise ValueError("Invalid batch constraints")
         if c["lease"]<=c["timeout"]+30:raise ValueError("Lease must exceed timeout by >30 seconds")
+        if tpm and c["batch_tokens"]>tpm:
+            raise ValueError("batch_tokens must not exceed deployment TPM")
         if dry_run:
             where=f"WHERE {c['vec']} IS NULL" if c["reuse"] else ""
             n=txn(f"SELECT count(*) FROM {c['table']} {where}",fetch=True)[0][0]
