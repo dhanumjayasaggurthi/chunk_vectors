@@ -70,7 +70,7 @@ def main() -> int:
                     headers={"api-key": settings["api_key"], "Content-Type": "application/json"},
                     json=payload, timeout=(10, 30))
             except requests.RequestException as exc:
-                print("Request failed:",type(exc).__name__,str(exc)[:200],file=sys.stderr)
+                print("Request failed:",type(exc).__name__,file=sys.stderr)
                 return 2
             print(f"Sample {sample + 1}/{args.samples}: HTTP {response.status_code}")
             observed = {name: response.headers[name] for name in HEADERS
