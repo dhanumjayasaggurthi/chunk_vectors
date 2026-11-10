@@ -21,7 +21,8 @@ not read the source chunk table, text, vectors, or Azure credentials.
 - Optional historical failures and the shared database quota configuration.
 
 Snapshots are cached for 30 seconds and refresh at most once per minute
-per open browser session. The job counts may scan the metadata ledger, so
+per open browser session. The sidebar can restrict the view to the
+5, 10, 20 or 30 latest jobs to reduce the cost of counting large ledgers. The job counts may scan the metadata ledger, so
 monitoring many jobs still consumes some DB resources. Every read is
 server-side bounded by a 12-second SQL statement timeout.
 
@@ -41,6 +42,11 @@ Run with the same local `config.ini` that defines your `[POSTGRES]`
 connection. The dashboard uses only the `[POSTGRES]` section.
 
 ```bash
+# Safe background launcher (localhost only, does not affect embeddings):
+bash start_dashboard.sh
+tail -f dashboard.log
+
+# Or foreground:
 ./venv/bin/python -m streamlit run embedding_dashboard.py \
   --server.address 127.0.0.1 --server.port 8501
 ```
@@ -58,6 +64,7 @@ ssh -N -L 8501:127.0.0.1:8501 YOUR_LINUX_USER@YOUR_LINUX_HOST
 Then open **http://localhost:8501** in your local browser.
 
 The Streamlit app is **separate from** `start_embed.sh`.
+`start_dashboard.sh` stores `dashboard.pid` and writes `dashboard.log`.
 Stopping/restarting the dashboard does not stop the embedding worker.
 The embedding worker can continue running in the background with `nohup`,
 or be supervised independently by systemd.
