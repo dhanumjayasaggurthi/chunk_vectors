@@ -1,32 +1,83 @@
-# Streamlit embedding operations dashboard
+# Document Embedding Intelligence — Streamlit dashboard
 
-This application is a **read-only monitor** for existing PostgreSQL embedding
-jobs. It does not start, cancel, retry, or modify any embedding run. It does
-not read the source chunk table, text, vectors, or Azure credentials.
+The dashboard has been redesigned for **business leadership first** and
+engineering operators second. It reads PostgreSQL only; it cannot start,
+stop, cancel, retry, or update embeddings. There is no extra queue or
+monitoring database.
 
-## What it shows
+## Three views
 
-- Last 30 jobs in `embedding_runtime.runs`, ordered by creation date.
-- Source schema/table, profile name, model and pilot cap for jobs launched
-  by the latest runtime version.
-- Existing pilot/full jobs started on older runtime versions still appear by
-  job key, but may lack human-readable table/model metadata until restarted.
-- Per-job discovered, success, failed, skipped, pending and running counts.
-- Active *unexpired lease* count and newest lease expiration timestamp.
-- Expandable per-worker active claims showing the worker UUID and, for
-  newly started runtime processes, the server hostname.
-- Progress of discovered tasks; not the current total number of NULL source
-  vectors, especially while ingestion is adding more rows.
-- Session-local success-throughput trend calculated between dashboard refreshes.
-- Failed-row error codes and comments, optional detailed error messages,
-  and bounded CSV download (max 200 rows).
-- Optional historical failures and the shared database quota configuration.
+### Executive overview: document completion
 
-Snapshots are cached for 30 seconds and refresh at most once per minute
-per open browser session. The sidebar can restrict the view to the
-5, 10, 20 or 30 latest jobs to reduce the cost of counting large ledgers. The job counts may scan the metadata ledger, so
-monitoring many jobs still consumes some DB resources. Every read is
-server-side bounded by a 12-second SQL statement timeout.
+Uses the actual source table (for immbot:
+`regulatory.palm_paw.doc_chunks_immbot_approved`) to report:
+
+- **Total documents:** distinct nonblank `doc_id` values.
+- **Fully embedded documents:** every source chunk for that `doc_id`
+  has a non-NULL `chunk_vector`; the document is fully ready.
+- **Partially embedded:** at least one vector exists but other chunks
+  in the same document still have NULL vectors.
+- **Not started:** no source chunk in the document has a vector.
+- **Needs attention:** documents with at least one still-missing vector
+  whose `embedding_processing_note` is non-NULL. Not all such notes
+  indicate a fatal error.
+- **Chunk totals / stored vectors / missing chunks:** counts across the
+  source table, including vectors created before this backfill.
+- **Coverage percentages:** fully ready documents divided by all
+  identifiable documents, and embedded chunks divided by all chunks.
+- **Largest unfinished documents:** 25 documents ranked by missing
+  chunks, with representative file name and completion percentage.
+
+These figures intentionally differ from job SUCCESS/FAILED/PENDING counts:
+a source row may already contain a vector from an earlier run, a job can
+have failures while other documents are complete, and old job ledgers
+may overlap. **Do not add job success counts to get document coverage.**
+
+`doc_id` is treated as the document identity; `chunk_id` remains the unique
+individual chunk key. Null/blank document IDs are excluded from document
+counts but included in chunk totals, and flagged as unmapped.
+
+### Document explorer: verification and audit
+
+Choose one of the 25 largest unfinished documents or paste an exact
+`doc_id`. The lookup uses the existing source `doc_id` B-tree index.
+Inspect total chunks, stored vectors, missing vectors, unresolved notes,
+`chunk_index`, `chunk_total` consistency and per-chunk readiness.
+The UI returns at most 200 chunk rows per document; summary totals
+include the full document.
+
+The explorer never retrieves `chunk_text` or vector values, but document
+IDs, file names and notes are still business metadata. Access control
+remains mandatory.
+
+### Engineering operations
+
+Includes the existing job ledger, latest 5–30 job summaries, active
+claim owner/hostname, worker lease state, recent success throughput,
+failure breakdown and bounded CSV, optional historical errors and
+configured deployment RPM/TPM. Older jobs lacking source metadata
+remain visible by their job keys.
+
+## Performance and refresh strategy
+
+- The **task ledger** has a 30-second cache and refreshes at most every
+  60 seconds while the dashboard is open.
+- **Source document rollups** aggregate the entire selected source table
+  by `doc_id`. These are deliberately cached for **10 minutes** across
+  browser sessions and limited to **60 seconds** of PostgreSQL query time.
+  For a million-row table this is heavier than reading job summaries;
+  do not manually refresh repeatedly during a heavy backfill.
+- The **document explorer** queries exactly one `doc_id` and returns
+  no more than 200 rows. The result is cached briefly.
+- No per-row success logs, extra queue or monitoring-write transactions
+  are introduced.
+
+If full-table document aggregation exceeds the 60-second budget,
+the UI shows a clear timeout message rather than holding a query open.
+For a permanent, high-frequency executive screen with many viewers,
+the next scale step would be an incrementally maintained document
+summary table or scheduled materialized view—not running a million-row
+group-by every minute.
 
 ## Install
 
@@ -81,10 +132,15 @@ or be supervised independently by systemd.
 ## Least privilege
 
 Ideally configure a dedicated PostgreSQL login with **SELECT-only**
-access to `embedding_runtime.runs`, `tasks`, `quota`, and
-`failure_events`. A DBA can grant read-only access to the
-`embedding_runtime` schema. Do not expose ingestion write credentials
-to dashboard users.
+access to `embedding_runtime.runs`, `tasks`, `quota`,
+`failure_events` **and SELECT on each monitored source chunk table**.
+For immbot, grant read-only access to
+`palm_paw.doc_chunks_immbot_approved`. The dashboard needs only
+`doc_id`, `chunk_id`, `chunk_vector` NULL status,
+`file_name`, `chunk_total`, `chunk_index`, `updated_at`
+and `embedding_processing_note` for its source view.
+It does not select source text or vector values. The recommended
+PostgreSQL credentials cannot modify embedding data.
 
 Instead of editing `config.ini`, override the monitoring database login
 with environment variables:
@@ -140,9 +196,16 @@ It is not a durable SLA measurement or a substitute for Azure telemetry.
   introduced after the original job started. The hashed job key,
   creation date and task statuses are still available. New worker
   startup fills in metadata without changing the job key.
-- **High database load**: close unused dashboards, keep 60-second refreshes
-  or disable auto-refresh. The monitor queries task counts; it deliberately
-  does not add any DB-write counters or an additional queue.
+- **High database load**: close unused dashboards. Executive document
+  totals are cached 10 minutes; the operations view refreshes every minute.
+  Consider a read replica or maintained aggregate for many concurrent
+  leadership viewers. No DB-write counters or extra queues are introduced.
+- **Document view says source mapping unavailable**: the selected profile
+  must refer to a source table with a text `doc_id` column, and the
+  dashboard user must have SELECT permission on that table.
+- **Document figures differ from job task counts**: this is intentional;
+  the executive page counts all current source vectors, including old
+  vectors, whereas job ledgers record particular embedding attempts.
 - **Stale progress**: a job may be rate-limited, stopped, or have no new
   successful rows; compare claims and pending counts, then check
   `embedlogs.log` and `logs/epod_pipeline.log`.
