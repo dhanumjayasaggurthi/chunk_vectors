@@ -30,9 +30,9 @@ st.set_page_config(
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def read_snapshot():
+def read_snapshot(job_limit):
     # Cache protects the DB from refresh storms across browser sessions.
-    return fetch_overview()
+    return fetch_overview(job_limit)
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -94,9 +94,9 @@ def observed_rate(history):
     return max(0, end[1] - start[1]) * 60.0 / duration
 
 
-def render_dashboard():
+def render_dashboard(job_limit):
     with st.spinner("Reading embedding job ledger..."):
-        snapshot = read_snapshot()
+        snapshot = read_snapshot(job_limit)
 
     st.caption(
         f"Database snapshot: {snapshot['at'].strftime('%Y-%m-%d %H:%M:%S UTC')} · "
@@ -121,7 +121,8 @@ def render_dashboard():
                 if j.get("source_schema") and j.get("source_table")
                 else "Unknown (older job)"
             ),
-            "Type": f"Pilot ({j['max_chunks']:,})" if j.get("max_chunks") else "Full / older",
+            "Type": (f"Pilot ({j['max_chunks']:,})" if j.get("max_chunks")
+                     else ("Full" if j.get("source_table") else "Unknown (older job)")),
             "Phase": summary["phase"],
             "Discovered": summary["total"],
             "Successful": summary["SUCCESS"],
@@ -300,6 +301,7 @@ def main():
     with st.sidebar:
         st.header("Monitor")
         auto = st.toggle("Auto-refresh", value=True)
+        job_limit = st.selectbox("Show latest jobs", [5, 10, 20, 30], index=2)
         st.caption("One snapshot each minute. PostgreSQL is queried only while the dashboard is open.")
         if st.button("Refresh now", use_container_width=True):
             read_snapshot.clear()
@@ -310,11 +312,11 @@ def main():
     try:
         if auto and hasattr(st, "fragment"):
             # Streamlit 1.37+ supports scheduled fragment reruns.
-            st.fragment(run_every="60s")(render_dashboard)()
+            st.fragment(run_every="60s")(render_dashboard)(job_limit)
         else:
             if auto:
                 st.info("Auto-refresh needs Streamlit with st.fragment; use Refresh now on older versions.")
-            render_dashboard()
+            render_dashboard(job_limit)
     except (psycopg2.Error, ValueError) as error:
         # Never display a DSN, password, internal host or SQL details.
         st.error(f"Could not read embedding_runtime tables ({type(error).__name__}).")
