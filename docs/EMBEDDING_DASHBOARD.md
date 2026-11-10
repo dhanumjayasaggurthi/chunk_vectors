@@ -13,6 +13,8 @@ not read the source chunk table, text, vectors, or Azure credentials.
   job key, but may lack human-readable table/model metadata until restarted.
 - Per-job discovered, success, failed, skipped, pending and running counts.
 - Active *unexpired lease* count and newest lease expiration timestamp.
+- Expandable per-worker active claims showing the worker UUID and, for
+  newly started runtime processes, the server hostname.
 - Progress of discovered tasks; not the current total number of NULL source
   vectors, especially while ingestion is adding more rows.
 - Session-local success-throughput trend calculated between dashboard refreshes.
@@ -131,6 +133,9 @@ It is not a durable SLA measurement or a substitute for Azure telemetry.
   credentials, SSL policies, SELECT grants and 12-second statement timeout.
 - **No jobs**: verify that the dashboard and workers use the *same*
   PostgreSQL database and that `embedding_runtime.runs` exists.
+- **Worker shown as UUID without hostname**: claim-owner hostnames were added
+  after the original deployment. The existing worker can continue without
+  interruption; only future starts include host:UUID.
 - **Unknown source table / profile for an old job**: those fields were
   introduced after the original job started. The hashed job key,
   creation date and task statuses are still available. New worker
