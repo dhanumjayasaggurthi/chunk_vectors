@@ -480,9 +480,18 @@ def worker(c,owner,stop):
             if ids:
                 process(c,session,token,ids,stop)
                 continue
-            states,done=status(c)
-            if done and not states.get("PENDING",0) and not states.get("RUNNING",0):
-                return
+            # Completion probe must use indexes, not aggregate COUNT(*) across
+            # millions of historical task rows from every idle worker.
+            completed=txn("SELECT discovery_done FROM embedding_runtime.runs WHERE job_key=%s",
+                          (c["job"],),True)[0][0]
+            if completed:
+                remaining=txn("""SELECT EXISTS(SELECT 1 FROM embedding_runtime.tasks
+                   WHERE job_key=%s AND status='PENDING' LIMIT 1),
+                   EXISTS(SELECT 1 FROM embedding_runtime.tasks
+                   WHERE job_key=%s AND status='RUNNING' LIMIT 1)""",
+                   (c["job"],c["job"]),True)[0]
+                if not any(remaining):
+                    return
             stop.wait(1)
     finally:
         session.close()
