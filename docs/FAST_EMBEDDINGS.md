@@ -194,6 +194,7 @@ Examples, when deployment quota changes are coordinated:
 ```bash
 # Different profile, still a capped pilot:
 EMBED_PROFILE=profiles/haq_question_1536.json \
+EMBED_RPM=<HAQ_APPROVED_RPM> EMBED_TPM=<HAQ_APPROVED_TPM> \
 EMBED_MODE=pilot EMBED_MAX_FILES=1000 ./start_embed.sh
 
 # The approved measured immbot profile with explicit full mode:
