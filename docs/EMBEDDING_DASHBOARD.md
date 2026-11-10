@@ -26,7 +26,9 @@ Uses the actual source table (for immbot:
 - **Coverage percentages:** fully ready documents divided by all
   identifiable documents, and embedded chunks divided by all chunks.
 - **Largest unfinished documents:** 25 documents ranked by missing
-  chunks, with representative file name and completion percentage.
+  chunks, with representative file name and completion percentage. This
+  shortlist can be downloaded as a CSV for stakeholder review; it is not a
+  bulk export of confidential source text.
 
 These figures intentionally differ from job SUCCESS/FAILED/PENDING counts:
 a source row may already contain a vector from an earlier run, a job can
