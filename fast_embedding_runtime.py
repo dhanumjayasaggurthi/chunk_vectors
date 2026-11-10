@@ -12,6 +12,7 @@ import logging
 import math
 import random
 import signal
+import socket
 import threading
 import time
 import uuid
@@ -585,7 +586,9 @@ def embed_existing(profile, *, dry_run=False, max_chunks=None, workers=1,
         1,workers+8,host=POSTGRES["host"],port=POSTGRES["port"],
         dbname=POSTGRES["database"],user=POSTGRES["user"],password=POSTGRES["password"])
     stop=threading.Event()
-    owner=str(uuid.uuid4())
+    # Hostname allows operators to distinguish active claims across servers.
+    # UUID keeps distinct processes on the same host isolated.
+    owner=f"{socket.gethostname()}:{uuid.uuid4()}"
     handlers={}
     try:
         c=validate(profile,azure,max_chunks)
