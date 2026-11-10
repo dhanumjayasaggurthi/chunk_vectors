@@ -242,6 +242,13 @@ def executive_view(dataset, snapshot):
                     ),
                 },
             )
+            st.download_button(
+                "Download highest-backlog documents (CSV)",
+                safe_csv(priority.to_dict("records")),
+                file_name=f"document_backlog_{dataset['table']}.csv",
+                mime="text/csv",
+                help="Exports the 25 highlighted documents, not the entire source table.",
+            )
 
     st.caption(
         f"Source snapshot: {report['snapshot_at'].strftime('%Y-%m-%d %H:%M:%S UTC')}. "
