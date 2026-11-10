@@ -84,8 +84,9 @@ Thus **1,000,000 TPM is an observed gateway header**; actual sustainable
 TPM and RPM can also be constrained by shared enterprise clients and
 gateway policies. **Actual RPM has not been confirmed.**
 
-The recommended pilot settings are **30 RPM and 750,000 TPM**: intentionally
-cautious safety caps, *not* verified quota grants.
+The original pilot settings were **30 RPM and 750,000 TPM**: intentionally
+cautious historical caps, *not* verified quota grants. The current shared
+database cap is **900,000 TPM**; new processes must match it.
 
 Read endpoint limits without touching source rows:
 
@@ -182,8 +183,8 @@ The same capped pilot can be invoked directly in the foreground:
 ./venv/bin/python -u main.py --embed-existing \
   --profile profiles/immbot_approved_1536.json \
   --doc-workers 4 --max-files 1000 \
-  --set embedding.batch_size=128 --set embedding.batch_tokens=24000 \
-  --set embedding.rpm=30 --set embedding.tpm=750000
+  --set embedding.batch_size=128 --set embedding.batch_tokens=48000 \
+  --set embedding.rpm=30 --set embedding.tpm=900000
 ```
 
 **Pilot rerun note:** `--max-files 1000` is part of the durable job key. A
