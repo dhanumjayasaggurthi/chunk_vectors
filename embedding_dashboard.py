@@ -99,7 +99,8 @@ def render_dashboard(job_limit):
         snapshot = read_snapshot(job_limit)
 
     st.caption(
-        f"Database snapshot: {snapshot['at'].strftime('%Y-%m-%d %H:%M:%S UTC')} · "
+        f"Database: {snapshot['database']} · "
+        f"Snapshot: {snapshot['at'].strftime('%Y-%m-%d %H:%M:%S UTC')} · "
         "Read-only · 60-second auto-refresh if enabled"
     )
 
