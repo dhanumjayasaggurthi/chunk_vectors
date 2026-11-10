@@ -9,13 +9,24 @@ per-deployment throttle accounting, retries and per-row failure isolation.
 **Current implementation branch:** `feat/distributed-fast-embeddings`,
 draft PR #3. The existing PDF-ingestion and RAG paths are unchanged.
 
-## Monitor all jobs in Streamlit
+## Executive and engineering monitoring in Streamlit
 
-The read-only dashboard displays the status of pilots and full jobs across
-servers, active lease counts, per-job throughput samples, failure details and
-quota caps. It uses PostgreSQL; it does not read source documents, start jobs
-or consume embedding API quota. New runner starts record readable
-source-table/profile metadata; older jobs appear by hashed job key.
+The read-only dashboard has an **executive overview** with distinct document
+counts from `doc_id`, fully/partially/not-embedded documents, total stored and
+missing chunk vectors, and the highest-backlog documents (exportable CSV).
+A **document explorer** supports exact `doc_id` lookups and chunk-level
+readiness. The separate **engineering operations** view retains worker claims,
+per-job throughput samples, failures/history and quota caps.
+
+Unlike individual job task counts, leadership metrics come from the actual
+source table and include previously embedded chunks. They require read
+permissions on the source table and use a 10-minute cache plus a 60-second
+query timeout. The source document rollup can be moderately expensive while
+embedding writes are active; it never reads vector values or source text.
+
+The dashboard does not start jobs or consume embedding API quota. New runner
+starts record readable source-table/profile metadata; older jobs appear by
+hashed job key.
 
 ```bash
 ./venv/bin/python -m streamlit run embedding_dashboard.py \
