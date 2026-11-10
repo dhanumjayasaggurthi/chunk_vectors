@@ -96,12 +96,13 @@ claim token and conditional on the source-text MD5.
 
 The starting values are 128 texts/request, 24k input tokens/request and
 16 concurrent worker threads per Linux host. Adjust from observed input
-lengths, Azure quotas and database write time. Define **both** `embedding.rpm`
-and `embedding.tpm` for deterministic cross-machine throttle. If both are
-omitted, 429-driven shared cooldown still works but a high worker count can
-initially hit the gateway limit. There is no guarantee of zero 429s.
+lengths, Azure quotas and database write time. Configure **both** `embedding.rpm` and `embedding.tpm` using the approved
+deployment/gateway quotas. Production execution refuses to start if either
+is missing or non-positive. This prevents an unbounded multi-host request storm.
+There is still no guarantee of zero 429s.
 
-All processes targeting the same deployment must agree on RPM and TPM.
+Set `embedding.batch_tokens` at or below deployment TPM. All processes
+targeting the same deployment must agree on RPM and TPM.
 The token bucket reserves one request and its estimated input tokens for
 every attempt, including retries. A 429 adds shared cooldown and decreases
 permitted rate; successful batches gradually recover rate.
