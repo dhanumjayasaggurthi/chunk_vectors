@@ -296,8 +296,11 @@ def commit_vectors(c, token, rows):
     conn=db()
     try:
         with conn.cursor() as cur:
+            # Acquire row locks in a deterministic order. The heartbeat uses
+            # SKIP LOCKED so it never waits on these in-flight commits.
             cur.execute("""SELECT row_id FROM embedding_runtime.tasks WHERE job_key=%s
-              AND claim_token=%s AND status='RUNNING' AND row_id=ANY(%s) FOR UPDATE""",
+              AND claim_token=%s AND status='RUNNING' AND row_id=ANY(%s)
+              ORDER BY row_id FOR UPDATE""",
               (c["job"],token,[r[0] for r in rows]))
             owned={r[0] for r in cur.fetchall()}
             values=[(rid,"["+",".join(map(str,vec))+"]",md5) for rid,md5,vec in rows if rid in owned]
@@ -327,17 +330,47 @@ def commit_vectors(c, token, rows):
     finally:
         release(conn)
 
+# PostgreSQL deadlocks and serialization conflicts are transient. Retry the
+# database commit of already-generated vectors rather than making another
+# expensive embedding API call or falsely classifying the source row as bad.
+_RETRYABLE_SQLSTATES = frozenset(("40P01", "40001", "55P03"))
+_DB_COMMIT_ATTEMPTS = 6
+
+
 def persist(c, token, rows):
-    try:
-        done=commit_vectors(c,token,rows)
-    except (psycopg2.DataError,psycopg2.IntegrityError) as err:
-        if len(rows)>1:
-            n=len(rows)//2
-            persist(c,token,rows[:n])
-            persist(c,token,rows[n:])
-            return
-        mark(c,token,rows[0][0],"FAILED","DB_WRITE",str(err),"Inspect source constraints")
+    if not rows:
         return
+    for attempt in range(_DB_COMMIT_ATTEMPTS):
+        try:
+            done=commit_vectors(c,token,rows)
+            break
+        except psycopg2.Error as err:
+            if err.pgcode in _RETRYABLE_SQLSTATES:
+                if attempt+1 == _DB_COMMIT_ATTEMPTS:
+                    LOG.error(
+                        "DB persistence contention did not clear after %d tries; "
+                        "SQLSTATE=%s job_key=%s batch_rows=%d. Stopping for safe resume.",
+                        _DB_COMMIT_ATTEMPTS,err.pgcode,c["job"],len(rows),
+                    )
+                    raise
+                delay=min(2.0,0.1*(2**attempt))+random.random()*.1
+                LOG.warning(
+                    "Retryable DB lock conflict SQLSTATE=%s job_key=%s batch_rows=%d "
+                    "attempt=%d/%d retry_in=%.2fs",
+                    err.pgcode,c["job"],len(rows),attempt+1,_DB_COMMIT_ATTEMPTS,delay,
+                )
+                time.sleep(delay)
+                continue
+            if isinstance(err,(psycopg2.DataError,psycopg2.IntegrityError)):
+                if len(rows)>1:
+                    n=len(rows)//2
+                    persist(c,token,rows[:n])
+                    persist(c,token,rows[n:])
+                    return
+                mark(c,token,rows[0][0],"FAILED","DB_WRITE",str(err),
+                     "Inspect source constraints")
+                return
+            raise
     for rid,_,_ in rows:
         if rid not in done:
             mark(c,token,rid,"FAILED","SOURCE_CHANGED",
@@ -497,13 +530,33 @@ def process(c,session,token,ids,stop):
         tokens+=count
     if batch:do_batch(c,session,token,batch,stop)
 
+def renew_leases(c,owner):
+    """Nonblocking lease refresh for this process.
+
+    A single owner spans several worker threads. Updating every RUNNING row
+    without SKIP LOCKED can deadlock with multiple concurrent batch commits,
+    each holding different task-row locks. Never wait on a persisting batch.
+    Rows skipped here retain their lease until the next heartbeat; they are
+    ordinarily committed before then.
+    """
+    return txn("""WITH unlocked AS (
+           SELECT job_key,row_id FROM embedding_runtime.tasks
+           WHERE job_key=%s AND owner=%s AND status='RUNNING'
+           ORDER BY row_id
+           FOR UPDATE SKIP LOCKED
+       )
+       UPDATE embedding_runtime.tasks AS t
+          SET lease_until=now()+(%s*interval '1 second')
+       FROM unlocked u
+       WHERE t.job_key=u.job_key AND t.row_id=u.row_id
+         AND t.owner=%s AND t.status='RUNNING'""",
+       (c["job"],owner,c["lease"],owner))
+
+
 def heartbeat(c,owner,stop):
     while not stop.wait(max(5,c["lease"]//4)):
         try:
-            txn("""UPDATE embedding_runtime.tasks SET
-                lease_until=now()+(%s*interval '1 second')
-                WHERE job_key=%s AND owner=%s AND status='RUNNING'""",
-                (c["lease"],c["job"],owner))
+            renew_leases(c,owner)
         except Exception:
             LOG.exception("Heartbeat error; claim expiration is recoverable")
 
