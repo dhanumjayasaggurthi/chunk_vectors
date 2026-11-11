@@ -68,7 +68,7 @@ def read_quotas(project,services=SERVICES):
 
 
 def format_quota(item):
-    units=item.get("unit","—")
+    units=item.get("metricUnit",item.get("unit","—"))
     infos=item.get("dimensionsInfos") or []
     if not infos:
         return str(item.get("quotaId","")),units,"not available", "—"
@@ -76,9 +76,9 @@ def format_quota(item):
     for detail in infos:
         dimensions=detail.get("dimensions") or {}
         value=detail.get("details") or {}
-        amount=value.get("value",detail.get("quotaValue","not reported"))
+        amount=value.get("quotaValue",value.get("value","not reported"))
         parts.append(f"{dimensions or 'project'}={amount}")
-    return str(item.get("quotaId","")),units,"; ".join(parts),str(item.get("metric","—"))
+    return str(item.get("quotaId","")),units,"; ".join(parts),str(item.get("metricDisplayName",item.get("metric","—")))
 
 
 def main(argv=None):
