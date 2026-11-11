@@ -75,6 +75,23 @@ class TestNativePdfCheckpoint(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"OCR-candidate"):
                 load_complete_pages(out["output_dir"])
 
+    def test_identical_bytes_different_sources_keep_distinct_document_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first=Path(tmp)/"first.pdf"
+            second=Path(tmp)/"second.pdf"
+            self.make_pdf(first)
+            second.write_bytes(first.read_bytes())
+            policy=ExtractionPolicy(range_pages=5,cpu_processes=1)
+            a=run_local(first,Path(tmp)/"out",policy)
+            b=run_local(second,Path(tmp)/"out",policy)
+            self.assertNotEqual(a["job_key"],b["job_key"])
+            with gzip.open(Path(a["output_dir"])/"manifest.json.gz","rt") as f:
+                ma=json.load(f)
+            with gzip.open(Path(b["output_dir"])/"manifest.json.gz","rt") as f:
+                mb=json.load(f)
+            self.assertEqual(ma["source_sha256"],mb["source_sha256"])
+            self.assertNotEqual(ma["document_id"],mb["document_id"])
+
     def test_file_version_change_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             pdf=Path(tmp)/"sample.pdf"
