@@ -45,6 +45,37 @@ class TestRealDatabase(TestCase):
         engine.POOL.closeall()
         engine.POOL=None
 
+    def test_heartbeat_skips_rows_locked_by_batch_commit(self):
+        """Critical regression: heartbeat must never wait on a locked task row."""
+        engine.discover(self.cfg,threading.Event(),None)
+        token,rows=engine.claim(self.cfg,"shared-worker-owner")
+        self.assertEqual(len(rows),8)
+        locker=psycopg2.connect(**self.params)
+        try:
+            with locker.cursor() as cur:
+                cur.execute("""SELECT row_id FROM embedding_runtime.tasks
+                    WHERE job_key=%s AND row_id=%s FOR UPDATE""",
+                    (self.job,rows[0]))
+                self.assertEqual(cur.fetchone()[0],rows[0])
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                # PostgreSQL statement_timeout protects CI from hanging if
+                # the heartbeat accidentally regresses to blocking UPDATE.
+                original_db=engine.db
+                def heartbeat_db():
+                    conn=original_db()
+                    with conn.cursor() as cur:
+                        cur.execute("SET LOCAL statement_timeout='2000ms'")
+                    return conn
+                with mock.patch.object(engine,"db",side_effect=heartbeat_db):
+                    future=executor.submit(engine.renew_leases,self.cfg,
+                                           "shared-worker-owner")
+                    updated=future.result(timeout=5)
+            self.assertEqual(updated,7)
+        finally:
+            locker.rollback()
+            locker.close()
+        self.assertEqual(engine.renew_leases(self.cfg,"shared-worker-owner"),8)
+
     def test_discovery_claim_isolation_and_per_row_failures(self):
         engine.discover(self.cfg,threading.Event(),None)
         token,ids=engine.claim(self.cfg,"worker-1")
