@@ -1,3 +1,34 @@
+## Ingestion v2 foundation (experimental, no production writes)
+
+A separate opt-in pilot now supports bounded PyMuPDF page-range extraction
+using independent CPU processes and atomic gzip checkpoints, a
+**configurable 600-target / 800-max token** layout chunker, explicit source
+element/bbox lineage, optional evidence-backed typed document metadata,
+and read-only Cloud Vision / Document AI project-quota inspection.
+
+It does **not yet** replace the production extraction path or run GCP OCR,
+upload artifacts to S3, coordinate workers across servers or write vectors.
+The local pilot deliberately refuses to chunk documents whose OCR-candidate
+pages have not been resolved.
+
+```bash
+# Read-only page count / task plan
+./venv/bin/python -m ingestion_v2.cli plan --pdf /path/to/sample.pdf
+
+# Native extraction: safe first two page ranges
+./venv/bin/python -m ingestion_v2.cli extract \
+  --pdf /path/to/sample.pdf \
+  --output /tmp/ingestion-v2-pilot \
+  --profile profiles/ingestion_v2_general.json
+
+# Read the applied GCP Vision / Document AI quota values:
+./venv/bin/python scripts/check_gcp_quotas.py
+```
+
+See [Ingestion v2 foundation runbook](docs/INGESTION_V2_FOUNDATION.md).
+The experiments are on `feat/ingestion-v2-foundation`, based on
+`feat/distributed-fast-embeddings`, and do not change `main.py`.
+
 # chunk_vectors
 
 Existing PDF ingestion/RAG plus an opt-in **distributed, resumable PostgreSQL
