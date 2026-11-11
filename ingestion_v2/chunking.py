@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 
 import tiktoken
 
@@ -68,6 +68,7 @@ class ProducedChunk:
     heading_path: tuple[str, ...]
     split_element: bool = False
     overlap_from_previous: bool = False
+    overlap_element_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -235,4 +236,29 @@ def chunk_elements(doc_id, elements, policy=None, profile_id="default"):
         if _measure(enc,actual)>=policy.target_tokens:
             emit()
     emit()
+    # Context overlap is best-effort: never exceed the hard token limit.
+    # Cross-table context is omitted rather than duplicating structured rows.
+    # Previous source IDs are tracked separately from this chunk's own elements.
+    if policy.overlap_tokens and len(result)>1:
+        output=[result[0]]
+        for index in range(1,len(result)):
+            prior=result[index-1]
+            current=result[index]
+            if "table" in prior.content_types or "table" in current.content_types:
+                output.append(current)
+                continue
+            ids=enc.encode(prior.text,disallowed_special=())
+            tail=enc.decode(ids[-policy.overlap_tokens:])
+            prefix="[Previous context]\\n"+tail+"\\n\\n"
+            merged=prefix+current.text
+            count=_measure(enc,merged)
+            if count<=policy.max_tokens:
+                output.append(replace(
+                    current,text=merged,token_count=count,
+                    overlap_from_previous=True,
+                    overlap_element_ids=prior.element_ids,
+                ))
+            else:
+                output.append(current)
+        result=output
     return result
