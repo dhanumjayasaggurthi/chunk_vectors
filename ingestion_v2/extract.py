@@ -80,8 +80,15 @@ def extract_range(path, start, end, expected_size, expected_mtime_ns,
             character_count=sum(len(e["text"].strip()) for e in text_blocks)
             # A native-text-poor page with graphics is an OCR candidate.
             # No vision API request occurs at this stage.
-            has_images=bool(page.get_images(full=False)) if character_count<native_text_min_chars else False
-            ocr_candidate=(character_count<native_text_min_chars and has_images)
+            image_or_drawing=False
+            if character_count<native_text_min_chars:
+                # Text-less vector graphics can also be scanned-like. Inspect
+                # drawings ONLY on text-poor pages to avoid penalizing normal
+                # text-heavy PDFs.
+                image_or_drawing=bool(page.get_images(full=False))
+                if not image_or_drawing:
+                    image_or_drawing=bool(page.get_drawings())
+            ocr_candidate=(character_count<native_text_min_chars and image_or_drawing)
             pages.append({
                 "page":page_index+1,
                 "width":float(page.rect.width),"height":float(page.rect.height),
@@ -134,7 +141,12 @@ def _work_range(path,start,end,stat,policy,identity,folder):
     target=_artifact_path(folder,start,end)
     try:
         if _valid_checkpoint(target,identity,start,end):
-            return {"start":start,"end":end,"status":"SKIPPED","path":str(target)}
+            with gzip.open(target,"rt",encoding="utf-8") as artifact:
+                previous=json.load(artifact)
+            return {"start":start,"end":end,"status":"SKIPPED",
+                    "path":str(target),
+                    "ocr_candidates":sum(bool(p.get("ocr_candidate"))
+                                         for p in previous["pages"])}
         pages=extract_range(path,start,end,stat["size"],stat["mtime_ns"],
                             policy.native_text_min_chars)
         _write_json_gzip_atomic(target,{
