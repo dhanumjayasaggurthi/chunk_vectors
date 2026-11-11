@@ -77,12 +77,13 @@ def chunk_artifacts(artifacts,output,chunk_policy,metadata_policy=None):
     if not elements:
         raise ValueError("No native text found; refuse empty chunk export")
     profile_key=json.dumps(asdict(chunk_policy),sort_keys=True)
-    chunks=chunk_elements(manifest["source_sha256"],elements,chunk_policy,
+    chunks=chunk_elements(manifest["document_id"],elements,chunk_policy,
                           profile_id=profile_key)
     from .metadata import extract_metadata
     document_metadata=extract_metadata(elements,metadata_policy or {"enabled":False})
     payload={
-        "schema_version":1,"source_sha256":manifest["source_sha256"],
+        "schema_version":1,"document_id":manifest["document_id"],
+        "source_sha256":manifest["source_sha256"],
         "extraction_job_key":manifest["job_key"],"chunk_policy":asdict(chunk_policy),
         "document_metadata":document_metadata,
         "chunks":[asdict(chunk) for chunk in chunks],
