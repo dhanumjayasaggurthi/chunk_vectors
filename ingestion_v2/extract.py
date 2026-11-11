@@ -74,7 +74,8 @@ def extract_range(path, start, end, expected_size, expected_mtime_ns,
         for page_index in range(start,end):
             page=doc[page_index]
             text_blocks=[]
-            for idx, block in enumerate(page.get_text("blocks",sort=True)):
+            pdf_blocks=page.get_text("blocks",sort=True)
+            for idx, block in enumerate(pdf_blocks):
                 # block type 0 = text; image bytes are NEVER retained.
                 if len(block)<7 or block[6]!=0:
                     continue
@@ -96,7 +97,12 @@ def extract_range(path, start, end, expected_size, expected_mtime_ns,
                 # Text-less vector graphics can also be scanned-like. Inspect
                 # drawings ONLY on text-poor pages to avoid penalizing normal
                 # text-heavy PDFs.
-                image_or_drawing=bool(page.get_images(full=False))
+                # Text-block extraction can expose inline images omitted
+                # from XObject image lists. Detect both without retaining bytes.
+                image_or_drawing=any(
+                    len(block)>=7 and block[6]==1 for block in pdf_blocks)
+                if not image_or_drawing:
+                    image_or_drawing=bool(page.get_images(full=False))
                 if not image_or_drawing:
                     image_or_drawing=bool(page.get_drawings())
             ocr_candidate=(character_count<native_text_min_chars and image_or_drawing)
