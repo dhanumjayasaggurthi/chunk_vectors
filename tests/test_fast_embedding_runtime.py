@@ -59,6 +59,37 @@ class TestEmbeddingRecovery(TestCase):
         self.assertEqual(errors[0][3],"FAILED")
         self.assertEqual(errors[0][4],"API_FAILURE")
 
+    def test_database_deadlock_retries_only_vector_persistence(self):
+        # A transaction rollback must not cause another Azure call.
+        class MockDeadlock(runtime.psycopg2.DatabaseError):
+            pgcode = "40P01"
+        rows=[("row-1","md5",[1.0,2.0])]
+        with mock.patch.object(runtime,"commit_vectors",side_effect=[
+                MockDeadlock("simulated deadlock"), {"row-1"}]) as commit,\
+             mock.patch.object(runtime,"mark") as mark,\
+             mock.patch.object(runtime.time,"sleep") as sleep,\
+             mock.patch.object(runtime.random,"random",return_value=0.0):
+            runtime.persist({"job":"test"},"claim",rows)
+        self.assertEqual(commit.call_count,2)
+        self.assertEqual(sleep.call_count,1)
+        mark.assert_not_called()
+
+    def test_persistent_database_deadlock_is_not_marked_as_bad_source(self):
+        # On persistent systemic DB contention the caller stops safely;
+        # the claim is recovered on restart rather than marked FAILED.
+        class MockDeadlock(runtime.psycopg2.DatabaseError):
+            pgcode = "40P01"
+        with mock.patch.object(runtime,"commit_vectors",
+                               side_effect=MockDeadlock("simulated deadlock")) as commit,\
+             mock.patch.object(runtime,"mark") as mark,\
+             mock.patch.object(runtime.time,"sleep"),\
+             mock.patch.object(runtime.random,"random",return_value=0.0):
+            with self.assertRaises(MockDeadlock):
+                runtime.persist({"job":"test"},"claim",
+                                [("row-1","md5",[1.0,2.0])])
+        self.assertEqual(commit.call_count,runtime._DB_COMMIT_ATTEMPTS)
+        mark.assert_not_called()
+
     def test_fatal_auth_failure_stops_work_instead_of_poisoning_all_rows(self):
         cfg={"attempts":3,"quota":"test"}
         with mock.patch.object(runtime,"throttle",return_value=True),\
