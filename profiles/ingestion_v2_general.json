@@ -1,0 +1,65 @@
+{
+  "name": "general_layout_native_v1",
+  "version": 1,
+  "extraction": {
+    "range_pages": 32,
+    "native_text_min_chars": 100,
+    "cpu_processes": 2,
+    "gcp_workers": 2,
+    "ocr_dpi": 150,
+    "max_attempts": 5,
+    "lease_seconds": 600
+  },
+  "chunking": {
+    "target_tokens": 600,
+    "max_tokens": 800,
+    "min_tokens": 100,
+    "overlap_tokens": 80,
+    "tokenizer": "cl100k_base",
+    "include_headings": true,
+    "split_oversized_tables": true
+  },
+  "metadata": {
+    "enabled": true,
+    "fields": {
+      "application_number": {
+        "enabled": true,
+        "type": "string",
+        "method": "regex",
+        "pattern": "(?i)\\bApplication\\s+(?:Number|No\\.?):?\\s*([A-Z0-9-]+)",
+        "first_pages": 10,
+        "required": false,
+        "sample_values": [
+          "NDA123456"
+        ]
+      },
+      "protocol_number": {
+        "enabled": true,
+        "type": "string",
+        "method": "label",
+        "label": "Protocol Number",
+        "first_pages": 15,
+        "required": false,
+        "sample_values": [
+          "ABC-2026-001"
+        ]
+      },
+      "study_phase": {
+        "enabled": false,
+        "type": "enum",
+        "method": "label",
+        "label": "Study Phase",
+        "allowed_values": [
+          "Phase I",
+          "Phase II",
+          "Phase III",
+          "Phase IV"
+        ],
+        "sample_values": [
+          "Phase III"
+        ],
+        "first_pages": 20
+      }
+    }
+  }
+}
