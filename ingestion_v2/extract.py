@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -138,6 +139,7 @@ def _valid_checkpoint(path,identity,start,end):
 
 
 def _work_range(path,start,end,stat,policy,identity,folder):
+    started=time.perf_counter()
     target=_artifact_path(folder,start,end)
     try:
         if _valid_checkpoint(target,identity,start,end):
@@ -146,7 +148,8 @@ def _work_range(path,start,end,stat,policy,identity,folder):
             return {"start":start,"end":end,"status":"SKIPPED",
                     "path":str(target),
                     "ocr_candidates":sum(bool(p.get("ocr_candidate"))
-                                         for p in previous["pages"])}
+                                         for p in previous["pages"]),
+                    "elapsed_seconds":round(time.perf_counter()-started,3)}
         pages=extract_range(path,start,end,stat["size"],stat["mtime_ns"],
                             policy.native_text_min_chars)
         _write_json_gzip_atomic(target,{
@@ -154,17 +157,20 @@ def _work_range(path,start,end,stat,policy,identity,folder):
             "range_start":start,"range_end":end,"pages":pages,
         })
         return {"start":start,"end":end,"status":"SUCCESS","path":str(target),
-                "ocr_candidates":sum(bool(p["ocr_candidate"]) for p in pages)}
+                "ocr_candidates":sum(bool(p["ocr_candidate"]) for p in pages),
+                "elapsed_seconds":round(time.perf_counter()-started,3)}
     except Exception as exc:
         # A failing range does not abort neighboring work. A later rerun
         # retries it. Do not leak entire source text into error records.
         return {"start":start,"end":end,"status":"FAILED",
-                "error_code":type(exc).__name__,"message":str(exc)[:400]}
+                "error_code":type(exc).__name__,"message":str(exc)[:400],
+                "elapsed_seconds":round(time.perf_counter()-started,3)}
 
 
 def run_local(path,output_dir,policy=None,max_ranges=None):
     """Bounded in-flight tasks; restart skips verified complete checkpoints."""
     policy=policy or ExtractionPolicy()
+    wall_started=time.perf_counter()
     source=fingerprint_pdf(path)
     count=pdf_page_count(path)
     identity=job_identity(source["sha256"],policy)
@@ -183,6 +189,7 @@ def run_local(path,output_dir,policy=None,max_ranges=None):
     _write_json_gzip_atomic(directory/"manifest.json.gz",manifest)
     result={"job_key":identity,"page_count":count,"selected_ranges":len(ranges),
             "SUCCESS":0,"SKIPPED":0,"FAILED":0,"ocr_candidates":0,
+            "new_pages_extracted":0,"processing_seconds":0.0,
             "failure_details":[],"output_dir":str(directory)}
     iterator=iter(ranges)
     with concurrent.futures.ProcessPoolExecutor(max_workers=policy.cpu_processes) as pool:
@@ -209,7 +216,14 @@ def run_local(path,output_dir,policy=None,max_ranges=None):
                           "error_code":type(exc).__name__,"message":str(exc)[:400]}
                 result[item["status"]]+=1
                 result["ocr_candidates"]+=item.get("ocr_candidates",0)
+                result["processing_seconds"]+=item.get("elapsed_seconds",0)
+                if item["status"]=="SUCCESS":
+                    result["new_pages_extracted"]+=end-start
                 if item["status"]=="FAILED":
                     result["failure_details"].append(item)
                 submit()
+    result["wall_seconds"]=round(time.perf_counter()-wall_started,3)
+    result["new_pages_per_second"]=round(
+        result["new_pages_extracted"]/max(.001,result["wall_seconds"]),2)
+    result["processing_seconds"]=round(result["processing_seconds"],3)
     return result
