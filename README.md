@@ -1,3 +1,5 @@
+# chunk_vectors
+
 ## Ingestion v2 foundation (experimental, no production writes)
 
 A separate opt-in pilot now supports bounded PyMuPDF page-range extraction
@@ -22,7 +24,8 @@ pages have not been resolved.
   --profile profiles/ingestion_v2_general.json
 
 # Read the applied GCP Vision / Document AI quota values:
-# With application credentials, from the existing repo directory:\n./venv/bin/python ../rimdocs_ingestion_v2_pilot/scripts/check_gcp_quotas.py
+# With application credentials, from the existing repo directory:
+./venv/bin/python ../rimdocs_ingestion_v2_pilot/scripts/check_gcp_quotas.py
 ```
 
 Run v2 from a **separate Git worktree and virtualenv**; never switch the
@@ -31,8 +34,6 @@ production checkout while workers are active. See
 for the exact safe worktree and quota-inspection commands.
 The experiments are on `feat/ingestion-v2-foundation`, based on
 `feat/distributed-fast-embeddings`, and do not change `main.py`.
-
-# chunk_vectors
 
 Existing PDF ingestion/RAG plus an opt-in **distributed, resumable PostgreSQL
 embedding backfill**. Normal document ingestion remains the default when
