@@ -13,19 +13,22 @@ pages have not been resolved.
 
 ```bash
 # Read-only page count / task plan
-./venv/bin/python -m ingestion_v2.cli plan --pdf /path/to/sample.pdf
+./.venv/bin/python -m ingestion_v2.cli plan --pdf /path/to/sample.pdf
 
 # Native extraction: safe first two page ranges
-./venv/bin/python -m ingestion_v2.cli extract \
+./.venv/bin/python -m ingestion_v2.cli extract \
   --pdf /path/to/sample.pdf \
   --output /tmp/ingestion-v2-pilot \
   --profile profiles/ingestion_v2_general.json
 
 # Read the applied GCP Vision / Document AI quota values:
-./venv/bin/python scripts/check_gcp_quotas.py
+# With application credentials, from the existing repo directory:\n./venv/bin/python ../rimdocs_ingestion_v2_pilot/scripts/check_gcp_quotas.py
 ```
 
-See [Ingestion v2 foundation runbook](docs/INGESTION_V2_FOUNDATION.md).
+Run v2 from a **separate Git worktree and virtualenv**; never switch the
+production checkout while workers are active. See
+[Ingestion v2 foundation runbook](docs/INGESTION_V2_FOUNDATION.md)
+for the exact safe worktree and quota-inspection commands.
 The experiments are on `feat/ingestion-v2-foundation`, based on
 `feat/distributed-fast-embeddings`, and do not change `main.py`.
 
