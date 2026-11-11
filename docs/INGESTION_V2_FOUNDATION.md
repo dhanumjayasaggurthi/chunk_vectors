@@ -23,20 +23,25 @@ and marks image-heavy text-poor pages for a *future* separate GCP OCR stage.
 
 ## Run on Linux or Windows
 
-Use a standalone feature branch with `pymupdf` and `tiktoken`
-installed. Existing embedding/inventory jobs can stay running.
-Do NOT replace production `main.py` with this command.
+Use a **separate Git worktree** rather than switching branches in the
+production directory while embedding/ingestion processes are active.
+Do NOT replace production `main.py` or mutate the production virtualenv.
 
 ```bash
+cd /home/sa-prd-rdi-react-dev/rimdocs_s3_pg
 git fetch origin
-git switch feat/ingestion-v2-foundation
-./venv/bin/python -m pip install pymupdf "tiktoken>=0.7,<1"
+git worktree add ../rimdocs_ingestion_v2_pilot origin/feat/ingestion-v2-foundation
+cd ../rimdocs_ingestion_v2_pilot
+
+# Dedicated virtualenv for the pilot, independent of production dependencies:
+python3 -m venv .venv
+./.venv/bin/python -m pip install pymupdf "tiktoken>=0.7,<1"
 
 # Reads only page count; no database or cloud calls:
-./venv/bin/python -m ingestion_v2.cli plan --pdf /path/to/sample.pdf --range-pages 32
+./.venv/bin/python -m ingestion_v2.cli plan --pdf /path/to/sample.pdf --range-pages 32
 
 # Safely extracts just the FIRST TWO ranges (up to 64 pages) into a new folder:
-./venv/bin/python -m ingestion_v2.cli extract \
+./.venv/bin/python -m ingestion_v2.cli extract \
   --pdf /path/to/sample.pdf --output /tmp/ingestion-v2-pilot \
   --profile profiles/ingestion_v2_general.json --max-ranges 2
 ```
@@ -50,13 +55,14 @@ after** a representative pilot and disk/memory measurements. This
 command still does not call OCR or affect production tables.
 
 ```bash
-./venv/bin/python -m ingestion_v2.cli extract \
+./.venv/bin/python -m ingestion_v2.cli extract \
   --pdf /path/to/sample.pdf --output /tmp/ingestion-v2-pilot \
   --profile profiles/ingestion_v2_general.json --max-ranges 0
 ```
 
-On Windows replace `./venv/bin/python` with
-`.\\venv\\Scripts\\python.exe` and use Windows file paths.
+On Windows create a separate pilot virtual environment, replace
+`./.venv/bin/python` with `.\\.venv\\Scripts\\python.exe`,
+and use Windows file paths.
 
 The native output contains per-page text elements, bounding boxes,
 page geometry, rotation and an OCR-candidate flag. The pipeline does
@@ -101,7 +107,7 @@ silently accept missing pages.
 For a fully native-text PDF with all page ranges extracted:
 
 ```bash
-./venv/bin/python -m ingestion_v2.cli chunk \
+./.venv/bin/python -m ingestion_v2.cli chunk \
   --artifacts /tmp/ingestion-v2-pilot/YOUR_JOB_KEY \
   --profile profiles/ingestion_v2_general.json \
   --output /tmp/v2-chunks.json.gz
@@ -132,13 +138,15 @@ actual Vision and Document AI limits with the application's service
 account credentials, use:
 
 ```bash
-./venv/bin/python scripts/check_gcp_quotas.py
+# From the production directory, using its existing GCP config.ini:
+cd /home/sa-prd-rdi-react-dev/rimdocs_s3_pg
+./venv/bin/python ../rimdocs_ingestion_v2_pilot/scripts/check_gcp_quotas.py
 ```
 
 Or specify the project explicitly:
 
 ```bash
-./venv/bin/python scripts/check_gcp_quotas.py --project YOUR_GCP_PROJECT_ID --json
+./venv/bin/python ../rimdocs_ingestion_v2_pilot/scripts/check_gcp_quotas.py --project YOUR_GCP_PROJECT_ID --json
 ```
 
 This uses `GET` requests to Cloud Quotas, never enables APIs, submits
