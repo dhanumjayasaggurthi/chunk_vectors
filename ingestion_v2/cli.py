@@ -62,7 +62,7 @@ def load_complete_pages(artifacts):
     return manifest,pages
 
 
-def chunk_artifacts(artifacts,output,chunk_policy):
+def chunk_artifacts(artifacts,output,chunk_policy,metadata_policy=None):
     from .chunking import LayoutElement, chunk_elements
     manifest,pages=load_complete_pages(artifacts)
     elements=[]
@@ -79,9 +79,12 @@ def chunk_artifacts(artifacts,output,chunk_policy):
     profile_key=json.dumps(asdict(chunk_policy),sort_keys=True)
     chunks=chunk_elements(manifest["source_sha256"],elements,chunk_policy,
                           profile_id=profile_key)
+    from .metadata import extract_metadata
+    document_metadata=extract_metadata(elements,metadata_policy or {"enabled":False})
     payload={
         "schema_version":1,"source_sha256":manifest["source_sha256"],
         "extraction_job_key":manifest["job_key"],"chunk_policy":asdict(chunk_policy),
+        "document_metadata":document_metadata,
         "chunks":[asdict(chunk) for chunk in chunks],
     }
     _write_json_gzip_atomic(output,payload)
@@ -118,7 +121,10 @@ def main(argv=None):
     else:
         from .chunking import ChunkPolicy
         p=_policy(args.profile,"chunking",ChunkPolicy)
-        result=chunk_artifacts(args.artifacts,args.output,p)
+        meta={"enabled":False}
+        if args.profile:
+            meta=json.loads(Path(args.profile).read_text(encoding="utf-8")).get("metadata",meta)
+        result=chunk_artifacts(args.artifacts,args.output,p,metadata_policy=meta)
     print(json.dumps(result,indent=2,default=str))
     if isinstance(result,dict) and result.get("FAILED"):
         return 1
