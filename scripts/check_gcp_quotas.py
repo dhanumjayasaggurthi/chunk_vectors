@@ -1,7 +1,7 @@
 """Read-only project quota inspection using Google's Cloud Quotas API.
 
 Usage:
-  ./venv/bin/python scripts/check_gcp_quotas.py --project PROJECT_ID
+  ./venv/bin/python scripts/check_gcp_quotas.py
   ./venv/bin/python scripts/check_gcp_quotas.py --project PROJECT_ID --json
 
 Uses Application Default Credentials or GOOGLE_APPLICATION_CREDENTIALS; never
@@ -25,9 +25,21 @@ SCOPES=("https://www.googleapis.com/auth/cloud-platform",)
 def read_quotas(project,services=SERVICES):
     import google.auth
     from google.auth.transport.requests import AuthorizedSession
-    if not project or "/" in project or len(project)>128:
+    if project and ("/" in project or len(project)>128):
         raise ValueError("Provide a valid Google Cloud project ID")
+    # Match vision_ocr.py: use [GCP] gcp_key_path when an explicit
+    # ADC environment variable isn't already configured.
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        import configparser
+        ini=configparser.ConfigParser()
+        ini.read(Path(__file__).resolve().parent.parent/"config.ini")
+        path=ini.get("GCP","gcp_key_path",fallback="").strip()
+        if path and Path(path).is_file():
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"]=path
     credentials, default_project=google.auth.default(scopes=SCOPES)
+    project=project or default_project
+    if not project:
+        raise ValueError("Could not resolve the GCP project: supply --project PROJECT_ID")
     with AuthorizedSession(credentials) as session:
         results={}
         for service in services:
@@ -71,7 +83,7 @@ def format_quota(item):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project",required=True,help="Google Cloud PROJECT_ID")
+    parser.add_argument("--project",help="Google Cloud PROJECT_ID; defaults to credential project")
     parser.add_argument("--json",action="store_true",help="Print raw quota records")
     args=parser.parse_args(argv)
     try:
