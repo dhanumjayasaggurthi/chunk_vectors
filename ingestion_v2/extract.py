@@ -45,9 +45,19 @@ def pdf_page_count(path):
         return doc.page_count
 
 
-def job_identity(source_hash, policy):
+def source_identity(path):
+    """Path-specific identity distinct from content hash (local pilot only).
+
+    Future multi-host workers will use a configured stable NAS/S3 URI, not
+    machine-local resolved paths.
+    """
+    uri=Path(path).resolve().as_posix()
+    return hashlib.sha256(uri.encode("utf-8")).hexdigest(),uri
+
+
+def job_identity(source_hash, policy, doc_id):
     canonical=json.dumps(asdict(policy),sort_keys=True,separators=(",",":"))
-    return hashlib.sha256((source_hash+"\x00"+canonical).encode()).hexdigest()
+    return hashlib.sha256((doc_id+"\x00"+source_hash+"\x00"+canonical).encode()).hexdigest()
 
 
 def extract_range(path, start, end, expected_size, expected_mtime_ns,
@@ -172,8 +182,9 @@ def run_local(path,output_dir,policy=None,max_ranges=None):
     policy=policy or ExtractionPolicy()
     wall_started=time.perf_counter()
     source=fingerprint_pdf(path)
+    doc_id,source_uri=source_identity(path)
     count=pdf_page_count(path)
-    identity=job_identity(source["sha256"],policy)
+    identity=job_identity(source["sha256"],policy,doc_id)
     ranges=page_ranges(count,policy.range_pages)
     if max_ranges is not None:
         if max_ranges<1:
@@ -182,7 +193,8 @@ def run_local(path,output_dir,policy=None,max_ranges=None):
     directory=Path(output_dir)/identity
     directory.mkdir(parents=True,exist_ok=True)
     manifest={
-        "job_key":identity,"source_sha256":source["sha256"],
+        "job_key":identity,"document_id":doc_id,
+        "source_uri":source_uri,"source_sha256":source["sha256"],
         "page_count":count,"range_pages":policy.range_pages,
         "selected_ranges":len(ranges),"policy":asdict(policy),
     }
