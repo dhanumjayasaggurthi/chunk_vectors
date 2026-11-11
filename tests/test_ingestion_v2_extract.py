@@ -60,6 +60,21 @@ class TestNativePdfCheckpoint(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"Pilot only extracted"):
                 load_complete_pages(result["output_dir"])
 
+    def test_scanned_image_page_needs_ocr_before_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"scanned.pdf"
+            doc=fitz.open()
+            pg=doc.new_page()
+            pix=fitz.Pixmap(fitz.csRGB,fitz.IRect(0,0,100,100),False)
+            pg.insert_image(fitz.Rect(20,20,400,400),stream=pix.tobytes("png"))
+            doc.save(str(path))
+            doc.close()
+            out=run_local(path,Path(tmp)/"out",
+                          ExtractionPolicy(range_pages=1,cpu_processes=1))
+            self.assertEqual(out["ocr_candidates"],1)
+            with self.assertRaisesRegex(ValueError,"OCR-candidate"):
+                load_complete_pages(out["output_dir"])
+
     def test_file_version_change_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             pdf=Path(tmp)/"sample.pdf"
