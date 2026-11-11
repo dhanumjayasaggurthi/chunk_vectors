@@ -32,7 +32,9 @@ def read_quotas(project,services=SERVICES):
     if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
         import configparser
         ini=configparser.ConfigParser()
-        ini.read(Path(__file__).resolve().parent.parent/"config.ini")
+        current=Path.cwd()/"config.ini"
+        neighboring=Path(__file__).resolve().parent.parent/"config.ini"
+        ini.read(current if current.is_file() else neighboring)
         path=ini.get("GCP","gcp_key_path",fallback="").strip()
         if path and Path(path).is_file():
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"]=path
