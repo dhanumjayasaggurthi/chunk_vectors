@@ -120,7 +120,7 @@ def _split_unit(unit,enc,policy):
     budget=policy.max_tokens-_measure(enc,prefix)
     if budget<8:
         raise ValueError("Heading consumes the entire chunk budget")
-    if _measure(enc,unit.text)<=budget:
+    if _measure(enc,prefix+unit.text)<=policy.max_tokens:
         return [unit]
     if unit.elements[0].kind=="table" and not policy.split_oversized_tables:
         raise ValueError("Table exceeds token budget with splitting disabled")
@@ -149,10 +149,29 @@ def _split_unit(unit,enc,policy):
                 else:
                     group+=line
             if group:parts.append(header+group)
-            if parts and all(_measure(enc,p)<=budget for p in parts):
+            if parts and all(_measure(enc,prefix+p)<=policy.max_tokens for p in parts):
                 return [_Unit(p,list(unit.elements),True) for p in parts]
-    return [_Unit(part,list(unit.elements),True)
-            for part in _split_text(enc,text,budget)]
+    # Tokenization is not strictly additive at boundaries. Validate the
+    # EXACT rendered heading+text size, recursively reducing fragments if
+    # the join produces more tokens than the separate estimates.
+    queue=list(_split_text(enc,text,budget))
+    if not queue:
+        raise ValueError("Cannot create empty chunks from an oversized element")
+    good=[]
+    while queue:
+        part=queue.pop(0)
+        if _measure(enc,prefix+part)<=policy.max_tokens:
+            good.append(_Unit(part,list(unit.elements),True))
+            continue
+        tokens=_measure(enc,part)
+        narrower=min(budget-4,tokens-1)
+        if narrower<1:
+            raise ValueError("Heading and element cannot fit the hard token budget")
+        subdivisions=list(_split_text(enc,part,narrower))
+        if len(subdivisions)<2:
+            raise ValueError("Cannot split oversized element without truncation")
+        queue=subdivisions+queue
+    return good
 
 
 def _merge_explicit_continuations(elements):
