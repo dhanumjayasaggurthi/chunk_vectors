@@ -12,9 +12,13 @@
   "embedding": {
     "enabled": true,
     "reuse_existing": true,
-    "batch_size": 16,
+    "batch_size": 128,
     "progress_every_batches": 1,
     "dimensions": 1536,
-    "model": "text-embedding-3-small"
+    "model": "text-embedding-3-small",
+    "batch_tokens": 24000,
+    "max_attempts": 5,
+    "timeout_seconds": 90,
+    "lease_seconds": 300
   }
 }

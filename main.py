@@ -1228,7 +1228,11 @@ Examples:
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="Override an allowed profile setting; repeatable")
     ap.add_argument("--embed-existing", action="store_true",
-                    help="Embed mapped existing PostgreSQL chunks without PDF extraction")
+                    help="High-throughput distributed embedding of existing PostgreSQL rows")
+    ap.add_argument("--retry-embed-failures", action="store_true",
+                    help="Requeue FAILED embedding rows")
+    ap.add_argument("--rescan-embeddings", action="store_true",
+                    help="Rediscover source rows, including records added since the previous run")
     ap.add_argument("--rechunk-extracted", action="store_true",
                     help="Create profile chunks from mapped extracted-content table without PDF/OCR")
     ap.add_argument("--root",         type=str,  help="Override DOCS_ROOT from config (NAS mode)")
@@ -1286,7 +1290,10 @@ if __name__ == "__main__":
             raise SystemExit("--embed-existing requires --profile")
         from existing_embeddings import embed_existing
         profile = load_profile(args.profile, args.set)
-        print(embed_existing(profile, dry_run=args.dry_run, max_chunks=args.max_files))
+        print(embed_existing(
+            profile, dry_run=args.dry_run, max_chunks=args.max_files,
+            workers=args.doc_workers, retry_failed=args.retry_embed_failures,
+            rescan_source=args.rescan_embeddings))
         sys.exit(0)
 
     if args.stats:

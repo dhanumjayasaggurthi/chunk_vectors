@@ -1,5 +1,5 @@
 markdown
-streamlit
+streamlit>=1.37,<2
 pymupdf
 pdfplumber
 pillow
@@ -9,3 +9,4 @@ pgvector
 openai
 boto3
 tiktoken>=0.7,<1
+requests>=2.32,<3

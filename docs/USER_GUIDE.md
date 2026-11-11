@@ -32,16 +32,56 @@ Replace the sample schema/table/column names with existing table identifiers. Re
 
 This route never opens PDFs, runs OCR or repeats table summarization. Index the source document ID and ordering field for performance. The output is saved to separate profile tables after a source-text fingerprint check.
 
-## 4. Backfill vectors in existing chunk tables
+## 4. Distributed backfill of existing vector columns
 
-Example: profiles/existing_embeddings.json
+For the verified `regulatory.palm_paw.doc_chunks_immbot_approved` table,
+use `profiles/immbot_approved_1536.json`. This maps
+`chunk_id` (valid UNIQUE index), `chunk_text`,
+`chunk_vector vector(1536)`, and `embedding_processing_note`.
 
-    python main.py --profile profiles/existing_embeddings.json --embed-existing --dry-run --max-files 100
-    python main.py --profile profiles/existing_embeddings.json --embed-existing --max-files 10000
+The profile now specifies **30 RPM and 900,000 TPM**, after an initial
+750,000-TPM pilot and later performance tuning. Eight Linux workers with
+48,000-token batches measured 677.9 successful rows/min over 10 minutes.
+The Azure gateway returned an observed 1,000,000-TPM limit header, but
+the actual RPM allocation is still unknown. Override caps only when
+coordinated across workers on the same Azure deployment.
 
-Required existing_chunks mapping fields: schema, table, id_column, text_column, vector_column. The ID must support indexed ordering. Only NULL vectors are updated by default. Failed batches stay NULL and can be retried. This route does not inspect PDFs or change the source schema.
+```bash
+python main.py --embed-existing \
+ --profile profiles/immbot_approved_1536.json --dry-run
 
-The current deployment writes 1536-dimensional vectors. Ensure the destination vector column has that dimension and the embedding deployment is compatible.
+# Initial 1,000-row pilot:
+python main.py --embed-existing \
+ --profile profiles/immbot_approved_1536.json \
+ --max-files 1000 --doc-workers 4
+
+# Explicit full backfill: omit --max-files
+python main.py --embed-existing \
+ --profile profiles/immbot_approved_1536.json --doc-workers 4
+```
+
+`start_embed.sh` defaults to a 1,000-row **pilot**;
+`EMBED_MODE=full EMBED_CONFIRM_FULL=YES ./start_embed.sh`
+starts an uncapped run. `start_embed.ps1` supports
+`-Mode pilot`, `-Mode dry-run`, and
+`-Mode full -ConfirmFull` on Windows. See
+[FAST_EMBEDDINGS.md](FAST_EMBEDDINGS.md) for configuration, results and SQL.
+
+The completed first pilot produced **991 SUCCESS, 9 FAILED,
+112.4 seconds, 529.2 successful rows/minute**. The nine
+`INPUT_TOO_LONG` rows remained NULL and did **not** stop other rows.
+The job ledger stores per-row errors and comments, and
+`embedding_runtime.failure_events` retains historical errors across
+retries. Source-table notes contain concise current failure reasons.
+The oversized texts should be rechunked upstream rather than retried
+unchanged or silently truncated.
+
+Unlike legacy single-worker scanning, task assignments use durable
+PostgreSQL claims/leases; all hosts with the same database and deployment
+settings coordinate safely. A real UNIQUE index on the source row ID is
+required. Only NULL vectors are updated when `reuse_existing=true`.
+The input vector model must match the model of existing embeddings;
+dimensions alone cannot establish compatibility.
 
 ## 5. Profile storage and rollback
 
@@ -63,26 +103,35 @@ For rollback, run the legacy CLI without profile flags. Never delete existing pr
     python -m compileall -q .
     python -m unittest discover -s tests -p "test_*.py" -v
 
-Do not treat local tests as a substitute for staging database/AI integration, source schema validation, quality evaluation, provider rate-limit tests and sustained large-archive benchmarking. See STATUS.md.
+Do not treat local tests as a substitute for staging database/AI integration, source schema validation, quality evaluation, provider rate-limit tests and sustained large-archive benchmarking. See [FAST_EMBEDDINGS.md](FAST_EMBEDDINGS.md).
 
 ## 3072-dimensional question-only embedding
 
 Configure `[AZURE_OPENAI_EMBEDDING]` in the existing private config.ini to point at your text-embedding-3-large deployment, then run:
 
-    python main.py --profile profiles/haq_question_3072.json --embed-existing --dry-run --max-files 100
+    python main.py --profile profiles/haq_question_3072.json --embed-existing --set embedding.rpm=YOUR_HAQ_APPROVED_RPM --set embedding.tpm=YOUR_HAQ_APPROVED_TPM --dry-run --max-files 100
     python main.py --profile profiles/haq_question_3072.json --embed-existing
+
+Do not use the immbot gateway limits for a different HAQ Azure deployment without verifying and coordinating its actual quota. The HAQ profile intentionally omits RPM/TPM, so production embedding requires both overrides (or equivalent approved values in that profile).
 
 The example uses `public.haq_query(id, question, question_embedding)`; update schema/column names for your actual table. The target column must be `vector(3072)` already; no schema changes or PDF extraction are performed by `--embed-existing`. The existing 1536-dimensional pipeline remains the default when a dimension is not configured. A dimension mismatch is rejected before sending anything to Azure. A custom Azure deployment can be selected using `embedding.deployment` in the profile; if Azure's model is `text-embedding-3-large`, keep the profile's model selection. Only NULL vectors are incrementally processed; changed already-embedded questions still require a separate fingerprint-based refresh feature.
 
 ## Optional embedding processing notes
 
-To store a neutral, operator-readable note on an existing table, add a nullable TEXT column using a reviewed one-time migration:
+Configure `existing_chunks.note_column` only if the source table
+already has a nullable text/varchar column. The immbot table has
+`embedding_processing_note text`.
 
-    ALTER TABLE public.haq_query
-    ADD COLUMN IF NOT EXISTS embedding_processing_note TEXT;
+Distributed embedding failures are recorded in the separate,
+durable `embedding_runtime.tasks` and
+`embedding_runtime.failure_events` tables. The source note
+contains a concise error code/message (for example,
+`INPUT_TOO_LONG: 9972 tokens exceeds configured/model limit`).
+A successful commit clears the source note. On requeue, the
+append-only failure history remains queryable.
 
-The sample HAQ profile enables this feature with `existing_chunks.note_column=embedding_processing_note`. The mapped column is optional for all other tables. Do not assume that existing tables have it: if configured but absent, the command fails before embedding.
-
-For unembeddable/blank rows, the column contains `Question text is empty; no embedding needed`. For unsuccessful API batches, it contains `Embedding response needs review; eligible for retry`. Successful embedding sets the note to NULL. Raw Azure errors remain in the secured process logs and are not stored in a user-facing column. The column is meant for workflow guidance, not a complete technical audit trail. Existing successful rows are not rewritten during incremental runs.
-
-Use `embedding.progress_every_batches` in the profile (1 logs every completed batch) to enable progress logging. Existing-column embedding remains incremental: rerunning selects NULL vectors, even for rows with retry notes.
+The `progress_every_batches` field applies to legacy
+profile-driven processing, not the new distributed
+existing-table engine; monitor task status in PostgreSQL instead.
+For queries, retry semantics and operational safeguards, use
+[FAST_EMBEDDINGS.md](FAST_EMBEDDINGS.md).
