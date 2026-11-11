@@ -7,6 +7,7 @@ a separate quota-controlled LLM fallback after an evaluated pilot.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 from typing import Iterable
 
@@ -62,7 +63,11 @@ def _convert(raw,field_type,allowed):
         raise ValueError("Empty extracted value")
     if field_type=="string":return value
     if field_type=="integer":return int(value.replace(",",""))
-    if field_type=="number":return float(value.replace(",",""))
+    if field_type=="number":
+        number=float(value.replace(",",""))
+        if not math.isfinite(number):
+            raise ValueError("Nonfinite numeric metadata rejected")
+        return number
     if field_type=="boolean":
         if value.casefold() in {"yes","true","1"}:return True
         if value.casefold() in {"no","false","0"}:return False
