@@ -348,6 +348,73 @@ Those commands read the cap settings from the profile. The original nine
 `INPUT_TOO_LONG` records should *not* be retried with unchanged text.
 Long inputs need a reviewed chunk-splitting or aggregate-embedding design.
 
+## Production incident: PostgreSQL task-row deadlock
+
+A real multi-worker backfill encountered
+`psycopg2.errors.DeadlockDetected` (`SQLSTATE 40P01`) while
+`commit_vectors` attempted `SELECT ... FOR UPDATE` on
+`embedding_runtime.tasks`. The cause was likely a lock-order cycle
+between several concurrent batch persistence transactions and the
+process-wide heartbeat `UPDATE` across all of that process's
+`RUNNING` rows.
+
+The patched runtime:
+- Uses `FOR UPDATE SKIP LOCKED` for heartbeat leases and locks rows
+  in consistent `row_id` order; heartbeats do not wait on in-flight
+  batch commits.
+- Uses a deterministic lock order for `commit_vectors` task rows.
+- Retries PostgreSQL deadlock (`40P01`), serialization (`40001`) and
+  lock-not-available (`55P03`) errors, with bounded backoff.
+  **These retries repeat only the SQL persistence of already-generated
+  vectors**; the Azure embedding request is not resent.
+- On repeated systemic DB contention, stops safely rather than
+  classifying good source rows as bad embeddings. Existing successful
+  rows remain committed; leftover leases are recoverable.
+
+**On a crashed host**, first verify the worker exited:
+```bash
+cd /home/sa-prd-rdi-react-dev/rimdocs_s3_pg
+ps -ef | grep '[m]ain.py --embed-existing'
+tail -n 70 embedlogs.log
+```
+
+Pull the fixed feature branch **only on the crashed/stopped host**
+(and preserve local changes). Do not interrupt a healthy separate
+table's worker merely to deploy a bug fix.
+
+```bash
+git status --short
+git fetch origin
+git pull --ff-only origin feat/distributed-fast-embeddings
+./venv/bin/python -m py_compile fast_embedding_runtime.py
+EMBED_MODE=full EMBED_CONFIRM_FULL=YES EMBED_WORKERS=8 bash start_embed.sh
+```
+
+The restarted job retains its original `job_key` as long as its
+profile, source mapping, model/deployment and uncapped/full-run mode
+are unchanged. It resumes `PENDING` rows and expired leases. The
+current immbot source profile uses 30 RPM / 900,000 TPM, a
+48,000-token batch cap and `reuse_existing=true`. **Do not set
+`EMBED_RESCAN` or `EMBED_RETRY_FAILED` for a normal crash recovery.**
+
+Validate progress by comparing counts at 5–10-minute intervals:
+```sql
+SELECT LEFT(job_key,12) AS job,
+       COUNT(*) FILTER (WHERE status='SUCCESS') AS successful,
+       COUNT(*) FILTER (WHERE status='PENDING') AS pending,
+       COUNT(*) FILTER (WHERE status='RUNNING') AS running,
+       COUNT(*) FILTER (WHERE status='FAILED') AS failed,
+       MAX(updated_at) AS last_activity
+FROM embedding_runtime.tasks
+WHERE job_key LIKE '42400335%'
+GROUP BY job_key;
+```
+
+Partitioning task records per job or creating separate task tables
+would not by itself remove this **within-job** lock inversion.
+Performance improvements to metadata layout should be evaluated
+separately after measuring actual lock, WAL and autovacuum pressure.
+
 ## 8. Why this can be slow, and what to measure
 
 - Each 128-ID claim is batched and committed as a short transaction.
