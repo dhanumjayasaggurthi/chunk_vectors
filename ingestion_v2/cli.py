@@ -20,15 +20,17 @@ from pathlib import Path
 
 from .extract import pdf_page_count, run_local, _write_json_gzip_atomic
 from .plan import ExtractionPolicy, page_ranges
+from .profile import load_profile, require_approved_for_pilot, profile_summary
 
 
 def _policy(path, section, cls):
     if not path:
         return cls()
-    settings=json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(settings,dict) or not isinstance(settings.get(section),dict):
+    profile=load_profile(path)
+    settings=profile.get(section)
+    if not isinstance(settings,dict):
         raise ValueError(f"Profile must contain a {section} object")
-    return cls(**settings[section])
+    return cls(**settings)
 
 
 def load_complete_pages(artifacts):
@@ -98,6 +100,7 @@ def main(argv=None):
     plan=cmds.add_parser("plan",help="Read-only PDF page-range planning")
     plan.add_argument("--pdf",required=True)
     plan.add_argument("--range-pages",type=int,default=32)
+    plan.add_argument("--profile",help="Optional YAML/JSON profile; read-only planning")
     extract=cmds.add_parser("extract",help="Opt-in local multiprocessing native-PDF pilot")
     extract.add_argument("--pdf",required=True)
     extract.add_argument("--output",required=True)
@@ -108,23 +111,35 @@ def main(argv=None):
     chunk.add_argument("--artifacts",required=True)
     chunk.add_argument("--output",required=True)
     chunk.add_argument("--profile")
+    validate=cmds.add_parser("validate",help="Validate consumer YAML without running any stage")
+    validate.add_argument("--profile",required=True)
     args=parser.parse_args(argv)
-    if args.command=="plan":
+    if args.command=="validate":
+        profile=load_profile(args.profile)
+        result={"valid":True, **profile_summary(profile)}
+    elif args.command=="plan":
         n=pdf_page_count(args.pdf)
-        p=page_ranges(n,args.range_pages)
-        result={"pages":n,"range_pages":args.range_pages,
+        range_pages=args.range_pages
+        if args.profile:
+            profile=load_profile(args.profile)
+            range_pages=ExtractionPolicy(**profile["extraction"]).range_pages
+        p=page_ranges(n,range_pages)
+        result={"pages":n,"range_pages":range_pages,
                 "range_tasks":len(p),"first_ranges":p[:5],
                 "note":"Read-only; zero GCP requests and no DB writes"}
     elif args.command=="extract":
+        if args.profile:
+            require_approved_for_pilot(load_profile(args.profile))
         p=_policy(args.profile,"extraction",ExtractionPolicy)
         result=run_local(args.pdf,args.output,p,
                          max_ranges=args.max_ranges or None)
     else:
         from .chunking import ChunkPolicy
+        profile=load_profile(args.profile) if args.profile else None
+        if profile:
+            require_approved_for_pilot(profile)
         p=_policy(args.profile,"chunking",ChunkPolicy)
-        meta={"enabled":False}
-        if args.profile:
-            meta=json.loads(Path(args.profile).read_text(encoding="utf-8")).get("metadata",meta)
+        meta=profile.get("metadata",{"enabled":False}) if profile else {"enabled":False}
         result=chunk_artifacts(args.artifacts,args.output,p,metadata_policy=meta)
     print(json.dumps(result,indent=2,default=str))
     if isinstance(result,dict) and result.get("FAILED"):
