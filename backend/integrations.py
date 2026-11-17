@@ -19,8 +19,15 @@ class DemoResolver:
 class SnowflakeResolver:
     def __init__(self):
         self.conn = None
-        if not re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+){2}",config.SF_TABLE):
+        if not re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+){2}", config.SF_TABLE):
             raise ValueError("SF_METADATA_TABLE must be a fully qualified static table name")
+        columns = (config.SF_DOMAIN_COLUMN, config.SF_COMPONENT_COLUMN,
+                   config.SF_EDMS_COLUMN, config.SF_PRODUCT_CODE_COLUMN)
+        if not all(columns):
+            raise PermanentError("Configure SF_DOMAIN_COLUMN, SF_COMPONENT_COLUMN, SF_EDMS_COLUMN "
+                                 "and SF_PRODUCT_CODE_COLUMN from the approved RIMdocs schema")
+        if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in columns):
+            raise PermanentError("Invalid Snowflake metadata column identifier")
 
     def _connect(self):
         import snowflake.connector
@@ -45,7 +52,9 @@ class SnowflakeResolver:
     def lookup(self, ids: list[str]) -> dict[str, dict | None]:
         if not ids:return {}
         assert len(ids)<=500, "Worker batches must remain bounded"
-        sql=(f"SELECT R_OBJECT_ID, ARTIFACT_NAME, FILE_PATH, A_STATUS, STATUS "
+        extra = (config.SF_DOMAIN_COLUMN, config.SF_COMPONENT_COLUMN,
+                 config.SF_EDMS_COLUMN, config.SF_PRODUCT_CODE_COLUMN)
+        sql=(f"SELECT R_OBJECT_ID, ARTIFACT_NAME, FILE_PATH, A_STATUS, STATUS, {', '.join(extra)} "
              f"FROM {config.SF_TABLE} WHERE R_OBJECT_ID IN ({','.join(['%s']*len(ids))})")
         if self.conn is None or self.conn.is_closed():
             self.conn=self._connect()
@@ -61,9 +70,11 @@ class SnowflakeResolver:
             self.conn=None
             raise
         grouped:dict[str,list[dict]]={i:[] for i in ids}
-        for rid,artifact,path,approval,ingestion in rows:
+        for rid, artifact, path, approval, ingestion, domain, component, edms, product_code in rows:
             if str(rid) in grouped:
-                record=dict(artifact_name=artifact,file_path=path,a_status=approval,ingestion_status=ingestion)
+                record=dict(artifact_name=artifact, file_path=path, a_status=approval,
+                            ingestion_status=ingestion, domain=domain, component=component,
+                            edms_number=edms, product_code=product_code)
                 if record not in grouped[str(rid)]:grouped[str(rid)].append(record)
         result={}
         for rid,matches in grouped.items():
