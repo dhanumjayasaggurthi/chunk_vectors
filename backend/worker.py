@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import config,store
 from .integrations import DemoResolver,SnowflakeResolver,S3Reader,PermanentError,SnowflakeEntitlements
 from .extract import extract_document
+from .birth_dates import case_for_artifact, extract_pairs, result_fields
 from .azure_llm import JnJAzureLLM
 log=logging.getLogger("evidenceflow.worker")
 
@@ -74,10 +75,18 @@ def resolve(limit=200):
         meta=found.get(rid)
         if not meta:decisions.append((jid,rid,None,'ID not found in metadata source',True))
         elif meta.get('ambiguous'):decisions.append((jid,rid,None,'Multiple distinct metadata paths; manual resolution required',False))
-        elif str(meta.get('a_status','')).lower()!='approved':
+        elif case_for_artifact(meta.get('artifact_name')) is None:
+            decisions.append((jid,rid,meta,'Artifact is not PBRER or DSUR',False))
+        elif str(meta.get('domain','')).strip().casefold() not in ('safety','cd_safety'):
+            decisions.append((jid,rid,meta,'Document domain is not Safety',False))
+        elif str(meta.get('a_status','')).strip().casefold() not in ('approved','superseded'):
             decisions.append((jid,rid,meta,'Source document is not approved',False))
+        elif case_for_artifact(meta.get('artifact_name'))=='IBD' and not any(x in str(meta.get('component','')).casefold() for x in ('full document','published output','report body')):
+            decisions.append((jid,rid,meta,'PBRER component is not an approved report body',False))
         elif str(meta.get('ingestion_status','')).upper()!='SUCCESS':
             decisions.append((jid,rid,meta,'Source ingestion status is not SUCCESS',False))
+        elif not str(meta.get('edms_number') or '').strip() or not str(meta.get('product_code') or '').strip():
+            decisions.append((jid,rid,meta,'Required RIMdocs EDMS number or product code is missing',False))
         elif not meta.get('file_path'):
             decisions.append((jid,rid,meta,'S3 file path is missing',False))
         else:decisions.append((jid,rid,meta,None,False))
@@ -96,7 +105,26 @@ def process_one():
         threading.Thread(target=keep_alive,daemon=True).start()
     try:
         if config.MODE=="demo":
-            if task["r_object_id"]=="0901bacc84b20d46":
+            from .demo_documents import SAMPLES, pdf_bytes
+            if task["r_object_id"] in SAMPLES:
+                import fitz
+                sample = SAMPLES[task["r_object_id"]]
+                with fitz.open(stream=pdf_bytes(task["r_object_id"]),filetype="pdf") as pdf:
+                    pages=[{"page":i+1,"text":pdf[i].get_text("text",sort=True) or ""}
+                           for i in range(pdf.page_count)]
+                pairs,issues=extract_pairs(pages,sample["case"])
+                fields=result_fields(sample["case"],pairs)
+                # Parsed PDFs are generated from slide examples, NOT original RIMdocs evidence.
+                for p in fields.get("birth_date_pairs",[]):
+                    p["validation"]="SYNTHETIC_DEMO"
+                for key in ("product","international_birth_date","development_international_birth_date"):
+                    if key in fields:
+                        fields[key]["validation"]="SYNTHETIC_DEMO"
+                store.finish(task,fields,None,"COMPLETED" if pairs and not issues else "REVIEW_REQUIRED",
+                             "Synthetic slide-derived PDF; not original source evidence. "+
+                             ("; ".join(issues) if issues else "Demo extraction only."),
+                             "synthetic-demo-v1")
+            elif task["r_object_id"]=="0901bacc84b20d46":
                 store.finish(task,DEMO_FIELDS,DEMO_SUMMARY,"COMPLETED",
                              "Screenshot-only fixture; not independently extracted from a source PDF.","demo-screenshot")
             else:
@@ -104,8 +132,15 @@ def process_one():
         else:
             data,version=S3Reader().read(task["s3_uri"])
             store.heartbeat(task)
-            fields,summary,status,note=extract_document(data,JnJAzureLLM())
-            store.finish(task,fields,summary,status,note,version)
+            import fitz
+            with fitz.open(stream=data,filetype='pdf') as pdf:
+                case=case_for_artifact(task['artifact_name'])
+                pages=[{'page':i+1,'text':pdf[i].get_text('text',sort=True) or ''}
+                       for i in range(min(pdf.page_count,25) if case=='IBD' else pdf.page_count)]
+            pairs,issues=extract_pairs(pages,case)
+            fields=result_fields(case,pairs)
+            status='COMPLETED' if pairs and not issues else 'REVIEW_REQUIRED'
+            store.finish(task,fields,None,status,'; '.join(issues) or None,version)
     except PermanentError as e:
         store.fail(task,str(e),retryable=False)
     except Exception as e:
@@ -122,15 +157,16 @@ def once(concurrency=4):
         handled=sum(pool.map(lambda _: process_one(),range(concurrency)))
     return resolved+handled
 
-def serve(concurrency=4,interval=1):
+def serve(concurrency=4,interval=1,stop_event=None):
     if config.MODE=="live" and not config.DATABASE_URL.startswith("postgresql"):
         raise RuntimeError("Live mode requires PostgreSQL for concurrent worker claims")
+    stop_event=stop_event or threading.Event()
     store.init_db();log.info("EvidenceFlow worker mode=%s parallelism=%s",config.MODE,concurrency)
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        while True:
+        while not stop_event.is_set():
             resolved=resolve()
             handled=sum(pool.map(lambda _:process_one(),range(concurrency)))
-            if not resolved and not handled:time.sleep(interval)
+            if not resolved and not handled:stop_event.wait(interval)
 
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--concurrency",type=int,default=4)

@@ -39,6 +39,10 @@ class Document(Base):
     r_object_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
     artifact_name: Mapped[str | None] = mapped_column(String(255))
+    edms_number: Mapped[str | None] = mapped_column(String(128))
+    product_code: Mapped[str | None] = mapped_column(String(255))
+    document_domain: Mapped[str | None] = mapped_column(String(128))
+    document_component: Mapped[str | None] = mapped_column(String(255))
     source_status: Mapped[str | None] = mapped_column(String(64))
     ingestion_status: Mapped[str | None] = mapped_column(String(64))
     s3_uri: Mapped[str | None] = mapped_column(Text)
@@ -124,6 +128,7 @@ def job_get(job_id,owner_id=None,tenant_id=None):
 
 def _dict(d: Document):
     return dict(r_object_id=d.r_object_id,status=d.status,artifact_name=d.artifact_name,
+                edms_number=d.edms_number,product_code=d.product_code,
                 source_status=d.source_status,source_ingestion_status=d.ingestion_status,
                 fields=json.loads(d.fields_json or "{}"),summary=d.summary,note=d.note,error=d.error,
                 pipeline_version=d.pipeline_version, source_version=d.source_version)
@@ -193,6 +198,10 @@ def resolve_result(job_id,object_id,meta=None,reason=None,missing=False):
         if not d or d.status!="RESOLVING":return
         if meta:
             d.artifact_name=meta.get("artifact_name")
+            d.edms_number=meta.get("edms_number")
+            d.product_code=meta.get("product_code")
+            d.document_domain=meta.get("domain")
+            d.document_component=meta.get("component")
             d.source_status=meta.get("a_status")
             d.ingestion_status=meta.get("ingestion_status")
             d.s3_uri=meta.get("file_path")
@@ -222,6 +231,10 @@ def resolve_results_batch(decisions):
             if not d or d.status!='RESOLVING':continue
             if meta:
                 d.artifact_name=meta.get('artifact_name')
+                d.edms_number=meta.get("edms_number")
+                d.product_code=meta.get("product_code")
+                d.document_domain=meta.get("domain")
+                d.document_component=meta.get("component")
                 d.source_status=meta.get('a_status')
                 d.ingestion_status=meta.get('ingestion_status')
                 d.s3_uri=meta.get('file_path')
@@ -255,7 +268,7 @@ def claim_document():
         d.lease_until=t+timedelta(seconds=config.LEASE_SECONDS)
         d.attempts+=1
         return dict(job_id=d.job_id,r_object_id=d.r_object_id,s3_uri=d.s3_uri,attempts=d.attempts,
-                    lease_until=d.lease_until,source_version=d.source_version)
+                    lease_until=d.lease_until,source_version=d.source_version,artifact_name=d.artifact_name)
 
 def heartbeat(task):
     with Session.begin() as s:
@@ -303,7 +316,8 @@ def seed_demo():
     with Session() as s:
         if s.get(Job,"demo-001"):return
     with Session.begin() as s:s.add(Job(id="demo-001",label="PBRER sample evaluation"))
-    append_ids("demo-001",["0901bacc84b20d46","0901bacc8283f1de","0901bacc802bcfa8","UNKNOWN-DEMO-001"])
+    from .demo_documents import SAMPLES
+    append_ids("demo-001",list(SAMPLES)+["0901bacc84b20d46","UNKNOWN-DEMO-001"])
 
 
 def cancel_job(job_id):

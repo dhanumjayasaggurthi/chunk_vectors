@@ -149,3 +149,10 @@ OIDC_JWKS_URL = setting("OIDC_JWKS_URL")
 SF_ENTITLEMENTS_TABLE = setting('SF_ENTITLEMENTS_TABLE')  # Optional corporate ACL mapping table.
 
 SQS_INTERACTIVE_URL = setting('SQS_INTERACTIVE_URL') # Optional priority lane for jobs <=5k IDs
+
+# Snowflake metadata column mappings must be supplied by the owning data team.
+# Do not guess corporate field names; identifiers are validated before interpolation.
+SF_DOMAIN_COLUMN = setting("SF_DOMAIN_COLUMN")
+SF_COMPONENT_COLUMN = setting("SF_COMPONENT_COLUMN")
+SF_EDMS_COLUMN = setting("SF_EDMS_COLUMN")
+SF_PRODUCT_CODE_COLUMN = setting("SF_PRODUCT_CODE_COLUMN")

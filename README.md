@@ -53,7 +53,11 @@ OIDC_ISSUER=<corporate-issuer>
 OIDC_AUDIENCE=<api-audience>
 OIDC_JWKS_URL=<corporate-keys-url>
 LLM_KIND=gpt4o
-EXTRACTION_PROFILE_VERSION=pbrer-v2
+EXTRACTION_PROFILE_VERSION=birth-dates-v1
+SF_DOMAIN_COLUMN=<verified-column-name>
+SF_COMPONENT_COLUMN=<verified-column-name>
+SF_EDMS_COLUMN=<verified-column-name>
+SF_PRODUCT_CODE_COLUMN=<verified-column-name>
 ```
 
 `SF_ENTITLEMENTS_TABLE` is a **suggested schema contract**, not a known existing JnJ table. It must have `TENANT_ID`, `PRINCIPAL_ID`, `R_OBJECT_ID`. Access is denied to non-admin users if no entitlement source is configured. Privileged users require a **cryptographically validated** `rimdocs:read_all` scope. Never ship a shared hardcoded token to the browser.
@@ -101,3 +105,53 @@ Automated tests include a generated **1,601-page PDF** with chunk checkpointing/
 ## Before go-live
 
 See `ARCHITECTURE.md` for design and limits, `OPERATIONS.md` for SLOs / failure runbooks, and `infra/terraform/README.md` for cloud prerequisites. Corporate secrets, per-document access, Textract permissions, correct Azure endpoint deployment, source S3 versioning, backup/restore, VPC connectivity, genuine PDF accuracy evaluation, SQS scaling, quotas and million-ID load tests must all pass before regulated production use.
+
+## IBD / DIBD regulatory extraction profile
+
+- PBRER -> IBD, scan first 25 PDF pages and stop at the first labeled birth-date block; multiple explicitly paired products yield multiple CSV rows.
+- DSUR -> DIBD, use Section 1 / executive summary introduction. Never substitute IBD for DIBD.
+- Only Safety-domain records with Approved or Superseded status are eligible; PBRER additionally requires Full Document / Published Output / Report Body. Current implementation also requires source ingestion STATUS=SUCCESS. Confirm actual Snowflake semantics with the data owner.
+- Populate the four `SF_*_COLUMN` variables from **verified Snowflake schema**. Identifier validation rejects unsafe values. No corporate column names are assumed.
+- CSV columns: RIMdocs Object ID, EDMS Number, Product Code, Product, IBD, DIBD, Page Number, Other Info. IBD or DIBD is populated according to artifact type. Each product/date pairing is its own row. JSON remains the raw document result with a `fields.birth_date_pairs` array.
+- Missing labels, ambiguous product assignment, conflicting dates, or incomplete OCR yield REVIEW_REQUIRED. The program does not reconcile EU reference dates with first-registration dates without a signed-off business rule.
+- LLM summarization is bypassed for this regulatory profile. Existing LLM code stays available for other profiles, but is not required for IBD / DIBD.
+- Regulated production: supply approved source fixtures, reconcile PDF page numbering with document page labels, measure extraction precision/recall, and validate Snowflake data access, ACL, S3 versioning and OCR. The new profile has not been validated against corporate PDFs.
+
+## Run the IBD / DIBD demonstration
+
+All five examples are **synthetic PDFs reconstructed from the supplied slide scenarios**, not original RIMdocs files.
+
+```bash
+git clone --branch feature/ibd-dibd-extraction https://github.com/dhanumjayasaggurthi/chunk_vectors.git
+cd chunk_vectors
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+# Validate PDF -> PyMuPDF -> product/date extractor -> CSV:
+python -m scripts.validate_sample_pdfs
+# Artifacts: demo_output/results.csv, preview.html and pdfs/
+
+# Start real FastAPI demo, background worker and SQLite database:
+APP_MODE=demo python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+```
+
+Open **http://127.0.0.1:8000/?view=results**. The seeded job includes five synthetic sample PDFs and legacy examples. For an isolated check, create a new job with `DEMO-RISP-001`, `DEMO-CANA-002`, `DEMO-PALI-003`, `DEMO-MACI-004`, `DEMO-ERDA-005`. Wait for completion; inspect Product(s), IBD / DIBD, evidence pages, and download the CSV.
+
+**Demo mode is not regulatory verification**. Do not set `APP_MODE=live` for synthetic fixtures.
+
+### Inspect an authorized original PDF locally
+
+```bash
+python -m scripts.inspect_pdf /secure/path/report-pbrer.pdf --case IBD --output pbrer-check.json
+python -m scripts.inspect_pdf /secure/path/report-dsur.pdf --case DIBD --output dsur-check.json
+```
+
+This is a native-text diagnostic without corporate credentials. Missing/unreadable text returns `REVIEW_REQUIRED` and scanned pages require approved OCR before regulatory use. Neither RIMdocs metadata nor source-document access is inferred. Do not commit confidential PDFs or extracted regulated content to this public repository.
+
+### Pre-production checks
+
+- Confirm Snowflake column mappings, approval/component semantics, and true source IDs.
+- Evaluate source PDFs against a human-labeled gold set, including scans, tables, line wrapping, and multiple formulations.
+- Resolve the Loperamide EU reference date versus first-registration discrepancy through an approved business rule.
+- Confirm page number mapping, RBAC, source S3 version fencing, OCR permissions and deployment security before live corporate processing.
