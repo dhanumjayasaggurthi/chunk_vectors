@@ -49,3 +49,12 @@ def test_local_upload_api_and_demo_block(monkeypatch):
         resp=client.post("/api/v1/local/inspect",data={"use_case":"IBD"},
              files={"file":("source.pdf",pdf_bytes("DEMO-RISP-001"),"application/pdf")})
         assert resp.status_code==404
+
+def test_local_upload_denies_cross_origin(monkeypatch):
+    monkeypatch.setattr(config,"MODE","local")
+    with TestClient(app) as client:
+        response=client.post("/api/v1/local/inspect",
+            headers={"Origin":"https://untrusted.example"},
+            data={"use_case":"IBD"},
+            files={"file":("source.pdf",pdf_bytes("DEMO-RISP-001"),"application/pdf")})
+        assert response.status_code==403
