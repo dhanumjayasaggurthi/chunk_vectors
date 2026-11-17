@@ -10,17 +10,19 @@
 </head>
 <body>
   <div class="layout">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <span class="brand-mark">E<span>•</span></span>
         <div class="brand-copy"><strong>EVIDENCEFLOW</strong><small>RIMDOCS Intelligence</small></div>
       </div>
+      <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse navigation" aria-expanded="true" title="Collapse navigation"><span data-icon="panel"></span></button>
       <div class="nav-caption">WORKSPACE</div>
       <nav id="sidebar-nav" aria-label="Main navigation">
-        <button data-nav="dashboard" class="nav-item active"><span data-icon="grid"></span> Overview</button>
-        <button data-nav="submit" class="nav-item"><span data-icon="plus-square"></span> New extraction</button>
-        <button data-nav="results" class="nav-item"><span data-icon="file-search"></span> Job results</button>
-        <button data-nav="review" class="nav-item"><span data-icon="shield"></span> Review queue <span class="nav-count" id="nav-review-count">2</span></button>
+        <button data-nav="dashboard" data-label="Overview" class="nav-item active"><span data-icon="grid"></span> Overview</button>
+        <button data-nav="submit" data-label="New extraction" class="nav-item"><span data-icon="plus-square"></span> New extraction</button>
+        <button data-nav="results" data-label="Job results" class="nav-item"><span data-icon="file-search"></span> Job results</button>
+        <button data-nav="local" data-label="Original PDF review" class="nav-item" hidden><span data-icon="file-search"></span> Original PDF review</button>
+        <button data-nav="review" data-label="Review queue" class="nav-item"><span data-icon="shield"></span> Review queue <span class="nav-count" id="nav-review-count">2</span></button>
       </nav>
       <div class="sidebar-bottom">
         <div class="platform-card">

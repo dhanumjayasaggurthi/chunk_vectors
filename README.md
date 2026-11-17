@@ -155,3 +155,47 @@ This is a native-text diagnostic without corporate credentials. Missing/unreadab
 - Evaluate source PDFs against a human-labeled gold set, including scans, tables, line wrapping, and multiple formulations.
 - Resolve the Loperamide EU reference date versus first-registration discrepancy through an approved business rule.
 - Confirm page number mapping, RBAC, source S3 version fencing, OCR permissions and deployment security before live corporate processing.
+
+## Original PBRER / DSUR PDFs on Windows PowerShell
+
+This mode extracts from **actual original PDFs on the operator's machine**,
+not synthetic demo IDs. It is a local evidence review, not regulatory approval,
+and requires no Snowflake, AWS, Azure, SQS or corporate database credentials.
+
+```powershell
+git checkout feature/ibd-dibd-extraction
+git pull origin feature/ibd-dibd-extraction
+python -m pip install -r requirements-dev.txt
+$env:APP_MODE = "local"
+python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+```
+
+Open **http://127.0.0.1:8000/?view=local**. Choose *Original PDF review*,
+select one or more real files (up to five per batch), choose the proper report
+type (PBRER→IBD or DSUR→DIBD), and click *Extract original PDFs*.
+For mixed report types, upload them separately. Inspect product-date pairs,
+PDF page numbers, exact evidence snippets, and the open-original-PDF link.
+Download the displayed records with *Export CSV*.
+
+Local mode does **not** verify RIMdocs identifiers: optional Object ID,
+EDMS number and product code are user-entered and labeled unverified.
+For multiple PDFs, do not share a single set of identifiers. Local processing does not save PDF bytes or evidence in the application
+database and makes no S3/LLM/OCR calls. FastAPI may spool multipart uploads to
+temporary operating-system storage until the request closes. Use an approved
+workstation with appropriately protected temp storage. Selected files remain available in the browser tab
+temporarily via local object URLs for page viewing.
+
+Only run the app on **127.0.0.1**, on an approved workstation that complies
+with your organization's document classification and retention rules.
+The endpoint is disabled in demo/live and refuses non-loopback clients.
+The local upload has a 100 MB per-PDF limit. IBD scans only the first 25 PDF
+pages; DSUR searches the first 150 pages for Section 1. Image-only pages,
+missing dates and ambiguous pairings are flagged for human review; this mode
+does not invoke OCR. For enterprise OCR, RIMdocs metadata resolution and
+version-fenced source access, use the corporate `APP_MODE=live` architecture
+after approved configuration.
+
+Local endpoint and extraction tests:
+```powershell
+python -m pytest -q tests/test_local_pdf.py
+```

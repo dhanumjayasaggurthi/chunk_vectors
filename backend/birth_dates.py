@@ -19,7 +19,8 @@ DIBD_PAIR = re.compile(
     re.I,
 )
 COVER_TITLE = re.compile(
-    r"^\s*Periodic\s+(?:Benefit[\s-]*Risk\s+Evaluation|Safety\s+Update)\s+Report\s*$",
+    r"^\s*Periodic\s+(?:Benefit[\s-]*Risk\s+Evaluation|Safety\s+Update)\s+Report"
+    r"(?:\s*/\s*Periodic\s+Safety\s+Update\s+Report)?\s*$",
     re.I,
 )
 NEXT_HEADING = re.compile(
