@@ -6,3 +6,19 @@
 
 /* Only expose the local source-inspection tab in local execution mode. */
 .nav-item[hidden] { display: none !important; }
+
+/* Enterprise treatment for Original PDF evidence review */
+.local-review-command{border-radius:16px;overflow:hidden;box-shadow:0 12px 36px rgba(31,48,82,.07);padding:0}
+.local-command-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px;border-bottom:1px solid var(--line);background:linear-gradient(120deg,#fff,#f8faff)}
+.local-command-head h2{font-size:17px;letter-spacing:-.3px;margin:6px 0;color:#1b2b43}.local-command-head p{font-size:11px;color:#8290a3;margin:0}
+.local-trust{font-size:9px;font-weight:800;letter-spacing:.8px;color:#1b775a;background:#e8f7f0;border:1px solid #d0eee1;padding:7px 10px;border-radius:20px;white-space:nowrap}
+.local-review-command>.form-section{padding:0 24px;margin:20px 0}.local-file-section{padding-top:2px!important}.local-review-command>.submit-footer{padding:16px 24px;background:#fbfcfe}
+.local-result-card{border-radius:16px;box-shadow:0 12px 36px rgba(31,48,82,.07);border-color:#e1e7f0}.local-result-head{background:linear-gradient(120deg,#fff,#f9fbff)}
+.local-result-head strong{font-size:14px;color:#1c2d46}.local-status{padding:7px 11px}.local-result-card:has(.local-status){overflow:hidden}
+.local-evidence-table thead{background:#f7f9fd}.local-evidence-table th{padding-top:13px;padding-bottom:13px;color:#718198}
+.local-evidence-table td{padding-top:20px;padding-bottom:20px}.local-evidence-table td:nth-child(2){font-weight:760;color:#21334d;font-size:13px}.local-evidence-table td:nth-child(3){font-weight:800;color:#3553b7;font-size:14px}.local-evidence-table td:nth-child(4){font-weight:700;color:#43536b}
+.local-evidence-table td:nth-child(5) a{display:inline-flex;padding:8px 10px;border:1px solid #dce3f0;border-radius:8px;color:#4058c5;font-weight:750;background:#fff}.local-evidence-table td:nth-child(5) a:hover{background:#f3f6ff;border-color:#aebaf0}
+.local-evidence-table td:nth-child(6){line-height:1.7!important;color:#44546a!important;background:#fffdf5;border-left:3px solid #e0b84d}
+.local-evidence-table td:nth-child(6)::before{content:"SOURCE EVIDENCE";display:block;font:800 8px/1.2 Inter,ui-sans-serif,sans-serif;letter-spacing:1px;color:#9a7a2f;margin-bottom:7px}
+.local-result-card .panel-footer{background:#f9fbfe;padding:14px 19px;color:#748399}
+@media(max-width:900px){.local-command-head{flex-direction:column}.local-evidence-table table{min-width:900px}}
