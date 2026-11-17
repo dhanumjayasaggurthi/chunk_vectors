@@ -179,9 +179,10 @@ Download the displayed records with *Export CSV*.
 
 Local mode does **not** verify RIMdocs identifiers: optional Object ID,
 EDMS number and product code are user-entered and labeled unverified.
-For multiple PDFs, do not share a single set of identifiers. Local processing
-never persists PDF bytes or evidence in the application database and makes
-no S3/LLM/OCR calls. Selected files remain available in the browser tab
+For multiple PDFs, do not share a single set of identifiers. Local processing does not save PDF bytes or evidence in the application
+database and makes no S3/LLM/OCR calls. FastAPI may spool multipart uploads to
+temporary operating-system storage until the request closes. Use an approved
+workstation with appropriately protected temp storage. Selected files remain available in the browser tab
 temporarily via local object URLs for page viewing.
 
 Only run the app on **127.0.0.1**, on an approved workstation that complies
