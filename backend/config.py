@@ -156,3 +156,12 @@ SF_DOMAIN_COLUMN = setting("SF_DOMAIN_COLUMN")
 SF_COMPONENT_COLUMN = setting("SF_COMPONENT_COLUMN")
 SF_EDMS_COLUMN = setting("SF_EDMS_COLUMN")
 SF_PRODUCT_CODE_COLUMN = setting("SF_PRODUCT_CODE_COLUMN")
+
+
+# UI embedding is denied by default. Supply exact trusted portal origins, comma-separated.
+# Example: FRAME_ANCESTORS=https://portal.example.jnj.com,https://review.example.jnj.com
+FRAME_ANCESTORS = tuple(
+    value.strip().rstrip("/")
+    for value in setting("FRAME_ANCESTORS").split(",")
+    if value.strip()
+)
