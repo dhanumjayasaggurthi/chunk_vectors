@@ -92,6 +92,30 @@ function field(label,key,f){if(!f)return `<div class="field-card"><div class="fi
 function renderReview(){let review=state.jobs.reduce((a,j)=>a.concat(j.counts.review? [{...j}]:[]),[]),revs=state.results.filter(d=>d.status==='REVIEW_REQUIRED');return `${pageHead('QUALITY CONTROL','Review queue','Documents needing evidence checks before structured fields can be trusted.',`<button class="btn" data-action="refresh">${icon('refresh')} Refresh queue</button><button class="btn primary" data-nav="results">${icon('file-search')} Browse results</button>`)}${banner()}
 <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Unresolved document extractions</h2><p class="panel-desc">No automatic approval without underlying PDF evidence</p></div><span class="badge review">${n(totals().review)} awaiting review</span></div><div class="review-notice">Production implementation will support field-level corrections, reviewer identity, timestamps, and an immutable decision audit trail. The prototype only displays unresolved documents.</div><div style="height:15px"></div>${review.length?jobsTable(review):empty('Nothing to review','No jobs currently contain review-required documents.','shield')}</section>
 <section class="panel quality-panel"><h2 class="panel-title">Quality policy</h2><div class="help-grid vertical-gap"><div class="help-card"><strong>Verified evidence</strong><p>Every critical date or product must include page provenance and matching source content.</p></div><div class="help-card"><strong>Ambiguous language</strong><p>“IBD” must be resolved as International Birth Date only in the appropriate document context.</p></div></div></section>`}
+function evidenceMarkup(text, product, rawDate, useCase) {
+  let html=esc(String(text||''));
+  const label=useCase==='DIBD'?'DEVELOPMENT INTERNATIONAL BIRTH DATE':'INTERNATIONAL BIRTH DATE';
+  const values=[label,rawDate,product].filter(Boolean).map(String).sort((a,b)=>b.length-a.length);
+  for(const value of values){
+    const escaped=esc(value);
+    if(escaped)html=html.split(escaped).join('<mark>'+escaped+'</mark>');
+  }
+  return html;
+}
+function evidenceQuality(pair, useCase) {
+  const source=String(pair.other_info||'').toLowerCase();
+  const label=useCase==='DIBD'?'development international birth date':'international birth date';
+  const checks=[
+    ['Explicit regulatory label',source.includes(label)],
+    ['Extracted date in evidence',!!pair.raw_date&&source.includes(String(pair.raw_date).toLowerCase())],
+    ['Product associated',!!pair.product&&source.includes(String(pair.product).toLowerCase())],
+    ['Source page retained',Number(pair.page)>0],
+    ['Evidence context captured',source.length>20]
+  ];
+  const passed=checks.filter(x=>x[1]).length;
+  return {checks,passed,label:passed===5?'Strong':passed>=4?'Good':'Review'};
+}
+
 function renderLocal() {
   const results=state.localResults.map(d=>{
     const rows=d.pairs.length?d.pairs.map((p,index)=>`<article class="evidence-dossier">
@@ -106,12 +130,12 @@ function renderLocal() {
       </div>
       <div class="evidence-proof">
         <div class="evidence-proof-head"><div><span>SOURCE EVIDENCE</span><strong>Evidence supporting this extraction</strong></div><div class="page-stamp">PDF · PAGE ${esc(p.page)}</div></div>
-        <div class="evidence-quote">${esc(p.other_info)}</div>
+        <div class="evidence-quote">${evidenceMarkup(p.other_info,p.product,p.raw_date,d.use_case)}</div><div class="evidence-quality">${(()=>{const q=evidenceQuality(p,d.use_case);return `<div class="quality-score"><span>EVIDENCE QUALITY</span><strong>${q.label}</strong><small>${q.passed}/5 checks passed</small></div><div class="quality-checks">${q.checks.map(c=>`<span class="${c[1]?'pass':'miss'}">${c[1]?'✓':'!'} ${esc(c[0])}</span>`).join('')}</div>`})()}</div>
         <div class="evidence-proof-foot"><span>${icon('shield','sm')} Extracted directly from original PDF</span><span>Context window ±200 characters</span></div>
       </div>
     </article>`).join('')
       :`<div class="evidence-unresolved">${icon('shield')}<div><strong>No defensible product–date pair</strong><p>Human review is required before this document can be accepted.</p></div></div>`;
-    return `<section class="panel vertical-gap evidence-result-card"><div class="evidence-document-head"><div class="evidence-doc-icon">${icon('file-search')}</div><div class="evidence-doc-copy"><span>ORIGINAL REGULATORY DOCUMENT</span><strong>${esc(d.file_name)}</strong><p>${esc(d.use_case==='IBD'?'PBRER / PSUR · International Birth Date':'DSUR · Development International Birth Date')} · ${esc(d.pages_scanned)} of ${esc(d.page_count)} pages examined</p></div><div class="evidence-verified">${icon('shield','sm')} ${d.status==='EVIDENCE_FOUND'?'EVIDENCE VERIFIED':'REVIEW REQUIRED'}</div></div>${d.issues.length?`<div class="review-notice">${esc(d.issues.join('; '))}</div>`:''}<div class="evidence-dossiers">${rows}</div><div class="evidence-provenance"><span><b>RIMdocs ID</b>${esc(d.r_object_id||'Not provided')}</span><span><b>EDMS</b>${esc(d.edms_number||'Not provided')}</span><span><b>Product code</b>${esc(d.product_code||'Not provided')}</span><span><b>Validation</b>Local source review</span></div></section>`;
+    return `<section class="panel vertical-gap evidence-result-card"><div class="evidence-document-head"><div class="evidence-doc-icon">${icon('file-search')}</div><div class="evidence-doc-copy"><span>ORIGINAL REGULATORY DOCUMENT</span><strong>${esc(d.file_name)}</strong><p>${esc(d.use_case==='IBD'?'PBRER / PSUR · International Birth Date':'DSUR · Development International Birth Date')} · ${esc(d.pages_scanned)} of ${esc(d.page_count)} pages examined</p></div><div class="evidence-verified">${icon('shield','sm')} ${d.status==='EVIDENCE_FOUND'?'EVIDENCE LOCATED':'REVIEW REQUIRED'}</div></div>${d.issues.length?`<div class="review-notice">${esc(d.issues.join('; '))}</div>`:''}<div class="evidence-dossiers">${rows}</div><div class="evidence-provenance"><span><b>RIMdocs ID</b>${esc(d.r_object_id||'Not provided')}</span><span><b>EDMS</b>${esc(d.edms_number||'Not provided')}</span><span><b>Product code</b>${esc(d.product_code||'Not provided')}</span><span><b>Validation</b>Local source review</span></div></section>`;
   }).join('');
   return `${pageHead('REGULATORY EVIDENCE WORKSPACE','Birth Date Evidence Review','Validate extracted IBD / DIBD claims against page-level source evidence before export.')}${banner()}
 <section class="panel form-card">
