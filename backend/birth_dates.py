@@ -112,7 +112,7 @@ def extract_pairs(pages: list[dict], case: str) -> tuple[list[dict], list[str]]:
             # Stop on the first containing page, but consume all date/product rows.
             label = matches[0]
             after = text[label.end():]
-            after = re.sub(r"^\s*(?:\([^)]{0,90}\))?\s*[:\-]?\s*", "", after, count=1)
+            after = re.sub(r"^\s*(?:\([^)]{0,90}\))?\s*(?::|\bis\b|\bwas\b)?\s*", "", after, count=1, flags=re.I)
             lines = after.splitlines(keepends=True)
             explicit = []
             standalone = []
