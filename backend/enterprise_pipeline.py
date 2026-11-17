@@ -87,6 +87,7 @@ def prepare(task):
         d=s.get(store.Document,(job,doc))
         if not d or not d.s3_uri:raise PermanentError('Missing resolved S3 source')
         uri=d.s3_uri
+        use_case=case_for_artifact(d.artifact_name)
     with local_pdf(uri) as (path,version):
         with fitz.open(path) as pdf:
             if pdf.needs_pass:raise PermanentError('PDF is password-protected')
@@ -117,7 +118,9 @@ def prepare(task):
                     page=pdf[pidx]
                     text=page.get_text('text',sort=True) or ''
                     pages.append({'page':pidx+1,'text':text})
-                    if len(re.sub(r'\s+','',text))<40 and page.get_images():missing.append(pidx)
+                    if (len(re.sub(r'\s+','',text))<40 and page.get_images()
+                            and (use_case!='IBD' or pidx<25)):
+                        missing.append(pidx)
                 cp.put(key,pages)
                 ocr_key=None
                 if missing and config.OCR_ENGINE=='textract_async':
