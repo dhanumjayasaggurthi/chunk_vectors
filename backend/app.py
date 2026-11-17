@@ -243,10 +243,7 @@ def export_get(job_id:str,export_id:str,request:Request):
     return {'status':state['state'],'url':bulk.export_download_url(job_id,export_id),
             'format':state['format']}
 
-COLUMNS=["r_object_id","status","artifact_name","source_status","document_date","international_birth_date","product","active_ingredient","summary","error"]
-def csv_safe(v):
-    s="" if v is None else str(v)
-    return "'"+s if s.lstrip().startswith(("=","+","-","@")) else s
+from .birth_date_export import COLUMNS,rows_for_document,safe_csv
 
 def output_rows(job_id):
     offset=0
@@ -260,9 +257,9 @@ def stream_csv(job_id):
     f=io.StringIO();w=csv.DictWriter(f,fieldnames=COLUMNS)
     w.writeheader();yield f.getvalue();f.seek(0);f.truncate(0)
     for d in output_rows(job_id):
-        row={k:d.get(k) for k in ("r_object_id","status","artifact_name","source_status","summary","error")}
-        row.update({key:(d.get("fields") or {}).get(key,{}).get("value") for key in ("document_date","international_birth_date","product","active_ingredient")})
-        w.writerow({k:csv_safe(row.get(k)) for k in COLUMNS});yield f.getvalue();f.seek(0);f.truncate(0)
+        for row in rows_for_document(d):
+            w.writerow(safe_csv(row))
+            yield f.getvalue();f.seek(0);f.truncate(0)
 
 def stream_json(job_id):
     yield '[\n';first=True
