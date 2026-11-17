@@ -29,6 +29,17 @@ function hydrateIcons(scope=document){scope.querySelectorAll('[data-icon]').forE
 function esc(t){return String(t??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 const state={nav:new URLSearchParams(window.location.search).get('view')==='local'?'local':new URLSearchParams(window.location.search).get('view')==='results'?'results':'dashboard',localResults:[],jobs:[],jobId:'',results:[],totalResults:0,selectedDoc:'',status:'ALL',search:'',offset:0,limit:25,mode:'paste',draft:'',jobLabel:'',uploadedIds:[],csvFile:null,backendMode:'demo',apiToken:'',proofKey:'international_birth_date',loading:false,activeExport:null};
 const app=document.getElementById('app');
+function setSidebarCollapsed(collapsed){
+  document.body.classList.toggle('sidebar-collapsed',collapsed);
+  const btn=document.getElementById('sidebar-toggle');
+  if(btn){btn.setAttribute('aria-expanded',String(!collapsed));btn.setAttribute('aria-label',collapsed?'Expand navigation':'Collapse navigation');btn.title=collapsed?'Expand navigation':'Collapse navigation'}
+  try{localStorage.setItem('evidenceflow.sidebar.collapsed',collapsed?'1':'0')}catch{}
+}
+function initSidebar(){
+  let collapsed=false;
+  try{collapsed=localStorage.getItem('evidenceflow.sidebar.collapsed')==='1'}catch{}
+  setSidebarCollapsed(collapsed);
+}
 const API='/api/v1';
 const BULK_PART_BYTES=8*1024*1024;
 async function api(path,options={}){const h={...(options.headers||{})};if(state.apiToken)h.Authorization='Bearer '+state.apiToken;const res=await fetch(API+path,{...options,headers:h});if(!res.ok){let e;try{e=await res.json()}catch{};throw Error(typeof e?.detail==='string'?e.detail:`API error ${res.status}`)}return res.json()}
@@ -126,7 +137,7 @@ function renderLocal() {
         <div class="evidence-date-label">${esc(d.use_case==='IBD'?'INTERNATIONAL BIRTH DATE':'DEVELOPMENT INTERNATIONAL BIRTH DATE')}</div>
         <div class="evidence-date-value">${esc(p.raw_date||p.date)}</div>
         <div class="evidence-meta-row"><span>${icon('file-search','sm')} Page <b>${esc(p.page)}</b></span><span>${icon('shield','sm')} Source grounded</span></div>
-        <a class="evidence-cta" href="${esc(d.pdfUrl)}#page=${esc(p.page)}" target="_blank" rel="noopener noreferrer">${icon('file-search','sm')} Open evidence on page ${esc(p.page)} <span>→</span></a>
+        <div class="evidence-actions"><a class="evidence-cta" href="${esc(d.pdfUrl)}#page=${esc(p.page)}" target="_blank" rel="noopener noreferrer">${icon('file-search','sm')} Open evidence on page ${esc(p.page)} <span>→</span></a><button class="evidence-secondary" data-nav="results">${icon('layers','sm')} Review related results</button></div>
       </div>
       <div class="evidence-proof">
         <div class="evidence-proof-head"><div><span>SOURCE EVIDENCE</span><strong>Evidence supporting this extraction</strong></div><div class="page-stamp">PDF · PAGE ${esc(p.page)}</div></div>
@@ -243,7 +254,9 @@ async function pollAsyncExport(){
 }
 async function submit(){if(state.loading)return;if(state.mode==='csv'&&state.csvFile){state.loading=true;try{let j;if(state.backendMode==='live'&&state.csvFile.size>8*1024*1024){j=await resumableUpload(state.csvFile,state.jobLabel||'Bulk extraction job');}else{const f=new FormData();f.append('file',state.csvFile);f.append('label',state.jobLabel||'Bulk extraction job');j=await api('/jobs/upload',{method:'POST',body:f});}state.jobId=j.job_id;state.selectedDoc='';state.offset=0;state.search='';state.status='ALL';await refresh();state.nav='results';await loadResults();render();toast(j.upload_id?'Multipart upload complete. Background ID ingestion started.':`File accepted. ${n(j.counts.total)} unique IDs queued; ${n(j.invalid_rows_skipped||0)} invalid rows skipped.`)}catch(e){toast(e.message,true)}finally{state.loading=false}return}let ids=[...new Set(draftIds())];if(!ids.length){toast('Enter at least one document ID.',true);return}if(ids.length>5000){toast('Use CSV upload above 5,000 IDs.',true);return}if(ids.some(x=>!(/^[A-Za-z0-9_-]{1,128}$/.test(x)))){toast('Invalid ID found. Allowed: letters, numbers, hyphens, underscores.',true);return}state.loading=true;try{let j=await api('/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,label:state.jobLabel||'New extraction job'})});state.jobId=j.job_id;state.selectedDoc='';state.offset=0;state.search='';state.status='ALL';await refresh();state.nav='results';await loadResults();render();toast(`Job created with ${n(ids.length)} unique IDs.`)}catch(e){toast(e.message,true)}finally{state.loading=false}}
 
-document.addEventListener('click',async e=>{let nav=e.target.closest('[data-nav]');if(nav){await go(nav.dataset.nav);return}let a=e.target.closest('[data-action]');if(!a)return;let act=a.dataset.action;try{
+document.addEventListener('click',async e=>{
+ if(e.target.closest('#sidebar-toggle')){setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed'));return}
+ let nav=e.target.closest('[data-nav]');if(nav){await go(nav.dataset.nav);return}let a=e.target.closest('[data-action]');if(!a)return;let act=a.dataset.action;try{
  if(act==='local-extract'){await inspectLocalFiles();return}
  if(act==='local-download'){downloadLocalCsv();return}
  if(act==='local-clear'){clearLocalResults();return}
@@ -266,5 +279,5 @@ document.addEventListener('change',async e=>{
  if(e.target.id==='csv-upload'){const f=e.target.files?.[0];if(!f)return;try{if(f.size>(state.backendMode==='live'?1024*1024*1024:100*1024*1024))throw Error('Maximum supported upload is 100 MB in local demo; use enterprise multipart upload for larger files.');state.csvFile=f;state.uploadedIds=f.size<1024*1024?parseCsv(await f.text()):[];render();toast('Ready to submit '+f.name)}catch(err){toast(err.message,true)}}
 });
 document.addEventListener('input',e=>{if(e.target.id==='ids-input'){state.draft=e.target.value;let c=document.getElementById('submit-count');if(c)c.innerHTML=submitPreview()}if(e.target.id==='job-label')state.jobLabel=e.target.value});
-async function init(){hydrateIcons();try{let h=await api('/health');state.backendMode=h.mode||'demo';if(state.backendMode==='local'&&state.nav!=='local')state.nav='local';if(state.backendMode==='live'){state.apiToken=typeof window.evidenceflowGetAccessToken==='function'?await window.evidenceflowGetAccessToken():''}await loadJobs();await loadResults();render()}catch(e){app.innerHTML=`<div class="empty-state"><h3>Cannot connect to EvidenceFlow API</h3><p>${esc(e.message)}. Start the included FastAPI server; opening the HTML file directly is not sufficient.</p></div>`}setInterval(async()=>{try{await pollAsyncExport();if(state.backendMode==='local'||state.nav==='submit'||state.nav==='local')return;await refresh()}catch{}},8000)}
+async function init(){hydrateIcons();initSidebar();try{let h=await api('/health');state.backendMode=h.mode||'demo';if(state.backendMode==='local'&&state.nav!=='local')state.nav='local';if(state.backendMode==='live'){state.apiToken=typeof window.evidenceflowGetAccessToken==='function'?await window.evidenceflowGetAccessToken():''}await loadJobs();await loadResults();render()}catch(e){app.innerHTML=`<div class="empty-state"><h3>Cannot connect to EvidenceFlow API</h3><p>${esc(e.message)}. Start the included FastAPI server; opening the HTML file directly is not sufficient.</p></div>`}setInterval(async()=>{try{await pollAsyncExport();if(state.backendMode==='local'||state.nav==='submit'||state.nav==='local')return;await refresh()}catch{}},8000)}
 init();
