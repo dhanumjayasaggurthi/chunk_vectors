@@ -23,6 +23,11 @@ jobs:
         run: node --check frontend/app.js
       - name: Validate five synthetic PDFs end-to-end
         run: python -m scripts.validate_sample_pdfs
+      - name: Package runnable offline demo
+        run: |
+          tar -czf demo_output/evidenceflow-demo-source.tar.gz \
+            --exclude='__pycache__' --exclude='*.pyc' \
+            backend frontend scripts migrations README.md requirements.txt requirements-dev.txt alembic.ini
       - name: Upload sample PDFs and extracted CSV
         if: always()
         uses: actions/upload-artifact@v4
