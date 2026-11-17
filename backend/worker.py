@@ -85,6 +85,8 @@ def resolve(limit=200):
             decisions.append((jid,rid,meta,'PBRER component is not an approved report body',False))
         elif str(meta.get('ingestion_status','')).upper()!='SUCCESS':
             decisions.append((jid,rid,meta,'Source ingestion status is not SUCCESS',False))
+        elif not str(meta.get('edms_number') or '').strip() or not str(meta.get('product_code') or '').strip():
+            decisions.append((jid,rid,meta,'Required RIMdocs EDMS number or product code is missing',False))
         elif not meta.get('file_path'):
             decisions.append((jid,rid,meta,'S3 file path is missing',False))
         else:decisions.append((jid,rid,meta,None,False))
