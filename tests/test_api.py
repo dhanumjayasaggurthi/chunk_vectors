@@ -44,3 +44,37 @@ def test_chunked_csv_upload_1200_ids_without_duplicates():
         assert r.json()['counts']['total']==1200
         assert r.json()['invalid_rows_skipped']==0
         assert c.get('/api/v1/jobs/'+r.json()['job_id']).json()['counts']['total']==1200
+
+
+def test_demo_ibd_dibd_product_date_export():
+    """API smoke: actual demo worker, generated PDFs, five business CSV rows."""
+    import csv
+    import io
+    with TestClient(app) as c:
+        response=c.post('/api/v1/jobs',json={
+            'ids':['DEMO-PALI-003','DEMO-MACI-004'],
+            'label':'IBD/DIBD demo proof'
+        })
+        assert response.status_code==202
+        jid=response.json()['job_id']
+        for _ in range(80):
+            job=c.get(f'/api/v1/jobs/{jid}').json()
+            if job['progress_percent']==100:
+                break
+            time.sleep(.1)
+        assert job['progress_percent']==100
+        assert job['counts']['completed']==2
+        docs=c.get(f'/api/v1/jobs/{jid}/results?limit=25').json()['items']
+        assert all(doc['status']=='COMPLETED' for doc in docs)
+        pali=next(doc for doc in docs if doc['r_object_id']=='DEMO-PALI-003')
+        maci=next(doc for doc in docs if doc['r_object_id']=='DEMO-MACI-004')
+        assert len(pali['fields']['birth_date_pairs'])==4
+        assert maci['fields']['birth_date_pairs'][0]['date']=='2015-09-11'
+        assert maci['fields']['development_international_birth_date']['page']==6
+        csv_response=c.get(f'/api/v1/jobs/{jid}/export?format=csv')
+        assert csv_response.status_code==200
+        exported=list(csv.DictReader(io.StringIO(csv_response.text)))
+        assert len(exported)==5
+        assert sum(bool(row['IBD']) for row in exported)==4
+        assert sum(bool(row['DIBD']) for row in exported)==1
+        assert all(row['RIMdocs EDMS Number'] for row in exported)
