@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import config,store
 from .integrations import DemoResolver,SnowflakeResolver,S3Reader,PermanentError,SnowflakeEntitlements
 from .extract import extract_document
+from .birth_dates import case_for_artifact, extract_pairs, result_fields
 from .azure_llm import JnJAzureLLM
 log=logging.getLogger("evidenceflow.worker")
 
@@ -74,8 +75,14 @@ def resolve(limit=200):
         meta=found.get(rid)
         if not meta:decisions.append((jid,rid,None,'ID not found in metadata source',True))
         elif meta.get('ambiguous'):decisions.append((jid,rid,None,'Multiple distinct metadata paths; manual resolution required',False))
-        elif str(meta.get('a_status','')).lower()!='approved':
+        elif case_for_artifact(meta.get('artifact_name')) is None:
+            decisions.append((jid,rid,meta,'Artifact is not PBRER or DSUR',False))
+        elif str(meta.get('domain','')).strip().casefold() not in ('safety','cd_safety'):
+            decisions.append((jid,rid,meta,'Document domain is not Safety',False))
+        elif str(meta.get('a_status','')).strip().casefold() not in ('approved','superseded'):
             decisions.append((jid,rid,meta,'Source document is not approved',False))
+        elif case_for_artifact(meta.get('artifact_name'))=='IBD' and not any(x in str(meta.get('component','')).casefold() for x in ('full document','published output','report body')):
+            decisions.append((jid,rid,meta,'PBRER component is not an approved report body',False))
         elif str(meta.get('ingestion_status','')).upper()!='SUCCESS':
             decisions.append((jid,rid,meta,'Source ingestion status is not SUCCESS',False))
         elif not meta.get('file_path'):
@@ -104,8 +111,15 @@ def process_one():
         else:
             data,version=S3Reader().read(task["s3_uri"])
             store.heartbeat(task)
-            fields,summary,status,note=extract_document(data,JnJAzureLLM())
-            store.finish(task,fields,summary,status,note,version)
+            import fitz
+            with fitz.open(stream=data,filetype='pdf') as pdf:
+                case=case_for_artifact(task['artifact_name'])
+                pages=[{'page':i+1,'text':pdf[i].get_text('text',sort=True) or ''}
+                       for i in range(min(pdf.page_count,25) if case=='IBD' else pdf.page_count)]
+            pairs,issues=extract_pairs(pages,case)
+            fields=result_fields(case,pairs)
+            status='COMPLETED' if pairs and not issues else 'REVIEW_REQUIRED'
+            store.finish(task,fields,None,status,'; '.join(issues) or None,version)
     except PermanentError as e:
         store.fail(task,str(e),retryable=False)
     except Exception as e:
