@@ -75,7 +75,7 @@ def _pair(product: str, raw_date: str, page: dict, start: int, end: int) -> dict
         "other_info": text[max(0, start - 200):min(len(text), end + 200)],
         "raw_date": raw_date,
         "method": "LABELED_TEXT",
-        "validation": "EVIDENCE_MATCHED",
+        "validation": "VERIFIED",
     }
 
 
