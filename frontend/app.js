@@ -27,7 +27,7 @@ const icons = {
 function icon(name,cls='') {return `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${icons[name]||icons.document}</svg>`}
 function hydrateIcons(scope=document){scope.querySelectorAll('[data-icon]').forEach(x=>{x.innerHTML=icon(x.dataset.icon)})}
 function esc(t){return String(t??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-const state={nav:new URLSearchParams(window.location.search).get('view')==='results'?'results':'dashboard',jobs:[],jobId:'',results:[],totalResults:0,selectedDoc:'',status:'ALL',search:'',offset:0,limit:25,mode:'paste',draft:'',jobLabel:'',uploadedIds:[],csvFile:null,backendMode:'demo',apiToken:'',proofKey:'international_birth_date',loading:false,activeExport:null};
+const state={nav:new URLSearchParams(window.location.search).get('view')==='local'?'local':new URLSearchParams(window.location.search).get('view')==='results'?'results':'dashboard',localResults:[],jobs:[],jobId:'',results:[],totalResults:0,selectedDoc:'',status:'ALL',search:'',offset:0,limit:25,mode:'paste',draft:'',jobLabel:'',uploadedIds:[],csvFile:null,backendMode:'demo',apiToken:'',proofKey:'international_birth_date',loading:false,activeExport:null};
 const app=document.getElementById('app');
 const API='/api/v1';
 const BULK_PART_BYTES=8*1024*1024;
@@ -37,9 +37,9 @@ function initials(s){return (s||'Job').slice(0,2).toUpperCase()}
 function n(v){return Number(v||0).toLocaleString('en-US')}
 function time(s){if(!s)return '—';return new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
 function badge(st){let map={COMPLETED:['Completed','success'],COMPLETED_WITH_EXCEPTIONS:['With exceptions','review'],PROCESSING:['Processing','processing'],QUEUED:['Queued','muted'],REVIEW_REQUIRED:['Needs review','review'],NOT_FOUND:['Not found','failed'],FAILED:['Failed','failed']};let [label,klass]=map[st]||[st||'Unknown','muted'];return `<span class="badge ${klass}"><span class="dot"></span>${esc(label)}</span>`}
-function banner(){if(state.backendMode==='live')return `<div class="demo-banner live-banner">${icon('shield')}<div><strong>Connected pipeline.</strong> SQS background jobs, Snowflake, S3, and JnJ Azure endpoints are supported. Corporate authentication, fine-grained entitlements, deployment controls and load tests must be verified before regulated production use.</div></div>`;return `<div class="demo-banner">${icon('alert')}<div><strong>Demo mode — source screenshots only.</strong> New IBD/DIBD examples use generated PDFs reconstructed from supplied slides, not original RIMdocs files. Jobs, results and retries are persisted locally; Snowflake, S3, OCR and JnJ Azure AI are not contacted.</div></div>`}
+function banner(){if(state.backendMode==='local')return `<div class="demo-banner live-banner">${icon('shield')}<div><strong>Original-PDF local inspection.</strong> File bytes stay on this computer. No Snowflake, S3, OCR or LLM calls. Extracted values and manually entered metadata require review.</div></div>`;if(state.backendMode==='live')return `<div class="demo-banner live-banner">${icon('shield')}<div><strong>Connected pipeline.</strong> SQS background jobs, Snowflake, S3, and JnJ Azure endpoints are supported. Corporate authentication, fine-grained entitlements, deployment controls and load tests must be verified before regulated production use.</div></div>`;return `<div class="demo-banner">${icon('alert')}<div><strong>Demo mode — source screenshots only.</strong> New IBD/DIBD examples use generated PDFs reconstructed from supplied slides, not original RIMdocs files. Jobs, results and retries are persisted locally; Snowflake, S3, OCR and JnJ Azure AI are not contacted.</div></div>`}
 function pageHead(kicker,title,subtitle,buttons=''){return `<div class="page-head"><div><div class="eyebrow">${esc(kicker)}</div><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div><div class="head-actions">${buttons}</div></div>`}
-function renderNav(){document.querySelectorAll('[data-nav]').forEach(x=>x.classList.toggle('active',x.dataset.nav===state.nav));document.getElementById('page-breadcrumb').textContent=({dashboard:'Overview',submit:'New extraction',results:'Job results',review:'Review queue'})[state.nav];let c=state.jobs.reduce((a,j)=>a+j.counts.review,0);document.getElementById('nav-review-count').textContent=n(c)}
+function renderNav(){const localLink=document.querySelector('[data-nav=local]');if(localLink)localLink.hidden=state.backendMode!=='local';document.querySelectorAll('[data-nav]').forEach(x=>x.classList.toggle('active',x.dataset.nav===state.nav));document.getElementById('page-breadcrumb').textContent=({dashboard:'Overview',submit:'New extraction',results:'Job results',review:'Review queue',local:'Original PDF review'})[state.nav];let c=state.jobs.reduce((a,j)=>a+j.counts.review,0);document.getElementById('nav-review-count').textContent=n(c)}
 function totals(){return state.jobs.reduce((o,j)=>{o.jobs++;for(let k of ['total','completed','review','failed','queued','processing'])o[k]+=j.counts[k];return o},{jobs:0,total:0,completed:0,review:0,failed:0,queued:0,processing:0})}
 function progress(j){return `<div class="job-row-progress"><div class="progress"><div class="progress-bar" style="width:${Math.min(100,j.progress_percent||0)}%"></div></div><span>${(j.progress_percent||0).toFixed(0)}%</span></div>`}
 function jobsTable(list){if(!list.length)return empty('No jobs yet','Submit IDs to create a traceable extraction job.','files');return `<div class="table-wrap"><table><thead><tr><th>Job</th><th>Created</th><th>Documents</th><th>Progress</th><th>Status</th><th></th></tr></thead><tbody>${list.map(j=>`<tr><td><button class="row-link" data-action="pick-job" data-id="${esc(j.job_id)}">${esc(j.label)}</button><small class="job-id">${esc(j.job_id)}</small></td><td>${esc(time(j.created_at))}</td><td><strong>${n(j.counts.total)}</strong></td><td>${progress(j)}</td><td>${badge(j.status)}</td><td><button class="arrow-button" title="View job" data-action="pick-job" data-id="${esc(j.job_id)}">${icon('arrow','sm')}</button></td></tr>`).join('')}</tbody></table></div>`}
@@ -92,7 +92,59 @@ function field(label,key,f){if(!f)return `<div class="field-card"><div class="fi
 function renderReview(){let review=state.jobs.reduce((a,j)=>a.concat(j.counts.review? [{...j}]:[]),[]),revs=state.results.filter(d=>d.status==='REVIEW_REQUIRED');return `${pageHead('QUALITY CONTROL','Review queue','Documents needing evidence checks before structured fields can be trusted.',`<button class="btn" data-action="refresh">${icon('refresh')} Refresh queue</button><button class="btn primary" data-nav="results">${icon('file-search')} Browse results</button>`)}${banner()}
 <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Unresolved document extractions</h2><p class="panel-desc">No automatic approval without underlying PDF evidence</p></div><span class="badge review">${n(totals().review)} awaiting review</span></div><div class="review-notice">Production implementation will support field-level corrections, reviewer identity, timestamps, and an immutable decision audit trail. The prototype only displays unresolved documents.</div><div style="height:15px"></div>${review.length?jobsTable(review):empty('Nothing to review','No jobs currently contain review-required documents.','shield')}</section>
 <section class="panel quality-panel"><h2 class="panel-title">Quality policy</h2><div class="help-grid vertical-gap"><div class="help-card"><strong>Verified evidence</strong><p>Every critical date or product must include page provenance and matching source content.</p></div><div class="help-card"><strong>Ambiguous language</strong><p>“IBD” must be resolved as International Birth Date only in the appropriate document context.</p></div></div></section>`}
-function render(){renderNav();app.innerHTML=({dashboard:renderDashboard,submit:renderSubmit,results:renderResults,review:renderReview})[state.nav]();}
+function renderLocal() {
+  const results=state.localResults.map(d=>{
+    const rows=d.pairs.length?d.pairs.map(p=>`<tr><td>${esc(d.file_name)}<small>${esc(d.use_case)}</small></td><td>${esc(p.product)}</td><td>${esc(p.date)}</td><td>${esc(p.page)}</td><td><a href="${esc(d.pdfUrl)}#page=${esc(p.page)}" target="_blank" rel="noopener noreferrer">View original PDF page</a></td><td style="max-width:290px;white-space:normal;font-size:12px">${esc(p.other_info)}</td></tr>`).join('')
+      :`<tr><td>${esc(d.file_name)}</td><td colspan="5">No unambiguous product–date pair. Human review required.</td></tr>`;
+    return `<section class="panel vertical-gap"><div class="panel-header"><div><strong>${esc(d.file_name)}</strong><p class="panel-desc">${esc(d.use_case)} · ${esc(d.pages_scanned)} / ${esc(d.page_count)} pages examined</p></div><span class="badge review">${d.status==='EVIDENCE_FOUND'?'Evidence found · QA pending':'Review required'}</span></div>${d.issues.length?`<div class="review-notice">${esc(d.issues.join('; '))}</div>`:''}<div class="table-wrap"><table><thead><tr><th>PDF</th><th>Product / formulation</th><th>${esc(d.use_case)}</th><th>Page</th><th>Original</th><th>Evidence (±200 characters)</th></tr></thead><tbody>${rows}</tbody></table></div><div class="panel-footer">RIMdocs ID: ${esc(d.r_object_id||'Not provided')} · EDMS: ${esc(d.edms_number||'Not provided')} · Product code: ${esc(d.product_code||'Not provided')} · metadata not verified</div></section>`;
+  }).join('');
+  return `${pageHead('LOCAL SOURCE VALIDATION','Original PDF review','Select actual PBRER or DSUR PDFs from this computer, then inspect evidence linked to the source page.')}${banner()}
+<section class="panel form-card">
+ <div class="form-section"><label class="form-label" for="local-files">Original PDF files (max 5, each up to 100 MB)</label><input class="input" id="local-files" type="file" accept=".pdf,application/pdf" multiple style="width:100%" /></div>
+ <div class="form-section"><label class="form-label" for="local-case">Report type and date</label><select class="select" id="local-case"><option value="IBD">PBRER — International Birth Date (IBD)</option><option value="DIBD">DSUR — Development International Birth Date (DIBD)</option></select><p class="form-hint">For mixed report types, upload each type separately.</p></div>
+ <div class="form-section"><label class="form-label">Optional RIMdocs identifiers (entered manually, not verified)</label><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px"><input class="input" id="local-object" placeholder="RIMdocs Object ID"/><input class="input" id="local-edms" placeholder="EDMS number"/><input class="input" id="local-product-code" placeholder="Product code"/></div><p class="form-hint">Enter identifiers for one PDF at a time. For multiple PDFs, leave identifiers empty to avoid wrong associations.</p></div>
+ <div class="submit-footer"><span class="form-hint">Local-only · no cloud services or OCR · PDF not persisted</span><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" data-action="local-extract" ${state.loading?'disabled':''}>${icon('file-search')} ${state.loading?'Processing...':'Extract original PDFs'}</button><button class="btn" data-action="local-download" ${state.localResults.length?'':'disabled'}>${icon('download')} Export CSV</button><button class="btn" data-action="local-clear" ${state.localResults.length?'':'disabled'}>Clear</button></div></div>
+</section>${results||`<div class="vertical-gap">${empty('No original PDFs reviewed','Choose an original PDF above. Source-linked results will appear here.','files')}</div>`}`;
+}
+
+async function inspectLocalFiles() {
+  if(state.loading)return;
+  const selected=[...(document.getElementById('local-files')?.files||[])];
+  if(!selected.length){toast('Select one or more PDF files.',true);return}
+  if(selected.length>5){toast('Choose at most 5 PDFs per batch.',true);return}
+  if(selected.some(f=>f.size>100*1024*1024)){toast('One PDF exceeds the 100 MB limit.',true);return}
+  const c=document.getElementById('local-case').value;
+  const ids={r_object_id:document.getElementById('local-object').value.trim(),edms_number:document.getElementById('local-edms').value.trim(),product_code:document.getElementById('local-product-code').value.trim()};
+  if(selected.length>1&&Object.values(ids).some(Boolean)){toast('Leave identifiers blank for a multi-file batch or process individually.',true);return}
+  state.loading=true;
+  try {
+    for(const file of selected){
+      const form=new FormData();form.append('file',file);form.append('use_case',c);
+      for(const [k,v] of Object.entries(ids))form.append(k,v);
+      const result=await api('/local/inspect',{method:'POST',body:form});
+      result.pdfUrl=URL.createObjectURL(file);
+      state.localResults.push(result);
+    }
+    toast(`${selected.length} original PDF(s) inspected; verify the extracted evidence.`);
+  }catch(e){toast(e.message,true)}finally{state.loading=false;render()}
+}
+
+function downloadLocalCsv() {
+  const headers=['RIMdocs Object ID','RIMdocs EDMS Number','RIMdocs Product Code','Product','IBD','DIBD','Page Number','Other Info','Source PDF','Review status'];
+  const rows=[];
+  for(const d of state.localResults)for(const p of d.pairs.length?d.pairs:[{}])rows.push([d.r_object_id||'',d.edms_number||'',d.product_code||'',p.product||'',d.use_case==='IBD'?(p.date||''):'',d.use_case==='DIBD'?(p.date||''):'',p.page||'',p.other_info||'',d.file_name,d.status]);
+  const csvEscape=x=>{let str=String(x??'');if(/^[=+\-@\t\r]/.test(str.trimStart()))str="'"+str;return '"'+str.replaceAll('"','""')+'"'};
+  const blob=new Blob([[headers,...rows].map(r=>r.map(csvEscape).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download='original-pdf-inspection.csv';a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
+
+function clearLocalResults() {
+  for(const r of state.localResults)URL.revokeObjectURL(r.pdfUrl);
+  state.localResults=[];render();
+}
+function render(){renderNav();app.innerHTML=({dashboard:renderDashboard,submit:renderSubmit,results:renderResults,review:renderReview,local:renderLocal})[state.nav]();}
 async function loadJobs(){state.jobs=await api('/jobs');if(!state.jobId&&state.jobs.length)state.jobId=state.jobs[0].job_id}
 async function loadResults(){if(!state.jobId){state.results=[];state.totalResults=0;return}let q=new URLSearchParams({offset:state.offset,limit:state.limit,search:state.search,status:state.status});let r=await api(`/jobs/${encodeURIComponent(state.jobId)}/results?${q}`);state.results=r.items;state.totalResults=r.total;if(state.selectedDoc&&!state.results.some(d=>d.r_object_id===state.selectedDoc))state.selectedDoc='';}
 async function go(nav){state.nav=nav;if(nav==='results'||nav==='review')await loadResults();render()}
@@ -150,6 +202,9 @@ async function pollAsyncExport(){
 async function submit(){if(state.loading)return;if(state.mode==='csv'&&state.csvFile){state.loading=true;try{let j;if(state.backendMode==='live'&&state.csvFile.size>8*1024*1024){j=await resumableUpload(state.csvFile,state.jobLabel||'Bulk extraction job');}else{const f=new FormData();f.append('file',state.csvFile);f.append('label',state.jobLabel||'Bulk extraction job');j=await api('/jobs/upload',{method:'POST',body:f});}state.jobId=j.job_id;state.selectedDoc='';state.offset=0;state.search='';state.status='ALL';await refresh();state.nav='results';await loadResults();render();toast(j.upload_id?'Multipart upload complete. Background ID ingestion started.':`File accepted. ${n(j.counts.total)} unique IDs queued; ${n(j.invalid_rows_skipped||0)} invalid rows skipped.`)}catch(e){toast(e.message,true)}finally{state.loading=false}return}let ids=[...new Set(draftIds())];if(!ids.length){toast('Enter at least one document ID.',true);return}if(ids.length>5000){toast('Use CSV upload above 5,000 IDs.',true);return}if(ids.some(x=>!(/^[A-Za-z0-9_-]{1,128}$/.test(x)))){toast('Invalid ID found. Allowed: letters, numbers, hyphens, underscores.',true);return}state.loading=true;try{let j=await api('/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,label:state.jobLabel||'New extraction job'})});state.jobId=j.job_id;state.selectedDoc='';state.offset=0;state.search='';state.status='ALL';await refresh();state.nav='results';await loadResults();render();toast(`Job created with ${n(ids.length)} unique IDs.`)}catch(e){toast(e.message,true)}finally{state.loading=false}}
 
 document.addEventListener('click',async e=>{let nav=e.target.closest('[data-nav]');if(nav){await go(nav.dataset.nav);return}let a=e.target.closest('[data-action]');if(!a)return;let act=a.dataset.action;try{
+ if(act==='local-extract'){await inspectLocalFiles();return}
+ if(act==='local-download'){downloadLocalCsv();return}
+ if(act==='local-clear'){clearLocalResults();return}
  if(act==='refresh'){await refresh();toast('Data refreshed.')} 
  if(act==='pick-job'){state.jobId=a.dataset.id;state.status='ALL';state.offset=0;state.selectedDoc='';await go('results')}
  if(act==='document'){state.selectedDoc=a.dataset.id;state.proofKey='international_birth_date';render();document.querySelector('.inspector-layout')?.scrollIntoView({behavior:'smooth',block:'start'})}
@@ -169,5 +224,5 @@ document.addEventListener('change',async e=>{
  if(e.target.id==='csv-upload'){const f=e.target.files?.[0];if(!f)return;try{if(f.size>(state.backendMode==='live'?1024*1024*1024:100*1024*1024))throw Error('Maximum supported upload is 100 MB in local demo; use enterprise multipart upload for larger files.');state.csvFile=f;state.uploadedIds=f.size<1024*1024?parseCsv(await f.text()):[];render();toast('Ready to submit '+f.name)}catch(err){toast(err.message,true)}}
 });
 document.addEventListener('input',e=>{if(e.target.id==='ids-input'){state.draft=e.target.value;let c=document.getElementById('submit-count');if(c)c.innerHTML=submitPreview()}if(e.target.id==='job-label')state.jobLabel=e.target.value});
-async function init(){hydrateIcons();try{let h=await api('/health');state.backendMode=h.mode||'demo';if(state.backendMode==='live'){state.apiToken=typeof window.evidenceflowGetAccessToken==='function'?await window.evidenceflowGetAccessToken():''}await loadJobs();await loadResults();render()}catch(e){app.innerHTML=`<div class="empty-state"><h3>Cannot connect to EvidenceFlow API</h3><p>${esc(e.message)}. Start the included FastAPI server; opening the HTML file directly is not sufficient.</p></div>`}setInterval(async()=>{try{await pollAsyncExport();if(state.nav==='submit')return;await refresh()}catch{}},8000)}
+async function init(){hydrateIcons();try{let h=await api('/health');state.backendMode=h.mode||'demo';if(state.backendMode==='local'&&state.nav!=='local')state.nav='local';if(state.backendMode==='live'){state.apiToken=typeof window.evidenceflowGetAccessToken==='function'?await window.evidenceflowGetAccessToken():''}await loadJobs();await loadResults();render()}catch(e){app.innerHTML=`<div class="empty-state"><h3>Cannot connect to EvidenceFlow API</h3><p>${esc(e.message)}. Start the included FastAPI server; opening the HTML file directly is not sufficient.</p></div>`}setInterval(async()=>{try{await pollAsyncExport();if(state.nav==='submit')return;await refresh()}catch{}},8000)}
 init();
