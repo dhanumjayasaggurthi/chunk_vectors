@@ -14,7 +14,7 @@ _client=None
 
 def identity(request:Request)->Identity:
     global _client
-    if config.MODE=='demo':return Identity(subject='demo',tenant='demo',scopes=frozenset({'rimdocs:read'}))
+    if config.MODE in ('demo','local'):return Identity(subject='local',tenant='local',scopes=frozenset({'rimdocs:read'}))
     if not all([config.OIDC_ISSUER,config.OIDC_AUDIENCE,config.OIDC_JWKS_URL]):
         raise HTTPException(status_code=503,detail='Corporate identity provider not configured')
     header=request.headers.get('Authorization','')
