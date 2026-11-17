@@ -145,3 +145,22 @@ def test_dsur_keeps_section_one_when_section_two_starts_on_same_page():
     assert len(pairs) == 1
     assert pairs[0]["product"] == "erdafitinib"
     assert pairs[0]["date"] == "2012-06-04"
+
+
+def test_evidence_contract_supports_quality_signals():
+    text = """Periodic Benefit Risk Evaluation Report
+Topiramate
+INTERNATIONAL BIRTH DATE:
+18 July 1995
+COUNTRY OF FIRST REGISTRATION:
+United Kingdom
+"""
+    pairs, errors = extract_pairs([page(text)], "IBD")
+    assert errors == []
+    assert len(pairs) == 1
+    pair = pairs[0]
+    assert pair["product"] == "Topiramate"
+    assert pair["raw_date"] == "18 July 1995"
+    assert pair["page"] == 1
+    assert "INTERNATIONAL BIRTH DATE" in pair["other_info"]
+    assert "18 July 1995" in pair["other_info"]
