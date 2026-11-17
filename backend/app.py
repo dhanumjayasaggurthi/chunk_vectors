@@ -31,10 +31,20 @@ async def lifespan(app):
     if config.MODE=="demo":
         store.init_db();store.seed_demo()
     # Live schema must be deployed by the explicit database migration job.
+    demo_stop=None
+    demo_thread=None
     if config.MODE=="demo":
         from .worker import serve
-        threading.Thread(target=serve,kwargs={"concurrency":2},daemon=True).start()
-    yield
+        demo_stop=threading.Event()
+        demo_thread=threading.Thread(target=serve,kwargs={"concurrency":2,"stop_event":demo_stop},daemon=True)
+        demo_thread.start()
+    try:
+        yield
+    finally:
+        if demo_stop is not None:
+            demo_stop.set()
+        if demo_thread is not None:
+            demo_thread.join(timeout=5)
 
 app=FastAPI(title="EvidenceFlow API",version="1.0",lifespan=lifespan)
 
