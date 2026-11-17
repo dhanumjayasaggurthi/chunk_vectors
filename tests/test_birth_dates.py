@@ -42,6 +42,28 @@ United Kingdom
     assert pairs[0]["product"] == "Risperidone"
     assert pairs[0]["date"] == "1992-12-01"
 
+def test_real_pbrer_psur_cover_pairs_topiramate_ibd():
+    text = """Global Medical Safety
+Periodic Benefit Risk Evaluation Report/Periodic Safety Update Report
+Topiramate
+
+PERIOD COVERED BY THIS REPORT:
+19 January 2013 to 18 January 2014
+
+INTERNATIONAL BIRTH DATE:
+18 July 1995
+
+COUNTRY OF FIRST REGISTRATION:
+United Kingdom
+"""
+    pairs, errors = extract_pairs([page(text)], "IBD")
+    assert errors == []
+    assert len(pairs) == 1
+    assert pairs[0]["product"] == "Topiramate"
+    assert pairs[0]["date"] == "1995-07-18"
+    assert pairs[0]["page"] == 1
+
+
 def test_scan_stops_after_25_pages_and_not_found():
     pages = [page("No birth date here", n) for n in range(1, 26)]
     pages.append(page("International Birth Date: 01 December 1992", 26))
