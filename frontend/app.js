@@ -27,7 +27,7 @@ const icons = {
 function icon(name,cls='') {return `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${icons[name]||icons.document}</svg>`}
 function hydrateIcons(scope=document){scope.querySelectorAll('[data-icon]').forEach(x=>{x.innerHTML=icon(x.dataset.icon)})}
 function esc(t){return String(t??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-const state={nav:'dashboard',jobs:[],jobId:'',results:[],totalResults:0,selectedDoc:'',status:'ALL',search:'',offset:0,limit:25,mode:'paste',draft:'',jobLabel:'',uploadedIds:[],csvFile:null,backendMode:'demo',apiToken:'',proofKey:'international_birth_date',loading:false,activeExport:null};
+const state={nav:new URLSearchParams(window.location.search).get('view')==='results'?'results':'dashboard',jobs:[],jobId:'',results:[],totalResults:0,selectedDoc:'',status:'ALL',search:'',offset:0,limit:25,mode:'paste',draft:'',jobLabel:'',uploadedIds:[],csvFile:null,backendMode:'demo',apiToken:'',proofKey:'international_birth_date',loading:false,activeExport:null};
 const app=document.getElementById('app');
 const API='/api/v1';
 const BULK_PART_BYTES=8*1024*1024;
