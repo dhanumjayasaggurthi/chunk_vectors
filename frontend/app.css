@@ -3,3 +3,6 @@
 
 /* Proof-centric EvidenceFlow inspector */
 .proof-paper{min-height:268px;padding-top:36px}.proof-tag{display:inline-block;margin:28px 0 10px;color:#52708b;font-size:10px;letter-spacing:1px;font-weight:750}.proof-quote{font-family:Georgia,serif;color:#2c4154;line-height:1.95;font-size:16px;background:#fff8da;border-left:3px solid #d9ab43;padding:16px 17px}.proof-paper .paper-footer{text-align:left;margin-top:28px}.live-banner{background:#edf8f4!important;border-color:#cbe9dc!important;color:#245d4d!important}
+
+/* Only expose the local source-inspection tab in local execution mode. */
+.nav-item[hidden] { display: none !important; }
