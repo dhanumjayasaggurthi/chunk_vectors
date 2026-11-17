@@ -155,15 +155,16 @@ def once(concurrency=4):
         handled=sum(pool.map(lambda _: process_one(),range(concurrency)))
     return resolved+handled
 
-def serve(concurrency=4,interval=1):
+def serve(concurrency=4,interval=1,stop_event=None):
     if config.MODE=="live" and not config.DATABASE_URL.startswith("postgresql"):
         raise RuntimeError("Live mode requires PostgreSQL for concurrent worker claims")
+    stop_event=stop_event or threading.Event()
     store.init_db();log.info("EvidenceFlow worker mode=%s parallelism=%s",config.MODE,concurrency)
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        while True:
+        while not stop_event.is_set():
             resolved=resolve()
             handled=sum(pool.map(lambda _:process_one(),range(concurrency)))
-            if not resolved and not handled:time.sleep(interval)
+            if not resolved and not handled:stop_event.wait(interval)
 
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--concurrency",type=int,default=4)
