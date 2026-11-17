@@ -103,7 +103,26 @@ def process_one():
         threading.Thread(target=keep_alive,daemon=True).start()
     try:
         if config.MODE=="demo":
-            if task["r_object_id"]=="0901bacc84b20d46":
+            from .demo_documents import SAMPLES, pdf_bytes
+            if task["r_object_id"] in SAMPLES:
+                import fitz
+                sample = SAMPLES[task["r_object_id"]]
+                with fitz.open(stream=pdf_bytes(task["r_object_id"]),filetype="pdf") as pdf:
+                    pages=[{"page":i+1,"text":pdf[i].get_text("text",sort=True) or ""}
+                           for i in range(pdf.page_count)]
+                pairs,issues=extract_pairs(pages,sample["case"])
+                fields=result_fields(sample["case"],pairs)
+                # Parsed PDFs are generated from slide examples, NOT original RIMdocs evidence.
+                for p in fields.get("birth_date_pairs",[]):
+                    p["validation"]="SYNTHETIC_DEMO"
+                for key in ("product","international_birth_date","development_international_birth_date"):
+                    if key in fields:
+                        fields[key]["validation"]="SYNTHETIC_DEMO"
+                store.finish(task,fields,None,"COMPLETED" if pairs and not issues else "REVIEW_REQUIRED",
+                             "Synthetic slide-derived PDF; not original source evidence. "+
+                             ("; ".join(issues) if issues else "Demo extraction only."),
+                             "synthetic-demo-v1")
+            elif task["r_object_id"]=="0901bacc84b20d46":
                 store.finish(task,DEMO_FIELDS,DEMO_SUMMARY,"COMPLETED",
                              "Screenshot-only fixture; not independently extracted from a source PDF.","demo-screenshot")
             else:
