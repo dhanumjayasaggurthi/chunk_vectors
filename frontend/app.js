@@ -117,6 +117,9 @@ async function inspectLocalFiles() {
   const ids={r_object_id:document.getElementById('local-object').value.trim(),edms_number:document.getElementById('local-edms').value.trim(),product_code:document.getElementById('local-product-code').value.trim()};
   if(selected.length>1&&Object.values(ids).some(Boolean)){toast('Leave identifiers blank for a multi-file batch or process individually.',true);return}
   state.loading=true;
+  // One operator action represents one review batch; do not mix stale IBD/DIBD results.
+  for(const r of state.localResults)URL.revokeObjectURL(r.pdfUrl);
+  state.localResults=[];
   try {
     for(const file of selected){
       const form=new FormData();form.append('file',file);form.append('use_case',c);
