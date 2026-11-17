@@ -30,6 +30,8 @@ async def lifespan(app):
             raise RuntimeError("Live mode requires corporate OIDC issuer, audience, and JWKS URL")
     if config.MODE=="demo":
         store.init_db();store.seed_demo()
+    elif config.MODE=="local":
+        store.init_db()
     # Live schema must be deployed by the explicit database migration job.
     demo_stop=None
     demo_thread=None
@@ -50,7 +52,10 @@ app=FastAPI(title="EvidenceFlow API",version="1.0",lifespan=lifespan)
 
 @app.middleware("http")
 async def corporate_auth(request:Request,call_next):
-    if request.url.path.startswith('/api/v1/') and request.url.path not in ('/api/v1/health','/api/v1/health/ready'):
+    if config.MODE=="local" and (request.client is None or request.client.host not in ("127.0.0.1","::1","localhost","testclient")):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail":"Local mode accepts loopback requests only"},status_code=403)
+    if request.url.path.startswith('/api/v1/') and request.url.path not in ('/api/v1/health','/api/v1/health/ready','/api/v1/local/inspect'):
         from fastapi.responses import JSONResponse
         try:request.state.identity=identity(request)
         except HTTPException as exc:return JSONResponse({'detail':exc.detail},status_code=exc.status_code)
@@ -84,6 +89,30 @@ def ready():
         with store.engine.connect() as conn:conn.execute(sql_text('SELECT 1'))
         return {'ready':True}
     except Exception as exc:raise HTTPException(503,'Operational database is unavailable') from exc
+
+@app.post("/api/v1/local/inspect")
+async def local_inspect(request:Request, file:UploadFile=File(...),
+                        use_case:Literal["IBD","DIBD"]=Form(...),
+                        r_object_id:str=Form(""), edms_number:str=Form(""),
+                        product_code:str=Form("")):
+    """Inspect an operator-uploaded local PDF; source is never persisted."""
+    if config.MODE!="local":
+        raise HTTPException(404,"Local PDF inspection is not enabled")
+    if request.client is None or request.client.host not in ("127.0.0.1","::1","localhost","testclient"):
+        raise HTTPException(403,"Local PDF inspection requires localhost")
+    from .local_pdf import inspect_pdf_bytes,LocalPDFError,MAX_UPLOAD_BYTES
+    if file.size is not None and file.size>MAX_UPLOAD_BYTES:
+        raise HTTPException(413,"PDF exceeds 100 MB")
+    try:
+        content=await file.read(MAX_UPLOAD_BYTES+1)
+        if len(content)>MAX_UPLOAD_BYTES:
+            raise HTTPException(413,"PDF exceeds 100 MB")
+        return inspect_pdf_bytes(content,file.filename or "source.pdf",use_case,
+                                 r_object_id,edms_number,product_code)
+    except LocalPDFError as exc:
+        raise HTTPException(422,str(exc)) from exc
+    finally:
+        await file.close()
 
 @app.get("/api/v1/jobs")
 def jobs(request:Request):
