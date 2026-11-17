@@ -100,6 +100,9 @@ async def local_inspect(request:Request, file:UploadFile=File(...),
         raise HTTPException(404,"Local PDF inspection is not enabled")
     if request.client is None or request.client.host not in ("127.0.0.1","::1","localhost","testclient"):
         raise HTTPException(403,"Local PDF inspection requires localhost")
+    origin=request.headers.get("origin")
+    if origin and origin.rstrip("/")!=str(request.base_url).rstrip("/"):
+        raise HTTPException(403,"Cross-origin PDF submissions are not allowed")
     from .local_pdf import inspect_pdf_bytes,LocalPDFError,MAX_UPLOAD_BYTES
     if file.size is not None and file.size>MAX_UPLOAD_BYTES:
         raise HTTPException(413,"PDF exceeds 100 MB")
