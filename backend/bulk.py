@@ -164,16 +164,11 @@ def generate_export(task):
     with tempfile.TemporaryFile('w+b') as out:
         text=io.TextIOWrapper(out,encoding='utf-8',newline='',write_through=True)
         if fmt=='csv':
-            keys=['r_object_id','status','artifact_name','document_date','international_birth_date','product','active_ingredient','summary','error']
-            writer=csv.DictWriter(text,fieldnames=keys);writer.writeheader()
-            for d in _iter_job_documents(task['job_id']):
-                fields=d['fields'];row={k:d.get(k) for k in keys}
-                for k in ('document_date','international_birth_date','product','active_ingredient'):
-                    row[k]=fields.get(k,{}).get('value')
-                for k in keys:
-                    v=row.get(k)
-                    if v is not None and str(v).lstrip().startswith(('=','+','-','@')):row[k]="'"+str(v)
-                writer.writerow(row)
+            from .birth_date_export import COLUMNS,rows_for_document,safe_csv
+            writer=csv.DictWriter(text,fieldnames=COLUMNS);writer.writeheader()
+            for document in _iter_job_documents(task['job_id']):
+                for row in rows_for_document(document):
+                    writer.writerow(safe_csv(row))
         else:
             text.write('[\n');first=True
             for d in _iter_job_documents(task['job_id']):
