@@ -62,7 +62,13 @@ async def corporate_auth(request:Request,call_next):
     response=await call_next(request)
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['Referrer-Policy']='no-referrer'
-    response.headers['X-Frame-Options']='DENY'
+    if config.FRAME_ANCESTORS:
+        # CSP frame-ancestors is the modern control for an explicit cross-origin portal allowlist.
+        ancestors=" ".join(config.FRAME_ANCESTORS)
+        response.headers['Content-Security-Policy']=f"frame-ancestors 'self' {ancestors}"
+    else:
+        response.headers['Content-Security-Policy']="frame-ancestors 'none'"
+        response.headers['X-Frame-Options']='DENY'
     return response
 
 def principal(request:Request):
