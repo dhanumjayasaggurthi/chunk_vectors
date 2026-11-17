@@ -107,7 +107,7 @@ def extract_pairs(pages: list[dict], case: str) -> tuple[list[dict], list[str]]:
                 break
             text = p.get("text", "")
             matches = [m for m in IBD_LABEL.finditer(text)
-                       if not re.search(r'\bDevelopment\s+
+                       if not re.search(r'\bDevelopment\s+$', text[max(0,m.start()-40):m.start()], re.I)]
             if not matches:
                 continue
             # Stop on the first containing page, but consume all date/product rows.
