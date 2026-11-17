@@ -18,6 +18,7 @@ from . import config, store
 from .enterprise_state import PageChunk, DocumentManifest, put_task, schedule_final_if_ready
 from .integrations import PermanentError
 from .extract import rule_extract,FIELD_NAMES,CRITICAL,_verify_llm_field
+from .birth_dates import case_for_artifact,extract_pairs,result_fields
 from .azure_llm import JnJAzureLLM,page_score
 from sqlalchemy import select
 
@@ -224,6 +225,33 @@ def finalize(task):
     if not manifest or manifest.state!='PREPARED' or len(chunks)!=manifest.expected_chunks:raise RuntimeError('Document checkpoint manifest is incomplete')
     if not chunks or any(c.ocr_state not in ('DONE','NOT_REQUIRED') for c in chunks):
         raise RuntimeError('OCR chunks are not ready')
+    # Regulated birth-date profile: source-window-only, deterministic, one-to-many.
+    case = case_for_artifact(current.artifact_name if current else None)
+    if case:
+        # For DSUR only pages from the executive-summary/Section 1 are useful.
+        # We deliberately never prompt the LLM with unrelated birth dates.
+        pages = []
+        for chunk in chunks:
+            for p in cp.get(chunk.checkpoint_key):
+                if case == "IBD" and p["page"] > 25:
+                    break
+                pages.append(p)
+            if case == "IBD" and chunk.end_page >= 25:
+                break
+        pairs, issues = extract_pairs(pages, case)
+        if any(c.error_code for c in chunks):
+            issues.append("OCR incomplete; human review required")
+        fields = result_fields(case, pairs)
+        with store.Session.begin() as s:
+            d = s.get(store.Document,(job,doc),with_for_update=(s.bind.dialect.name=='postgresql'))
+            if not d or d.status in ('COMPLETED','REVIEW_REQUIRED','FAILED','CANCELLED'):
+                return
+            d.fields_json=json.dumps(fields,ensure_ascii=False)
+            d.summary=None
+            d.note='; '.join(issues) if issues else None
+            d.error=None
+            store._transition(s,d,'COMPLETED' if pairs and not issues else 'REVIEW_REQUIRED')
+        return
     # Complete rules pass over ALL pages while retaining only evidence-relevant pages for the LLM.
     fields={};conflicts=set(); candidates=[]; OCR_ERRORS=[]
     for chunk in chunks:
