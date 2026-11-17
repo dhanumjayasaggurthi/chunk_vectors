@@ -268,7 +268,7 @@ def claim_document():
         d.lease_until=t+timedelta(seconds=config.LEASE_SECONDS)
         d.attempts+=1
         return dict(job_id=d.job_id,r_object_id=d.r_object_id,s3_uri=d.s3_uri,attempts=d.attempts,
-                    lease_until=d.lease_until,source_version=d.source_version)
+                    lease_until=d.lease_until,source_version=d.source_version,artifact_name=d.artifact_name)
 
 def heartbeat(task):
     with Session.begin() as s:
