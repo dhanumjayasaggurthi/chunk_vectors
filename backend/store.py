@@ -316,7 +316,8 @@ def seed_demo():
     with Session() as s:
         if s.get(Job,"demo-001"):return
     with Session.begin() as s:s.add(Job(id="demo-001",label="PBRER sample evaluation"))
-    append_ids("demo-001",["0901bacc84b20d46","0901bacc8283f1de","0901bacc802bcfa8","UNKNOWN-DEMO-001"])
+    from .demo_documents import SAMPLES
+    append_ids("demo-001",list(SAMPLES)+["0901bacc84b20d46","UNKNOWN-DEMO-001"])
 
 
 def cancel_job(job_id):
