@@ -116,3 +116,42 @@ See `ARCHITECTURE.md` for design and limits, `OPERATIONS.md` for SLOs / failure 
 - Missing labels, ambiguous product assignment, conflicting dates, or incomplete OCR yield REVIEW_REQUIRED. The program does not reconcile EU reference dates with first-registration dates without a signed-off business rule.
 - LLM summarization is bypassed for this regulatory profile. Existing LLM code stays available for other profiles, but is not required for IBD / DIBD.
 - Regulated production: supply approved source fixtures, reconcile PDF page numbering with document page labels, measure extraction precision/recall, and validate Snowflake data access, ACL, S3 versioning and OCR. The new profile has not been validated against corporate PDFs.
+
+## Run the IBD / DIBD demonstration
+
+All five examples are **synthetic PDFs reconstructed from the supplied slide scenarios**, not original RIMdocs files.
+
+```bash
+git clone --branch feature/ibd-dibd-extraction https://github.com/dhanumjayasaggurthi/chunk_vectors.git
+cd chunk_vectors
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+# Validate PDF -> PyMuPDF -> product/date extractor -> CSV:
+python -m scripts.validate_sample_pdfs
+# Artifacts: demo_output/results.csv, preview.html and pdfs/
+
+# Start real FastAPI demo, background worker and SQLite database:
+APP_MODE=demo python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+```
+
+Open **http://127.0.0.1:8000/?view=results**. The seeded job includes five synthetic sample PDFs and legacy examples. For an isolated check, create a new job with `DEMO-RISP-001`, `DEMO-CANA-002`, `DEMO-PALI-003`, `DEMO-MACI-004`, `DEMO-ERDA-005`. Wait for completion; inspect Product(s), IBD / DIBD, evidence pages, and download the CSV.
+
+**Demo mode is not regulatory verification**. Do not set `APP_MODE=live` for synthetic fixtures.
+
+### Inspect an authorized original PDF locally
+
+```bash
+python -m scripts.inspect_pdf /secure/path/report-pbrer.pdf --case IBD --output pbrer-check.json
+python -m scripts.inspect_pdf /secure/path/report-dsur.pdf --case DIBD --output dsur-check.json
+```
+
+This is a native-text diagnostic without corporate credentials. Missing/unreadable text returns `REVIEW_REQUIRED` and scanned pages require approved OCR before regulatory use. Neither RIMdocs metadata nor source-document access is inferred. Do not commit confidential PDFs or extracted regulated content to this public repository.
+
+### Pre-production checks
+
+- Confirm Snowflake column mappings, approval/component semantics, and true source IDs.
+- Evaluate source PDFs against a human-labeled gold set, including scans, tables, line wrapping, and multiple formulations.
+- Resolve the Loperamide EU reference date versus first-registration discrepancy through an approved business rule.
+- Confirm page number mapping, RBAC, source S3 version fencing, OCR permissions and deployment security before live corporate processing.
