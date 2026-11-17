@@ -12,9 +12,25 @@ class PermanentError(Exception):
 
 class DemoResolver:
     def lookup(self, ids: list[str]) -> dict[str, dict | None]:
-        sample = {"0901bacc84b20d46","0901bacc8283f1de","0901bacc802bcfa8","0901bacc802bcfaa"}
-        return {i: (dict(artifact_name="Periodic Benefit Risk Evaluation Report (PBRER)",
-                         a_status="Approved",ingestion_status="SUCCESS",file_path="demo://"+i) if i in sample else None) for i in ids}
+        from .demo_documents import SAMPLES
+        legacy = {"0901bacc84b20d46","0901bacc8283f1de","0901bacc802bcfa8","0901bacc802bcfaa"}
+        found = {}
+        for i in ids:
+            if i not in SAMPLES and i not in legacy:
+                found[i] = None
+                continue
+            fixture = SAMPLES.get(i, {})
+            found[i] = dict(
+                artifact_name=("Development Safety Update Report (DSUR)"
+                               if fixture.get("case") == "DIBD"
+                               else "Periodic Benefit Risk Evaluation Report (PBRER)"),
+                a_status="Approved", ingestion_status="SUCCESS",
+                domain="Safety", component="Full Document",
+                edms_number=fixture.get("edms_number", "DEMO-LEGACY"),
+                product_code=fixture.get("product_code", "DEMO-LEGACY"),
+                file_path="demo://"+i,
+            )
+        return found
 
 class SnowflakeResolver:
     def __init__(self):
