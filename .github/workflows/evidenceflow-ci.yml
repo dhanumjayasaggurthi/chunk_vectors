@@ -3,7 +3,7 @@ on:
   push:
     branches: ["feature/evidenceflow-enterprise"]
   pull_request:
-    paths: ["backend/**", "tests/**", "frontend/**", "migrations/**", "requirements*.txt", ".github/workflows/evidenceflow-ci.yml"]
+    paths: ["backend/**", "tests/**", "scripts/**", "frontend/**", "migrations/**", "requirements*.txt", ".github/workflows/evidenceflow-ci.yml"]
 
 jobs:
   python-tests:
@@ -21,3 +21,12 @@ jobs:
         run: python -m compileall -q backend
       - name: Check frontend JavaScript syntax
         run: node --check frontend/app.js
+      - name: Validate five synthetic PDFs end-to-end
+        run: python -m scripts.validate_sample_pdfs
+      - name: Upload sample PDFs and extracted CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidenceflow-pdf-validation
+          path: demo_output/
+          if-no-files-found: warn
