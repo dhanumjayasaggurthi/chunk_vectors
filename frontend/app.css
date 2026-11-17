@@ -22,3 +22,41 @@
 .local-evidence-table td:nth-child(6)::before{content:"SOURCE EVIDENCE";display:block;font:800 8px/1.2 Inter,ui-sans-serif,sans-serif;letter-spacing:1px;color:#9a7a2f;margin-bottom:7px}
 .local-result-card .panel-footer{background:#f9fbfe;padding:14px 19px;color:#748399}
 @media(max-width:900px){.local-command-head{flex-direction:column}.local-evidence-table table{min-width:900px}}
+
+/* J&J-inspired enterprise visual system — restrained for regulated evidence review */
+:root{--bg:#f7f7f6;--sidebar:#181818;--surface:#fff;--text:#202124;--muted:#686868;--line:#e5e2df;--blue:#eb1700;--blue-soft:#fff0ed;--success:#176b4d;--green-bg:#eaf6f0;--amber:#8b5a13;--amber-bg:#fff6e8;--danger:#b42318;--danger-bg:#fff0ee;--shadow:0 8px 30px rgba(34,26,24,.06)}
+body{background:linear-gradient(180deg,#faf9f8 0,#f5f4f2 100%);color:var(--text)}
+.sidebar{background:#181818;border-right:1px solid #292929}.brand-mark{background:#eb1700;border-radius:50%;box-shadow:0 8px 24px rgba(235,23,0,.22);letter-spacing:-2px}.brand-mark span{color:#fff}.brand-copy strong{letter-spacing:1.2px}.brand-copy small{color:#aaa}
+.nav-caption{color:#777}.nav-item{color:#bbb;border-radius:12px}.nav-item:hover{background:#292929}.nav-item.active{background:#eb1700;color:#fff;box-shadow:0 8px 22px rgba(235,23,0,.18)}.nav-item.active .icon{color:#fff}.nav-count{background:#333;color:#ddd}
+.platform-card{background:linear-gradient(145deg,#242424,#191919);border-color:#353535}.platform-orbit,.platform-chip{color:#fff}.platform-chip{background:#eb1700}.platform-card p{color:#aaa}
+.topbar{border-bottom-color:#ebe8e5}.top-pill{background:#f7f6f5}.green-dot{background:#198754}.avatar-light{background:#fff0ed;color:#d81900}
+.main-content{max-width:1620px}.eyebrow{color:#d81900;font-weight:850}.page-head h1{font-size:31px;font-weight:790;letter-spacing:-1.1px;color:#191919}.page-head p{color:#777}
+.btn{border-radius:999px;border-color:#ddd9d5;color:#333;font-weight:720;padding-left:18px;padding-right:18px}.btn:hover{background:#faf7f5;border-color:#c9c2bd}.btn.primary{background:#eb1700;border-color:#eb1700;box-shadow:0 7px 18px rgba(235,23,0,.18)}.btn.primary:hover{background:#c91400;border-color:#c91400}.btn.secondary{background:#fff0ed;border-color:#ffd9d2;color:#c91400}
+.panel,.stat-card{border-color:#e7e3e0;border-radius:16px;box-shadow:0 10px 34px rgba(36,25,22,.045)}.panel-header{border-bottom-color:#eeeae7}.panel-title{color:#202020}
+.stat-icon{background:#fff0ed;color:#d81900}.stat-icon.green{background:#eaf6f0;color:#176b4d}.stat-icon.amber{background:#fff5e5;color:#9a6416}.stat-icon.red{background:#fff0ed;color:#d81900}
+.badge.processing{color:#c91400;background:#fff0ed}.text-action,.row-link:hover{color:#d81900}.arrow-button:hover{color:#d81900;border-color:#f3a89f}
+.input:focus,.textarea:focus,.select:focus{border-color:#eb1700;box-shadow:0 0 0 3px rgba(235,23,0,.10)}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline-color:#f4a49b}
+.progress-bar{background:#eb1700}.field-card button{color:#d81900}.field-proof{color:#176b4d}
+.demo-banner.live-banner{background:#f1f8f4!important;border-color:#d4e9dc!important;color:#235b46!important}
+
+/* Premium source-validation workspace */
+.local-review-command{position:relative;border-radius:20px!important;border:1px solid #e5e0dc!important;box-shadow:0 18px 55px rgba(40,25,20,.075)!important;background:#fff!important}
+.local-review-command:before{content:"";display:block;height:5px;background:#eb1700}
+.local-review-command .form-label{color:#35302d;font-weight:780}.local-review-command .input,.local-review-command .select{border-color:#ded9d5;border-radius:10px;background:#fdfdfc}
+.local-review-command .submit-footer{background:#fbfaf9!important;border-top-color:#ece8e4!important}
+.local-result-card{position:relative;border-radius:20px!important;border:1px solid #e4dfdb!important;box-shadow:0 18px 55px rgba(40,25,20,.075)!important;background:#fff}
+.local-result-card:before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:#eb1700;z-index:2}
+.local-result-head{padding:23px 26px!important;background:linear-gradient(110deg,#fff 55%,#fff7f5)!important}.local-result-head strong{font-size:15px!important;color:#211f1e!important}.local-result-head .panel-desc{color:#7b746f!important}
+.local-status{border-radius:999px!important;padding:7px 11px!important;color:#176b4d!important;background:#eaf6f0!important;border:1px solid #d5eadf}
+.review-notice{border-color:#ead7b8;background:#fffaf1;color:#76511d;border-radius:12px}
+.local-evidence-table{background:#fff}.local-evidence-table thead{background:#f8f7f6!important}.local-evidence-table th{color:#817872!important;letter-spacing:.9px!important;font-size:9px!important}
+.local-evidence-table td{padding-top:22px!important;padding-bottom:22px!important;border-top-color:#eeeae7!important}
+.local-evidence-table td:nth-child(2){font-size:14px!important;font-weight:800!important;color:#24211f!important}
+.local-evidence-table td:nth-child(3){font-size:16px!important;font-weight:850!important;color:#d81900!important;letter-spacing:-.2px}
+.local-evidence-table td:nth-child(4){font-weight:800!important;color:#3f3935!important}
+.local-evidence-table td:nth-child(5) a{border:1px solid #eb1700!important;color:#d81900!important;border-radius:999px!important;padding:9px 13px!important;font-weight:800!important;background:#fff!important;white-space:nowrap}.local-evidence-table td:nth-child(5) a:hover{background:#eb1700!important;color:#fff!important}
+.local-evidence-table td:nth-child(6){position:relative;line-height:1.8!important;color:#3f3935!important;background:#fff9f7!important;border-left:4px solid #eb1700!important;min-width:300px}
+.local-evidence-table td:nth-child(6)::before{content:"SOURCE EVIDENCE";display:block;font:850 9px/1.2 Inter,ui-sans-serif,sans-serif;letter-spacing:1.15px;color:#d81900;margin-bottom:8px}
+.local-result-card .panel-footer{background:#faf9f8!important;border-top-color:#ece8e4!important;color:#7d756f!important;padding:15px 24px!important}
+.proof-quote{background:#fff5f2;border-left-color:#eb1700}.proof-tag{color:#d81900}
+@media(max-width:730px){.page-head h1{font-size:27px}.local-result-card:before{width:3px}}
