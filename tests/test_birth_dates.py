@@ -102,3 +102,24 @@ def test_csv_formula_injection():
 ])
 def test_artifact_dispatch(artifact,case):
     assert case_for_artifact(artifact) == case
+
+
+def test_pbrer_never_treats_development_date_as_ibd():
+    pairs, issues = extract_pairs([page(
+        "The Development International Birth Date (DIBD) is 11 September 2015.\n"
+        "INTERNATIONAL BIRTH DATE:\n"
+        "19 December 2006: Paliperidone Extended Release\n")], "IBD")
+    assert not issues
+    assert pairs[0]["date"] == "2006-12-19"
+
+
+def test_dsur_keeps_section_one_when_section_two_starts_on_same_page():
+    pairs, issues = extract_pairs([page(
+        "EXECUTIVE SUMMARY\n"
+        "The DIBD for erdafitinib is 4 June 2012.\n"
+        "2. WORLDWIDE MARKETING AUTHORIZATION STATUS\n"
+        "The DIBD for another medicine is 14 October 2021.", 6)], "DIBD")
+    assert not issues
+    assert len(pairs) == 1
+    assert pairs[0]["product"] == "erdafitinib"
+    assert pairs[0]["date"] == "2012-06-04"
