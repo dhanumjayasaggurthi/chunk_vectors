@@ -288,7 +288,7 @@ class Ledger:
               )
               INSERT INTO ingestion_v2_runtime.range_failures(
                 job_key,start_page,attempt,error_code,error_message)
-              SELECT job_key,start_page,attempt,'LEASE_EXHAUSTED',
+              SELECT job_key,start_page,attempts,'LEASE_EXHAUSTED',
                      'Worker lease expired after the maximum attempts'
               FROM updated
               RETURNING start_page
