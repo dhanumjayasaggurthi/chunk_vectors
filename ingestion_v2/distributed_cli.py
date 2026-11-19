@@ -117,7 +117,7 @@ def run_worker(*, ledger, job_key, source_path, source_uri, output_dir,
 
     record,source,policy=_verify_source(ledger,job_key,source_path,source_uri)
     summary={"job_key":job_key,"worker_id":worker_id,"SUCCESS":0,"FAILED":0,
-             "LOST_CLAIM":0,"claimed":0,"ocr_candidates":0}
+             "RETRIED":0,"LOST_CLAIM":0,"claimed":0,"ocr_candidates":0}
     # Spawned subprocesses open separate PDF handles. Parent retains the
     # database connection only for brief claim/heartbeat/commit transactions.
     with concurrent.futures.ProcessPoolExecutor(max_workers=1) as pool:
@@ -168,8 +168,10 @@ def run_worker(*, ledger, job_key, source_path, source_uri, output_dir,
                     claim,code,f"{type(error).__name__}: {error}",
                     max_attempts=policy.max_attempts,retry_delay_seconds=30
                 )
-                if state is not None:
-                    summary["FAILED"]+=1
+                if state in ("FAILED","PENDING"):
+                    summary["FAILED" if state=="FAILED" else "RETRIED"]+=1
+                elif state is None:
+                    summary["LOST_CLAIM"]+=1
     return summary
 
 
