@@ -6,7 +6,7 @@ Do not enable it against production until DBA, security and representative
 performance/quality reviews are complete.
 
 The ledger uses PostgreSQL's short transactions and
-\`FOR UPDATE SKIP LOCKED\` to avoid multiple workers owning the same
+`FOR UPDATE SKIP LOCKED` to avoid multiple workers owning the same
 range. A randomly assigned claim token fences late or disconnected workers.
 A worker can renew only its own unexpired lease, and completion is accepted
 only with the same live token. PostgreSQL stores the error reason and
@@ -38,11 +38,11 @@ table changes or chunk publishing is implemented in this milestone.**
 Do not run the distributed pilot unless **every participating host** can read
 the exact same source document bytes, write artifacts to a storage location
 available to downstream consumers, and agree on the same canonical
-\`--source-uri\` and \`--artifact-uri-prefix\` strings.
+`--source-uri` and `--artifact-uri-prefix` strings.
 
-For example, Linux might use \`/epod_nas/docs/example.pdf\`, Windows
-might use \`Z:\docs\example.pdf\`, and both can register/read the
-identity \`nas://enterprise-archive/docs/example.pdf\`. This is a
+For example, Linux might use `/epod_nas/docs/example.pdf`, Windows
+might use `Z:\docs\example.pdf`, and both can register/read the
+identity `nas://enterprise-archive/docs/example.pdf`. This is a
 logical URI, **not a path that the script mounts for you**.
 
 Only shared NAS/SMB filesystem mapping is supported for this pilot.
@@ -53,47 +53,47 @@ before the runner can safely publish S3 artifacts.
 
 Use a separate worktree and virtualenv, not the production checkout:
 
-\`\`\`bash
+```bash
 cd /home/sa-prd-rdi-react-dev/rimdocs_s3_pg
 git fetch origin
 git worktree add ../rimdocs_ingestion_v2_pilot origin/feat/ingestion-v2-foundation
 cd ../rimdocs_ingestion_v2_pilot
 python3 -m venv .venv
 ./.venv/bin/python -m pip install "pymupdf>=1.24,<2" "psycopg2-binary>=2.9,<3" "tiktoken>=0.7,<1" "PyYAML>=6.0.2,<7"
-\`\`\`
+```
 
-Set \`PGHOST\`, \`PGPORT\`, \`PGUSER\` and \`PGDATABASE\` for a **disposable
+Set `PGHOST`, `PGPORT`, `PGUSER` and `PGDATABASE` for a **disposable
 test database** using an authorized account. Supply the password through
-your approved secure connection method (e.g. a temporary \`PGPASSFILE\`).
+your approved secure connection method (e.g. a temporary `PGPASSFILE`).
 Never paste credentials into command output or a repository.
 
 ### 1. Create the new isolated schema
 
-\`\`\`bash
+```bash
 ./.venv/bin/python -m ingestion_v2.distributed_cli init-ledger --apply
-\`\`\`
+```
 
-This applies only \`ingestion_v2/sql/001_work_ledger.sql\`, creating
-\`ingestion_v2_runtime.jobs\`, \`ranges\`, \`range_failures\` and their
-indexes. It does not modify the current \`embedding_runtime\` tables.
+This applies only `ingestion_v2/sql/001_work_ledger.sql`, creating
+`ingestion_v2_runtime.jobs`, `ranges`, `range_failures` and their
+indexes. It does not modify the current `embedding_runtime` tables.
 
 ### 2. Register one representative, approved PDF
 
-\`\`\`bash
+```bash
 ./.venv/bin/python -m ingestion_v2.distributed_cli register \
   --pdf /approved/mount/representative.pdf \
   --source-uri "nas://approved-archive/representative.pdf" \
   --profile profiles/ingestion_v2_general.json --confirm
-\`\`\`
+```
 
-The output contains \`job_key\`, source hash, page count and range count.
+The output contains `job_key`, source hash, page count and range count.
 The command fingerprints the source PDF once before registration. If the
-same \`job_key\` already exists with different immutable document metadata,
+same `job_key` already exists with different immutable document metadata,
 registration fails without replacing existing rows.
 
 ### 3. Run a bounded pilot on Linux
 
-\`\`\`bash
+```bash
 ./.venv/bin/python -m ingestion_v2.distributed_cli worker \
   --job-key YOUR_JOB_KEY \
   --pdf /approved/mount/representative.pdf \
@@ -101,29 +101,29 @@ registration fails without replacing existing rows.
   --output /approved/shared-mount/v2-artifacts \
   --artifact-uri-prefix "nas://approved-archive/v2-artifacts" \
   --worker-id "linux-pilot-1" --max-claims 2
-\`\`\`
+```
 
 The worker processes at most two ranges by default. It exits when no
 range is currently claimable. For another host, use its own local path
 and mount to the SAME underlying shared source/artifact storage, with
-the identical canonical \`--source-uri\` and artifact URI prefix.
+the identical canonical `--source-uri` and artifact URI prefix.
 
-**Do not use \`--unlimited\`** until repeated bounded tests, simulated
+**Do not use `--unlimited`** until repeated bounded tests, simulated
 worker failure, long-document memory measurements, and storage checks
-pass. \`--unlimited\` is a one-shot backlog drain, not an always-on
+pass. `--unlimited` is a one-shot backlog drain, not an always-on
 service: it exits when no range is currently claimable, which may
 occur while other workers are running or retries are delayed. Use a
 supervisor and polling lifecycle only after operational review.
 
 ### 4. Inspect status
 
-\`\`\`bash
+```bash
 ./.venv/bin/python -m ingestion_v2.distributed_cli status --job-key YOUR_JOB_KEY
-\`\`\`
+```
 
 Optional SQL (read-only):
 
-\`\`\`sql
+```sql
 SELECT job_key,status,COUNT(*) AS ranges, SUM(end_page-start_page) AS pages,
        MIN(updated_at) AS earliest_activity,MAX(updated_at) AS latest_activity
 FROM ingestion_v2_runtime.ranges
@@ -135,13 +135,13 @@ SELECT start_page+1 AS page_from,end_page AS page_to,attempts,
 FROM ingestion_v2_runtime.ranges
 WHERE job_key='YOUR_JOB_KEY' AND status='FAILED'
 ORDER BY start_page LIMIT 100;
-\`\`\`
+```
 
 ## Failure semantics and data integrity
 
 - A FAILED/PENDING range does not block unrelated ranges.
 - Each claim is bounded by a lease. If a worker dies, another can reclaim
-  an expired lease; attempts are counted, with a terminal \`LEASE_EXHAUSTED\`.
+  an expired lease; attempts are counted, with a terminal `LEASE_EXHAUSTED`.
 - A previous worker's claim token cannot complete or mark failure after
   another worker reclaims it.
 - The work process keeps PostgreSQL transactions short; all PDF work runs
