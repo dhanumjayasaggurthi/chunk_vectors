@@ -15,6 +15,7 @@ import json
 import os
 import socket
 import sys
+import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -115,9 +116,11 @@ def run_worker(*, ledger, job_key, source_path, source_uri, output_dir,
     if not worker_id or len(worker_id)>200:
         raise ValueError("worker_id must be 1..200 characters")
 
+    started=time.perf_counter()
     record,source,policy=_verify_source(ledger,job_key,source_path,source_uri)
     summary={"job_key":job_key,"worker_id":worker_id,"SUCCESS":0,"FAILED":0,
-             "RETRIED":0,"LOST_CLAIM":0,"claimed":0,"ocr_candidates":0}
+             "RETRIED":0,"LOST_CLAIM":0,"claimed":0,"ocr_candidates":0,
+             "pages_successful":0}
     # Spawned subprocesses open separate PDF handles. Parent retains the
     # database connection only for brief claim/heartbeat/commit transactions.
     with concurrent.futures.ProcessPoolExecutor(max_workers=1) as pool:
@@ -156,6 +159,7 @@ def run_worker(*, ledger, job_key, source_path, source_uri, output_dir,
                 ocr=sum(bool(p.get("ocr_candidate")) for p in pages)
                 if ledger.complete(claim,uri,digest,ocr):
                     summary["SUCCESS"]+=1
+                    summary["pages_successful"]+=claim.end_page-claim.start_page
                     summary["ocr_candidates"]+=ocr
                 else:
                     summary["LOST_CLAIM"]+=1
@@ -172,6 +176,10 @@ def run_worker(*, ledger, job_key, source_path, source_uri, output_dir,
                     summary["FAILED" if state=="FAILED" else "RETRIED"]+=1
                 elif state is None:
                     summary["LOST_CLAIM"]+=1
+    summary["wall_seconds"]=round(time.perf_counter()-started,3)
+    summary["pages_per_second"]=round(
+        summary["pages_successful"]/max(0.001,summary["wall_seconds"]),3
+    )
     return summary
 
 
