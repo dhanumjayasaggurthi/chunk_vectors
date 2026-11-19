@@ -124,7 +124,10 @@ class TestDistributedLedger(unittest.TestCase):
                                      ["PDF_READ","PDF_READ"])
         finally:
             conn.close()
-        self.assertIsNone(self.ledger.claim(self.key,"worker",120,1))
+        # Other unprocessed ranges remain claimable; only this failed range is terminal.
+        next_claim=self.ledger.claim(self.key,"worker",120,1)
+        self.assertIsNotNone(next_claim)
+        self.assertNotEqual(next_claim.start_page,claim.start_page)
 
     def test_expired_last_attempt_becomes_failed_and_auditable(self):
         first=self.ledger.claim(self.key,"worker",120,1)
