@@ -176,6 +176,25 @@ Current official references (verify again before assigning rates):
 - <https://docs.cloud.google.com/sdk/gcloud/reference/beta/quotas/info/list>
 - <https://pymupdf.readthedocs.io/en/latest/recipes-multiprocessing.html>
 
+## New isolated PostgreSQL page-range ledger (separate draft milestone)
+
+A native-PDF-only distributed pilot is now available in
+`ingestion_v2.distributed_cli`. It uses its own
+`ingestion_v2_runtime` PostgreSQL schema, fenced claims,
+nonblocking heartbeat renewal, bounded retries and durable per-range
+error history. It writes immutable claim-token-specific native artifacts
+to an explicitly configured shared NAS directory and records artifact
+checksums after successful persistence.
+
+The **legacy production process is unchanged**. No OCR, embedding,
+production-table publication or cross-page structural stitching occurs.
+Do not deploy as a production replacement. Multi-host mounting,
+long-document load, stale artifact cleanup and GCP quota coordination
+remain unverified deployment gates.
+
+Read the [distributed range-ledger operator runbook](INGESTION_V2_DISTRIBUTED_LEDGER.md)
+before testing in a disposable PostgreSQL database.
+
 ## Enterprise deployment gates
 
 Before the first production pilot:
