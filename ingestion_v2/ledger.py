@@ -145,6 +145,21 @@ class Ledger:
 
         return self._tx(apply)
 
+    def get_job(self, job_key):
+        """Return immutable job details; NULL when not registered."""
+        def read(cur):
+            cur.execute("""
+                SELECT document_id,source_uri,source_sha256,source_size,
+                       page_count,range_pages,policy
+                FROM ingestion_v2_runtime.jobs WHERE job_key=%s
+            """, (job_key,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return dict(zip(("document_id","source_uri","source_sha256",
+                             "source_size","page_count","range_pages","policy"), row))
+        return self._tx(read)
+
     def claim(self, job_key, owner, lease_seconds, max_attempts):
         """Claim one PENDING or expired RUNNING row without waiting on others."""
         if not owner or not 60 <= lease_seconds <= 3600:
