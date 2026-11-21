@@ -53,7 +53,7 @@ class TestPageStageIntegration(unittest.TestCase):
             page.insert_text(
                 (50,80),
                 ("Protocol Number: ABC-123\n" if i==0 else "")+
-                f"Page {i+1} regulatory source content, "+
+                f"Page {i+1} regulatory source content",
                 fontsize=12,
             )
         doc.save(str(cls.pdf))
