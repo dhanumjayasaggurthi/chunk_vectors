@@ -239,12 +239,19 @@ def _ocr_page(args: tuple) -> PageContent:
         return page
 
     with _SEM_VISION:
-        ocr_page_elements(page.elements, file_name, page.page_number)
+        ocr_page_elements(
+            page.elements, file_name, page.page_number,
+            raise_on_error=True,
+        )
 
     if needs_full_ocr:
         page.raw_text = "\n".join(
             e.text for e in page.elements if e.text
         ).strip()
+        if not page.raw_text:
+            raise RuntimeError(
+                f"OCR_UNRESOLVED page={page.page_number} scanned page produced no text"
+            )
         page.needs_ocr = False
 
     return page
@@ -342,6 +349,12 @@ def process_document(
         struct = process_pdf(local_file, doc_id, file_name)
         if struct.error:
             raise RuntimeError(f"PDF processing failed: {struct.error}")
+        bad_pages = [(p.page_number, p.error) for p in struct.pages if p.error]
+        if bad_pages:
+            raise RuntimeError(
+                f"PDF page analysis incomplete: {len(bad_pages)} failed page(s); "
+                f"first={bad_pages[0][0]} {bad_pages[0][1][:180]}"
+            )
         struct.file_path = file_path  # replace temp path with canonical S3/NAS URI
 
         dlog.info(
@@ -361,6 +374,7 @@ def process_document(
         ocr_args = [(page, local_file, file_name) for page in pages_needing_work]
 
         ocr_results: dict[int, PageContent] = {}
+        ocr_errors = []
         if ocr_args:
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
@@ -373,6 +387,12 @@ def process_document(
                         ocr_results[pn] = fut.result()
                     except Exception as e:
                         dlog.error(f"OCR worker failed page {pn}: {e}")
+                        ocr_errors.append((pn, f"{type(e).__name__}: {str(e)[:180]}"))
+        if ocr_errors:
+            raise RuntimeError(
+                f"OCR incomplete on {len(ocr_errors)} page(s); "
+                f"first={ocr_errors[0][0]} {ocr_errors[0][1]}"
+            )
 
         # Merge OCR back
         for page in struct.pages:
