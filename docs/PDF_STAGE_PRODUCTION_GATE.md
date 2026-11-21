@@ -213,6 +213,13 @@ FROM ocr_runtime.quota;
   complete document's source text in memory. For the very largest
   extracted documents, streaming rechunking must be load-tested (and
   further bounded if needed) before enabling a 25,000-page pilot.
+- Page-spanning paragraph/table continuity is **not yet validated**.
+  The page stage preserves source page numbers, headings, individual table
+  regions and their cells, and the rechunker can group adjacent pages.
+  That is not equivalent to deterministic repeated-header reconciliation,
+  table row continuation or a guaranteed unbroken paragraph. These require
+  labeled multi-page regulatory tests and explicit continuation handling
+  before the production accuracy gate can pass.
 - Rotated word polygons are preserved, but perfect character reading
   order or table reconstruction is not guaranteed by Vision OCR.
   Ambiguous critical content must be flagged for review.
