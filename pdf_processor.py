@@ -254,8 +254,10 @@ class PDFProcessor:
         file_name: str,
         *,
         strict: bool = False,
+        max_render_pixels: int | None = None,
     ):
         self.strict = strict
+        self.max_render_pixels = max_render_pixels
         self.file_path = file_path
         self.doc_id    = doc_id
         self.file_name = file_name
@@ -366,17 +368,21 @@ class PDFProcessor:
         self,
         batch_pages: int = 32,
         completed_pages: set[int] | None = None,
+        *,
+        max_window_raster_bytes: int = 160_000_000,
     ):
-        """Yield bounded, still-incomplete PDF pages.
+        """Stream bounded page windows, including image-memory backpressure.
 
-        A PyMuPDF document is reused for the file lifetime, and a pdfplumber
-        document is reused within a bounded window, not reopened per page.
-        The caller must finish OCR, table extraction and persistence before
-        requesting another window; no complete-document image collection is
-        allocated. This is an opt-in route, leaving process() unchanged.
+        Two PDF handles are opened ONCE for the document. PyMuPDF and
+        pdfplumber page objects stay on the calling thread; each page's
+        pdfplumber cache is closed immediately. Yielding pauses parsing
+        while OCR/table calls and the durable DB checkpoint finish.
         """
         if type(batch_pages) is not int or not 1 <= batch_pages <= 128:
             raise ValueError("batch_pages must be 1..128")
+        if (type(max_window_raster_bytes) is not int
+                or not 10_000_000 <= max_window_raster_bytes <= 1_000_000_000):
+            raise ValueError("max_window_raster_bytes must be 10MB..1GB")
         fitz = _fitz()
         pdfplumber = _pdfplumber()
         completed = completed_pages or set()
@@ -385,35 +391,52 @@ class PDFProcessor:
                 raise ValueError("Password-protected PDF cannot be staged")
             toc = self._extract_toc(doc)
             count = doc.page_count
-            for start in range(0, count, batch_pages):
-                numbers = [
-                    i for i in range(start, min(count, start + batch_pages))
-                    if i + 1 not in completed
-                ]
-                if not numbers:
-                    continue
-                pages = []
-                # Reuse TWO handles for the entire file, but release each
-                # pdfplumber page's heavy layout cache immediately.
-                for i in numbers:
-                    plumb_page = plumb_doc.pages[i]
-                    try:
-                        page = self._process_page(
-                            doc, i, plumb_page=plumb_page
-                        )
-                    finally:
-                        if hasattr(plumb_page, "close"):
-                            plumb_page.close()
-                    pages.append(page)
-                yield DocumentStructure(
+            pages = []
+            raster_bytes = 0
+
+            def window_result(items):
+                return DocumentStructure(
                     file_path=self.file_path,
                     file_name=self.file_name,
                     doc_id=self.doc_id,
                     page_count=count,
                     toc=toc,
                     has_toc=bool(toc),
-                    pages=pages,
+                    pages=items,
                 )
+
+            for i in range(count):
+                if i + 1 in completed:
+                    continue
+                plumb_page = plumb_doc.pages[i]
+                try:
+                    page = self._process_page(doc, i, plumb_page=plumb_page)
+                finally:
+                    if hasattr(plumb_page, "close"):
+                        plumb_page.close()
+                page_bytes = sum(
+                    len(element.image_bytes) for element in page.elements
+                )
+                if page_bytes > max_window_raster_bytes:
+                    # The page is explicitly recorded as failed. No silent
+                    # image downsampling that may erase microscopic labels.
+                    page.error = (
+                        "PAGE_RASTER_BUDGET_EXCEEDED: raster bytes "
+                        f"{page_bytes} > {max_window_raster_bytes}"
+                    )
+                    page.elements.clear()
+                    page_bytes = 0
+                if pages and (
+                    len(pages) >= batch_pages
+                    or raster_bytes + page_bytes > max_window_raster_bytes
+                ):
+                    yield window_result(pages)
+                    pages = []
+                    raster_bytes = 0
+                pages.append(page)
+                raster_bytes += page_bytes
+            if pages:
+                yield window_result(pages)
 
     def _process_page(self, doc, page_num: int, *, plumb_page=None) -> PageContent:
         """
@@ -448,6 +471,15 @@ class PDFProcessor:
             height=height,
         )
         pc.rotation = int(page.rotation)
+        # Fail a pathological render before allocating a multi-GB pixmap.
+        if self.max_render_pixels is not None:
+            scale = OCR_RENDER_DPI / 72.0
+            pixels = int(width * scale) * int(height * scale)
+            if pixels > self.max_render_pixels:
+                raise RuntimeError(
+                    f"Page {page_number} requires {pixels} render pixels, "
+                    f"max_render_pixels={self.max_render_pixels}"
+                )
 
         # ── 1. Extract raw text dict (blocks with bboxes + font info) ────────
         try:
