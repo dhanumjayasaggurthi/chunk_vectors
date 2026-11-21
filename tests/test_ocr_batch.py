@@ -97,11 +97,11 @@ class TestBatchOCR(unittest.TestCase):
             out=batch_document_text_detection(
                 [b"synthetic"],min_confidence=0.5
             )
-        # Confidence flag is retained and strict stage rejects it.
-        # For one-word synthetic input, low-confidence threshold only activates
-        # when >=6 words are returned (avoids false alarms on single word labels).
+        # Even single short regulatory labels must be reviewed when
+        # confidence is below the configured threshold. Original text stays.
         self.assertTrue(out[0].success)
         self.assertEqual(out[0].text,"pH 7.3")
+        self.assertIn("low_confidence",out[0].error)
 
     def test_429_retry_is_bounded_and_quota_is_signaled(self):
         calls=[]
