@@ -105,6 +105,16 @@ def load_extracted_document(profile: dict, document_key):
     if len(rows) > 1 and not order_field:
         raise ValueError("Multiple extracted rows require page_column or position_column")
     parsed = [dict(zip(cols, item)) for item in rows]
+    # PostgreSQL does not guarantee ordering of rows tied on ORDER BY.
+    # A duplicate/null position would change chunk boundaries and identity
+    # across reruns. Require a unique stable ordering key per document.
+    if len(parsed) > 1:
+        positions = [row.get(order_field) for row in parsed]
+        if any(value is None for value in positions) or len(set(positions)) != len(positions):
+            raise ValueError(
+                "Ambiguous extracted row order; configure a unique non-null "
+                "position_column (e.g. chunk_index) for each document"
+            )
     file_path = next(
         (str(row[cfg["file_path_column"]]) for row in parsed
          if cfg.get("file_path_column") and row[cfg["file_path_column"]]),
