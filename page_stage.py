@@ -52,6 +52,8 @@ def settings(profile):
         "ocr_timeout_seconds":90, "ocr_bbox_detail":"word",
         "ocr_confidence_min":0.60, "max_quota_wait_seconds":600,
         "table_summaries_enabled":False, "chart_descriptions_enabled":True,
+        "max_window_raster_bytes":160_000_000,
+        "max_render_pixels":50_000_000,
         "ocr_enabled":True,
     }
     result.update(opts)
@@ -496,7 +498,10 @@ def stage_one(file_path, profile, n, limiter=None, *, doc_id=None):
         if not acquired:
             return {"doc_id":doc_id,"status":"BUSY"}
         done,published=read_completed(doc_id,source,fingerprint,n)
-        proc=PDFProcessor(str(path),doc_id,path.name,strict=True)
+        proc=PDFProcessor(
+            str(path),doc_id,path.name,strict=True,
+            max_render_pixels=cfg["max_render_pixels"],
+        )
         # Header-only read is cheap; don't render completed pages during resume.
         with __import__("fitz").open(str(path)) as pdf:
             page_count=pdf.page_count
@@ -510,6 +515,7 @@ def stage_one(file_path, profile, n, limiter=None, *, doc_id=None):
         images_processed=0
         for window in proc.iter_page_batches(
             cfg["page_batch_size"],completed_pages=done,
+            max_window_raster_bytes=cfg["max_window_raster_bytes"],
         ):
             invalid={
                 page.page_number:RuntimeError(page.error)
