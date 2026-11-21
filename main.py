@@ -15,7 +15,10 @@ from typing import Optional
 import psycopg2.pool
 
 # ── Pipeline imports ──────────────────────────────────────────────────────────
-from config import DOCS_ROOT, PAGE_WORKERS, EMBEDDING_BATCH_SIZE, SOURCE_TYPE, ENABLE_EMBEDDINGS
+from config import (
+    DOCS_ROOT, PAGE_WORKERS, EMBEDDING_BATCH_SIZE, SOURCE_TYPE,
+    ENABLE_EMBEDDINGS, TABLE_BATCH_PAGES, TABLE_SUMMARIES_ENABLED,
+)
 from processing_profile import load_profile
 from profile_store import init_profile_store, profile_is_current, save_profile_result, profile_document_lock
 from metadata_extractor import attach_metadata
@@ -390,32 +393,49 @@ def process_document(
             f"Table pages: {len(pages_with_tables)}"
         )
 
-        # Table extraction: run pages in a small thread pool.
-        # Each call uses the pdfplumber file-lock + GPT-4o semaphore inside.
-        def _table_worker(pg):
-            return pg.page_number, _extract_tables_for_page_guarded(
-                local_file,
-                pg.page_number,
-                context_text=page_text_map.get(pg.page_number, ""),
-                summarise=True,     # ← summaries always ON
-            )
-
-        table_workers = min(workers, len(pages_with_tables)) if pages_with_tables else 1
+        # A per-document thread pool was previously serialized by the
+        # pdfplumber file lock and re-opened the PDF for every candidate page.
+        # Reuse one independent document handle per bounded page batch instead.
+        # Different DOCUMENT workers still run concurrently.
         if pages_with_tables:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=table_workers) as pool:
-                table_futures = {pool.submit(_table_worker, pg): pg for pg in pages_with_tables}
-                for fut in concurrent.futures.as_completed(table_futures):
-                    try:
-                        page_number, table_results = fut.result()
-                        if table_results:
-                            for page in struct.pages:
-                                if page.page_number == page_number:
-                                    inject_table_text_into_elements(
-                                        page.elements, table_results
+            from table_extractor import (
+                extract_tables_for_pages, _summarise_table_with_gpt4o,
+            )
+            page_by_number = {page.page_number: page for page in struct.pages}
+            table_errors = {}
+            for offset in range(0, len(pages_with_tables), TABLE_BATCH_PAGES):
+                group = pages_with_tables[offset:offset + TABLE_BATCH_PAGES]
+                numbers = [page.page_number for page in group]
+                table_map, errors = extract_tables_for_pages(
+                    local_file, numbers, page_text_map,
+                )
+                table_errors.update(errors)
+                for page_number, results in table_map.items():
+                    if not results:
+                        # This was classified as a table candidate but had
+                        # no recoverable cell content. Treat it as unresolved.
+                        table_errors[page_number] = "No extractable table content"
+                        continue
+                    if TABLE_SUMMARIES_ENABLED:
+                        # Summaries are an optional network stage. They NEVER
+                        # require another pdfplumber parse and cannot replace
+                        # the preserved table-cell markdown.
+                        with _SEM_GPT4O:
+                            for result in results:
+                                if result.markdown:
+                                    result.summary = _summarise_table_with_gpt4o(
+                                        result.markdown, page_text_map.get(page_number, ""),
                                     )
-                                    break
-                    except Exception as e:
-                        dlog.error(f"Table extraction failed: {e}")
+                    inject_table_text_into_elements(
+                        page_by_number[page_number].elements, results,
+                    )
+            if table_errors:
+                for pn, error in sorted(table_errors.items())[:20]:
+                    dlog.error(f"Unresolved table candidate p{pn}: {error}")
+                raise RuntimeError(
+                    f"Incomplete table extraction on {len(table_errors)} page(s); "
+                    "document not marked successful"
+                )
 
         # ── 5. Chunking ──────────────────────────────────────────────────────
         dlog.info("Step 3/5: Chunking")
