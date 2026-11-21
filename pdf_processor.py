@@ -619,8 +619,31 @@ class PDFProcessor:
             finally:
                 pix = None   # free C-heap memory immediately
 
-        # ── 5. Table region detection (bounding boxes only — pdfplumber extracts) ─
-        table_bboxes = self._detect_table_regions(page, plumb_page=plumb_page)
+        # ── 5. Table geometry and lossless cells ───────────────────────────
+        # The opt-in staged path already owns a live pdfplumber page.
+        # Extract each native table ONCE here, preserving small regulatory
+        # tables, the exact source bbox, and raw cell content. No second
+        # pdfplumber open / find_tables during later OCR-table assembly.
+        staged_table_results = None
+        if self.strict and plumb_page is not None:
+            from table_extractor import TableExtractor
+            extractor = TableExtractor(self.file_path, summarise=False)
+            detected = plumb_page.find_tables(TABLE_SETTINGS)
+            staged_table_results = []
+            for idx, table in enumerate(detected):
+                result = extractor._process_table(
+                    table.extract(), page_number, idx, "",
+                    allow_short=True,
+                )
+                if result is None:
+                    raise RuntimeError(
+                        f"Table {idx} page {page_number} has no recoverable cells"
+                    )
+                result.bbox = tuple(table.bbox)
+                staged_table_results.append(result)
+            table_bboxes = [BBox(*result.bbox) for result in staged_table_results]
+        else:
+            table_bboxes = self._detect_table_regions(page, plumb_page=plumb_page)
         table_elements: list[PageElement] = []
         for tb in table_bboxes:
             el = PageElement(
@@ -645,6 +668,8 @@ class PDFProcessor:
         # ── 8. Assemble PageContent ──────────────────────────────────────────
         pc.elements   = all_elements
         pc.has_tables = len(table_elements) > 0
+        if staged_table_results is not None:
+            pc.staged_table_results = staged_table_results
         pc.has_images = len(image_elements) > 0
 
         # raw_text = joined text from TEXT elements in reading order
