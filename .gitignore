@@ -1,3 +1,7 @@
 .idea/
 config.ini
 /logs
+# Never commit Google service-account private keys
+/gcp_key.json
+**/gcp_key.json
+*service-account*.json
