@@ -88,6 +88,44 @@ class TestPageStageIntegration(unittest.TestCase):
         finally:
             cls.dir.cleanup()
 
+    def test_real_native_table_cells_keep_matching_bbox(self):
+        import fitz
+        from page_stage import stage_one,names
+        # The test creates a real vector-grid table, not mocked PDF layout.
+        path=Path(self.dir.name)/"table_geometry.pdf"
+        doc=fitz.open()
+        page=doc.new_page(width=612,height=792)
+        xs=[50,310,560]
+        ys=[100,156,212,268,324]
+        for y in ys:
+            page.draw_line((xs[0],y),(xs[-1],y))
+        for x in xs:
+            page.draw_line((x,ys[0]),(x,ys[-1]))
+        for i in range(len(ys)-1):
+            page.insert_text((xs[0]+7,ys[i]+24),
+                             f"Regulatory parameter alpha {i} - measured")
+            page.insert_text((xs[1]+7,ys[i]+24),
+                             f"Approved acceptance range {i}: 1 to 15")
+        doc.save(str(path))
+        doc.close()
+        result=stage_one(str(path),self.profile,names(self.profile))
+        self.assertEqual(result["status"],"SUCCESS")
+        conn=self.connection()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT chunk_text,elements
+                    FROM intake_ci.ci_pdf_pages WHERE doc_id=%s""",
+                    (result["doc_id"],))
+                text,geometry=cur.fetchone()
+                tables=[g for g in geometry if g["type"]=="table"]
+                self.assertEqual(len(tables),1)
+                self.assertIn("Regulatory parameter",tables[0]["text"])
+                self.assertIn("[TABLE]",text)
+                bbox=tables[0]["bbox"]
+                self.assertLess(abs(bbox[0]-50),2)
+                self.assertLess(abs(bbox[2]-560),2)
+        conn.close()
+
     def test_checkpoint_failure_resume_and_geometry_rechunking(self):
         from pdf_processor import PDFProcessor, PageContent
         from page_stage import init, stage_one, names
