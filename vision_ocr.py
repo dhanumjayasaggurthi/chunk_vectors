@@ -273,7 +273,7 @@ def _parse_batch_ocr(response, min_confidence: float, bbox_detail: str) -> OcrRe
                 })
     conf = sum(confidences) / len(confidences) if confidences else 0.0
     status = ""
-    if conf < min_confidence and len(confidences) > 5:
+    if confidences and conf < min_confidence:
         status = f"low_confidence_{conf:.3f}"
     return OcrResult(
         text=str(full.text).strip(),  # NO loss of numbers/short regulatory labels
