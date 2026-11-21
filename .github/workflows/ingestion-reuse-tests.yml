@@ -14,6 +14,13 @@ on:
       - profiles/intake_reuse_immbot_example.yml
       - tests/test_reuse_materialize.py
       - tests/test_ingestion_hotpath.py
+      - tests/test_ocr_batch.py
+      - tests/test_page_stage.py
+      - page_stage.py
+      - ocr_quota.py
+      - pdf_processor.py
+      - vision_ocr.py
+      - profiles/regulatory_page_stage_example.yml
       - .github/workflows/ingestion-reuse-tests.yml
 
 jobs:
@@ -30,7 +37,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install only the test dependencies
-        run: python -m pip install "psycopg2-binary>=2.9,<3" "tiktoken>=0.7,<1" "PyYAML>=6.0.2,<7"
+        run: python -m pip install "psycopg2-binary>=2.9,<3" "tiktoken>=0.7,<1" "PyYAML>=6.0.2,<7" "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1"
       - name: Create placeholder local config (no real credentials)
         shell: bash
         run: |
@@ -47,11 +54,15 @@ jobs:
           gcp_key_path=not-used.json
           EOF
       - name: Compile modified modules
-        run: python -m py_compile main.py extracted_source.py configurable_chunking.py metadata_extractor.py processing_profile.py reuse_materialize.py
+        run: python -m py_compile main.py extracted_source.py configurable_chunking.py metadata_extractor.py processing_profile.py reuse_materialize.py page_stage.py ocr_quota.py vision_ocr.py pdf_processor.py
       - name: Run intake reuse unit tests
         run: python -m unittest discover -s tests -p 'test_*materialize.py' -v
       - name: Test one-pass PDF hotpath and metadata integrity
         run: python -m unittest discover -s tests -p 'test_ingestion_hotpath.py' -v
+      - name: Test cloud-free OCR batch semantics
+        run: python -m unittest discover -s tests -p 'test_ocr_batch.py' -v
+      - name: Test stage config and bounded batching
+        run: python -m unittest discover -s tests -p 'test_page_stage.py' -v
 
   postgres-integration:
     runs-on: ubuntu-latest
@@ -99,3 +110,5 @@ jobs:
           EOF
       - name: Run real PostgreSQL transactional and recovery tests
         run: python -m unittest discover -s tests -p 'test_reuse_materialize.py' -v
+      - name: Test bounded PDF staging, resume and full rechunk handoff
+        run: python -m unittest discover -s tests -p 'test_page_stage.py' -v
