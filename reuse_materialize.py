@@ -301,7 +301,7 @@ def save_document(doc_id, source_hash, profile, names, rows):
                 source_chunk_text,chunk_text,page_start,page_end,section_title,
                 headers,document_metadata,chunk_metadata,content_types,metadata_evidence
                 ) VALUES %s""", rows,
-                template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)",
+                template="(" + ",".join(["%s"] * 11 + ["%s::jsonb"] * 5) + ")",
                 page_size=200)
             cur.execute(f"""INSERT INTO {names['status']} (
                     doc_id,profile_hash,source_hash,chunk_count,updated_at)
