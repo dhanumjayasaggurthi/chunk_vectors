@@ -273,7 +273,11 @@ def _parse_batch_ocr(response, min_confidence: float, bbox_detail: str) -> OcrRe
                 })
     conf = sum(confidences) / len(confidences) if confidences else 0.0
     status = ""
-    if confidences and conf < min_confidence:
+    if not confidences:
+        # A non-empty recognition result without any word-level confidence
+        # cannot satisfy the regulatory evidence/provenance contract.
+        status = "missing_word_confidence"
+    elif conf < min_confidence:
         status = f"low_confidence_{conf:.3f}"
     return OcrResult(
         text=str(full.text).strip(),  # NO loss of numbers/short regulatory labels
