@@ -320,6 +320,8 @@ def ocr_page_elements(
     elements: list,          # list of PageElement from pdf_processor
     doc_name: str = "",
     page_number: int = 0,
+    *,
+    raise_on_error: bool = False,
 ) -> list:
     """
     Run OCR/description on all IMAGE and CHART elements in a page's element list.
@@ -356,11 +358,17 @@ def ocr_page_elements(
         el.text       = result.text
         el.confidence = result.confidence
 
-        if result.error and not result.success:
+        if result.error or not result.success:
             logger.warning(
-                f"{doc_name} p{page_number}: OCR failed on "
-                f"{el.element_type} — {result.error}"
+                f"{doc_name} p{page_number}: OCR issue on "
+                f"{el.element_type} — {result.error or 'no usable result'}"
             )
+            if raise_on_error:
+                raise RuntimeError(
+                    f"OCR_UNRESOLVED page={page_number} "
+                    f"element={el.element_type} "
+                    f"reason={result.error or 'no usable result'}"
+                )
 
     if img_count or chart_count:
         logger.debug(
