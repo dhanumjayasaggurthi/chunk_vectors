@@ -354,7 +354,7 @@ def run_one(doc_id, profile, names):
         # A broken document cannot poison other documents. A DB outage must
         # still surface: never claim durable error logging when it failed.
         record_failure(str(doc_id),profile,names,exc)
-        LOG.error("Document %s materialization failed: %s",doc_id,type(exc).__name__)
+        LOG.exception("Document %s materialization failed (stored in failure_events)",doc_id)
         return {"doc_id":str(doc_id),"status":"FAILED","error":type(exc).__name__}
 
 
