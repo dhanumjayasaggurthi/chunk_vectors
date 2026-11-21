@@ -260,6 +260,26 @@ class TestStageValidation(unittest.TestCase):
         self.assertEqual([len(b.pages) for b in batches],[1,1,1,1])
         self.assertEqual(sum(len(b.pages) for b in batches),4)
 
+    def test_nontext_significant_image_requires_review_not_success(self):
+        from pdf_processor import PageContent,PageElement,BBox,ElementType
+        from vision_ocr import OcrResult
+        from page_stage import _ocr_pages,settings
+        p=staging_profile()
+        p["extraction"]["ocr_enabled"]=True
+        cfg=settings(p)
+        item=PageElement(
+            ElementType.IMAGE,BBox(0,0,120,120),image_bytes=b"picture"
+        )
+        page=PageContent(
+            page_number=1,width=600,height=800,elements=[item],is_blank=False
+        )
+        with patch("vision_ocr.batch_document_text_detection",
+                   return_value=[OcrResult("",0.0,0,"",True)]):
+            errors,processed=_ocr_pages([page],cfg,limiter=None)
+        self.assertEqual(processed,1)
+        self.assertIn(1,errors)
+        self.assertIn("IMAGE_REGION_UNRESOLVED",str(errors[1]))
+
     def test_chart_ocr_and_description_are_independent_bounded_stages(self):
         from pdf_processor import PageContent,PageElement,BBox,ElementType
         from vision_ocr import OcrResult
