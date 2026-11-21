@@ -52,7 +52,12 @@ class TestTableSummaryOnePass(unittest.TestCase):
         pages = []
         for n in range(3):
             p=types.SimpleNamespace(
-                extract_tables=lambda *args: [[["A", "B"],["X", "Y"]]],
+                find_tables=lambda *args: [
+                    types.SimpleNamespace(
+                        extract=lambda: [["A","B"],["X","Y"]],
+                        bbox=(0,0,100,100),
+                    )
+                ],
                 close=lambda:None,
             )
             p.closed=False
@@ -80,6 +85,26 @@ class TestTableSummaryOnePass(unittest.TestCase):
         self.assertTrue(pages[0].closed)
         self.assertFalse(pages[1].closed)
         self.assertTrue(pages[2].closed)
+
+    def test_table_geometry_prevents_cell_and_bbox_mixing(self):
+        from pdf_processor import PageElement,BBox,ElementType
+        from table_extractor import inject_table_text_into_elements
+        left=PageElement(ElementType.TABLE,BBox(0,0,100,100))
+        right=PageElement(ElementType.TABLE,BBox(200,0,300,100))
+        # Deliberately reverse results: strict matching uses bbox, not index.
+        results=[
+            types.SimpleNamespace(bbox=(200,0,300,100),best_text="RIGHT"),
+            types.SimpleNamespace(bbox=(0,0,100,100),best_text="LEFT"),
+        ]
+        inject_table_text_into_elements([left,right],results,strict=True)
+        self.assertEqual(left.text,"LEFT")
+        self.assertEqual(right.text,"RIGHT")
+        with self.assertRaisesRegex(ValueError,"Table geometry mismatch"):
+            inject_table_text_into_elements([
+                PageElement(ElementType.TABLE,BBox(0,0,100,100))
+            ],[
+                types.SimpleNamespace(bbox=(500,0,600,100),best_text="WRONG")
+            ],strict=True)
 
     def test_ocr_low_confidence_is_not_accepted_in_strict_mode(self):
         from vision_ocr import ocr_page_elements,OcrResult
