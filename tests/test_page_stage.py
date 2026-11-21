@@ -222,6 +222,40 @@ class TestStageValidation(unittest.TestCase):
         self.assertEqual([len(b.pages) for b in batches],[1,1,1,1])
         self.assertEqual(sum(len(b.pages) for b in batches),4)
 
+    def test_chart_ocr_and_description_are_independent_bounded_stages(self):
+        from pdf_processor import PageContent,PageElement,BBox,ElementType
+        from vision_ocr import OcrResult
+        from page_stage import _ocr_pages,settings
+        p=staging_profile()
+        p["extraction"]["ocr_enabled"]=True
+        p["extraction"]["chart_workers"]=2
+        cfg=settings(p)
+        elements=[
+            PageElement(ElementType.CHART,BBox(0,0,100,100),image_bytes=b"chart")
+            for _ in range(4)
+        ]
+        page=PageContent(
+            page_number=1,width=600,height=800,elements=elements,
+            is_blank=False,needs_ocr=False,
+        )
+        with patch("vision_ocr.batch_document_text_detection",
+                   return_value=[
+                       OcrResult("X=10 Y=20",0.95,2,"en",True)
+                       for _ in range(4)
+                   ]) as batch:
+            with patch("vision_ocr._describe_chart_with_gpt4o",
+                       return_value="Bar chart: X versus Y") as model:
+                errs,processed=_ocr_pages([page],cfg,limiter=None)
+        self.assertEqual(errs,{})
+        self.assertEqual(processed,4)
+        self.assertEqual(batch.call_count,1)
+        self.assertEqual(model.call_count,4)
+        self.assertTrue(all(
+            "Bar chart" in el.text and "X=10 Y=20" in el.text
+            and el.image_bytes==b""
+            for el in elements
+        ))
+
     def test_groups_keep_batch_size_and_byte_budget(self):
         from page_stage import _images_in_groups,settings
         from pdf_processor import ElementType
