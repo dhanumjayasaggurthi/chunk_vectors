@@ -36,9 +36,32 @@ service:
   atomic per-document replacement preserves earlier successful output
   when a reprocessing attempt fails.
 
-The current legacy PDF processing path also avoids a redundant second
-pdfplumber extraction when GPT table summaries are enabled. The
-table-summary text is still produced from the same extracted markdown.
+### Targeted improvements to the main-branch PDF path
+
+The existing PDF parser and OCR provider remain in place:
+
+- **Table batches:** `table_extractor.extract_tables_for_pages` opens one
+  pdfplumber handle per bounded group of candidate table pages, rather than
+  opening the same document for every page behind a file-level lock.
+  Configure `[PIPELINE] table_batch_pages=32` (allowed 1..256).
+- **No duplicate PDF parse:** existing GPT table summaries reuse extracted
+  Markdown rather than calling PDF table extraction a second time.
+  Set `[PIPELINE] table_summaries_enabled=false` to disable the
+  optional, potentially costly summary requests. This is a new tuning choice;
+  do not change it for approved production use cases without evaluation.
+- **Explicit incomplete-content failure:** unresolved page extraction, OCR
+  and table extraction mark the **document** failed instead of returning
+  success with missing content. Other documents continue; the existing
+  retry mechanism can revisit the failed document.
+- **OCR strict mode:** only the main ingestion entrypoint opts in to
+  `raise_on_error=True`, detecting low-confidence error flags as
+  incomplete. Other old callers retain their legacy behavior.
+
+These changes reduce redundant PDF work but **do not yet demonstrate
+high throughput on 15k/25k-page documents**. The current PDF processor
+still materializes whole-document page/image structures in memory.
+A separate bounded-page extraction implementation and performance
+tests are required before claiming that large-document bottleneck solved.
 
 ## Source mapping / consumer contract
 
@@ -153,6 +176,11 @@ embedding backfill without separately validating source-change fencing.
 
 - Run the new code in a separate worktree; never move a running production
   checkout onto the feature branch.
+- **Stable ordering requirement:** a multi-row source document must have a
+  unique, non-null order key. Map `position_column: chunk_index` where
+  available; repeated `page_start` alone is not sufficient.
+  Ambiguous documents fail individually instead of silently producing
+  nondeterministic new chunks.
 - Benchmark representative **existing-table documents**, including
   thousands of source rows, under concurrent source updates. Verify
   index coverage (`doc_id`, `chunk_index` or position) and use keyset
