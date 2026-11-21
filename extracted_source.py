@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 
 from db import get_conn
-from pdf_processor import BBox, DocumentStructure, PageContent, PageElement, ElementType
+from pdf_processor import BBox, DocumentStructure, PageContent, PageElement, ElementType, TocEntry
 from profile_store import _safe_identifier
 
 
@@ -22,10 +22,17 @@ def validate_source(profile: dict) -> dict:
         if key not in {
             "schema", "table", "doc_id_column", "text_column",
             "page_column", "file_path_column", "file_name_column",
-            "position_column",
+            "position_column", "section_column", "page_end_column",
+            "source_columns",
         }:
             raise ValueError("Unknown extracted_content mapping: " + key)
-        if value is not None:
+        if key == "source_columns":
+            if not isinstance(value, dict) or len(value) > 50:
+                raise ValueError("source_columns must map at most 50 logical metadata fields")
+            for logical_name, column in value.items():
+                _safe_identifier(logical_name)
+                _safe_identifier(column)
+        elif value is not None:
             _safe_identifier(value)
     return settings
 
@@ -70,8 +77,11 @@ def load_extracted_document(profile: dict, document_key):
     table = _qualified(cfg)
     doc_col = _safe_identifier(cfg["doc_id_column"])
     cols = [cfg["text_column"]]
-    extras = ["page_column", "file_path_column", "file_name_column", "position_column"]
+    extras = ["page_column", "page_end_column", "file_path_column",
+              "file_name_column", "position_column", "section_column"]
     cols.extend(cfg[k] for k in extras if cfg.get(k))
+    cols.extend(cfg.get("source_columns", {}).values())
+    cols = list(dict.fromkeys(cols))
     quoted = ", ".join(_safe_identifier(name) for name in cols)
     order_field = cfg.get("position_column") or cfg.get("page_column")
     order = f" ORDER BY {_safe_identifier(order_field)}" if order_field else ""
@@ -106,6 +116,9 @@ def load_extracted_document(profile: dict, document_key):
         Path(file_path).name,
     )
     pages = []
+    source_metadata = {}
+    heading = None
+    toc = []
     digest = hashlib.sha256()
     for index, row in enumerate(parsed):
         text = row[cfg["text_column"]]
@@ -117,7 +130,25 @@ def load_extracted_document(profile: dict, document_key):
         pg = int(pg) if pg is not None else index + 1
         if pg < 1:
             raise ValueError("Invalid extracted page number")
+        last = row.get(cfg.get("page_end_column"), pg)
+        last = int(last) if last is not None else pg
+        if last < pg:
+            raise ValueError("Page end precedes page start")
+        title = str(row.get(cfg.get("section_column")) or "").strip()
+        if title and title != heading:
+            heading = title
+            toc.append(TocEntry(level=1, title=title, page_number=pg))
+        for logical_name, source_col in cfg.get("source_columns", {}).items():
+            value = row.get(source_col)
+            if value is None or value == "":
+                continue
+            existing = source_metadata.get(logical_name)
+            if existing is not None and existing != value:
+                raise ValueError("Conflicting document-level source column: " + logical_name)
+            source_metadata[logical_name] = value
         digest.update(str(pg).encode("utf-8") + b"\x00")
+        digest.update(str(last).encode("utf-8") + b"\x00")
+        digest.update(title.encode("utf-8") + b"\x00")
         digest.update(text.encode("utf-8") + b"\x00")
         pages.append(PageContent(
             page_number=pg, width=0, height=0, raw_text=text,
@@ -127,6 +158,13 @@ def load_extracted_document(profile: dict, document_key):
         ))
     doc = DocumentStructure(
         file_path=file_path, file_name=file_name, doc_id=str(document_key),
-        page_count=max(page.page_number for page in pages), pages=pages,
+        page_count=max(
+            int(row.get(cfg.get("page_end_column")) or page.page_number)
+            for row, page in zip(parsed, pages)
+        ), pages=pages, toc=toc, has_toc=bool(toc),
+    )
+    doc.source_metadata = source_metadata
+    digest.update(
+        __import__("json").dumps(source_metadata, sort_keys=True, default=str).encode("utf-8")
     )
     return doc, digest.hexdigest()
