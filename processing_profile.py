@@ -209,7 +209,8 @@ def validate_profile(profile: dict) -> None:
                 raise ValueError("Invalid metadata key: " + name)
             if not isinstance(rule, dict) or rule.get("method") not in _ALLOWED_METHODS:
                 raise ValueError("Invalid metadata rule for " + name)
-            extra_options = set(rule) - {"method", "label", "pattern", "value", "first_pages"}
+            extra_options = set(rule) - {"method", "label", "pattern", "value", "first_pages",
+                                                   "enabled", "required", "type", "allowed_values", "sample_values"}
             if extra_options:
                 raise ValueError("Unsupported rule options for " + name)
             if rule["method"] == "regex":
@@ -221,10 +222,24 @@ def validate_profile(profile: dict) -> None:
                 raise ValueError("Missing label for " + name)
             if rule["method"] == "constant" and not isinstance(rule.get("value"), (str, int, float, bool)):
                 raise ValueError("Missing constant for " + name)
+            for flag in ("enabled", "required"):
+                if flag in rule and type(rule[flag]) is not bool:
+                    raise ValueError(flag + " must be boolean for " + name)
+            if rule.get("type","string") not in {
+                "string","integer","number","date","boolean","enum"}:
+                raise ValueError("Unsupported metadata type for " + name)
+            for key in ("sample_values", "allowed_values"):
+                if key in rule and (
+                    not isinstance(rule[key], list) or len(rule[key]) > 30
+                    or any(not isinstance(v, (str, int, float, bool)) for v in rule[key])
+                ):
+                    raise ValueError("Invalid " + key + " for " + name)
+            if rule.get("type") == "enum" and not rule.get("allowed_values"):
+                raise ValueError("enum must define allowed_values for " + name)
             if "first_pages" in rule and (
-                type(rule["first_pages"]) is not int or not 1 <= rule["first_pages"] <= 20
+                type(rule["first_pages"]) is not int or not 1 <= rule["first_pages"] <= 100
             ):
-                raise ValueError("first_pages must be between 1 and 20")
+                raise ValueError("first_pages must be between 1 and 100")
     for area in ("output", "existing_chunks", "extracted_content"):
         if not isinstance(profile[area], dict):
             raise ValueError(area + " must be an object")
