@@ -422,7 +422,7 @@ def _images_in_groups(pages, cfg):
     return groups,errors
 
 
-def _ocr_pages(pages, cfg, limiter):
+def _ocr_pages(pages, cfg, limiter, *, ocr_gate=None, chart_gate=None):
     """Parallelize API RPCs, NOT PyMuPDF page handles (which aren't thread-safe)."""
     from pdf_processor import ElementType
     from vision_ocr import (
@@ -440,14 +440,16 @@ def _ocr_pages(pages, cfg, limiter):
     chart_jobs=[]
 
     def worker(group):
-        result=batch_document_text_detection(
-            [element.image_bytes for _,element in group],
-            limiter=limiter,
-            max_retries=cfg["ocr_max_retries"],
-            timeout_seconds=cfg["ocr_timeout_seconds"],
-            min_confidence=cfg["ocr_confidence_min"],
-            bbox_detail=cfg["ocr_bbox_detail"],
-        )
+        from contextlib import nullcontext
+        with ocr_gate if ocr_gate is not None else nullcontext():
+            result=batch_document_text_detection(
+                [element.image_bytes for _,element in group],
+                limiter=limiter,
+                max_retries=cfg["ocr_max_retries"],
+                timeout_seconds=cfg["ocr_timeout_seconds"],
+                min_confidence=cfg["ocr_confidence_min"],
+                bbox_detail=cfg["ocr_bbox_detail"],
+            )
         return group,result
 
     with concurrent.futures.ThreadPoolExecutor(
@@ -500,12 +502,16 @@ def _ocr_pages(pages, cfg, limiter):
     # sequential call within the OCR result collector. It never alters
     # the original detected labels or image/region provenance.
     def describe_chart(entry):
+        from contextlib import nullcontext
         page,element,labels=entry
         context=" ".join(
             other.text for other in page.elements
             if other is not element and other.text
         )[:500]
-        return _describe_chart_with_gpt4o(element.image_bytes,context,labels)
+        with chart_gate if chart_gate is not None else nullcontext():
+            return _describe_chart_with_gpt4o(
+                element.image_bytes,context,labels
+            )
 
     if chart_jobs:
         with concurrent.futures.ThreadPoolExecutor(
@@ -586,7 +592,10 @@ def _tables(pages, path, cfg):
     return {pn:RuntimeError(message) for pn,message in failures.items()}
 
 
-def stage_one(file_path, profile, n, limiter=None, *, doc_id=None):
+def stage_one(
+    file_path, profile, n, limiter=None, *,
+    doc_id=None, ocr_gate=None, chart_gate=None,
+):
     from pdf_processor import PDFProcessor
     cfg=settings(profile)
     path=Path(file_path).resolve(strict=True)
@@ -627,7 +636,9 @@ def stage_one(file_path, profile, n, limiter=None, *, doc_id=None):
                 for page in window.pages if page.error
             }
             active=[page for page in window.pages if not page.error]
-            ocr_errors,ocr_count=_ocr_pages(active,cfg,limiter)
+            ocr_errors,ocr_count=_ocr_pages(
+                active,cfg,limiter,ocr_gate=ocr_gate,chart_gate=chart_gate
+            )
             invalid.update(ocr_errors)
             table_errors=_tables(active,str(path),cfg)
             invalid.update(table_errors)
@@ -690,8 +701,13 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
         raise ValueError("Use exactly one of --file or --root")
     if not 1 <= doc_workers <= 32 or not 1 <= max_docs <= 10000000:
         raise ValueError("Invalid worker or document cap")
+    import threading
     n=require_initialized(profile)
     cfg=settings(profile)
+    # Global per-process caps across ALL document workers. The DB quota
+    # independently coordinates combined requests/images across servers.
+    ocr_gate=threading.BoundedSemaphore(cfg["ocr_workers"])
+    chart_gate=threading.BoundedSemaphore(cfg["chart_workers"])
     limiter=None
     if cfg["ocr_enabled"]:
         from ocr_quota import detect_project_id,PostgresOcrLimiter
@@ -727,7 +743,10 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
         for index, path in enumerate(files):
             if index>=max_docs:
                 break
-            pending[pool.submit(stage_one,path,profile,n,limiter)]=path
+            pending[pool.submit(
+                stage_one,path,profile,n,limiter,
+                ocr_gate=ocr_gate,chart_gate=chart_gate,
+            )]=path
             if len(pending)>=doc_workers*2:
                 done,_=concurrent.futures.wait(
                     pending,return_when=concurrent.futures.FIRST_COMPLETED,
