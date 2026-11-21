@@ -41,6 +41,9 @@ extracted_content:
   file_name_column: file_name
   section_column: section_title
   element_json_column: elements
+  width_column: page_width
+  height_column: page_height
+  rotation_column: page_rotation
   source_columns:
     source_file_name: file_name
 
