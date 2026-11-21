@@ -150,12 +150,15 @@ def load_extracted_document(profile: dict, document_key):
         digest.update(str(last).encode("utf-8") + b"\x00")
         digest.update(title.encode("utf-8") + b"\x00")
         digest.update(text.encode("utf-8") + b"\x00")
-        pages.append(PageContent(
+        page_entry = PageContent(
             page_number=pg, width=0, height=0, raw_text=text,
             is_blank=not text.strip(),
             elements=[PageElement(ElementType.TEXT, BBox(0, 0, 0, 0), text=text)]
             if text.strip() else [],
-        ))
+        )
+        page_entry.source_section_title = title
+        page_entry.source_page_end = last
+        pages.append(page_entry)
     doc = DocumentStructure(
         file_path=file_path, file_name=file_name, doc_id=str(document_key),
         page_count=max(
