@@ -129,6 +129,7 @@ def validate_profile(profile: dict) -> None:
             "chart_descriptions_enabled", "table_summaries_enabled",
             "max_quota_wait_seconds", "ocr_enabled",
             "max_window_raster_bytes", "max_render_pixels",
+            "chart_workers",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -228,7 +229,8 @@ def validate_profile(profile: dict) -> None:
                 raise ValueError("extraction." + field + " must be boolean")
         limits = {
             "page_batch_size":(1,128), "ocr_batch_images":(1,16),
-            "ocr_workers":(1,32), "ocr_requests_rpm":(1,100000),
+            "ocr_workers":(1,32), "chart_workers":(1,16),
+            "ocr_requests_rpm":(1,100000),
             "ocr_images_ipm":(16,100000),
             "ocr_max_batch_bytes":(100000,8500000),
             "ocr_max_retries":(1,10), "ocr_timeout_seconds":(5,600),
