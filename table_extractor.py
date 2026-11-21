@@ -59,6 +59,7 @@ class TableResult:
     raw_cells:     list[list[str]] = field(default_factory=list, repr=False)
     success:       bool         = True
     error:         str          = ""
+    bbox:          tuple | None = None  # pdfplumber (x0,top,x1,bottom)
 
     @property
     def best_text(self) -> str:
@@ -535,14 +536,15 @@ def extract_tables_for_pages(
                 page = None
                 try:
                     page = doc.pages[page_number - 1]
-                    tables = page.extract_tables(TABLE_SETTINGS)
+                    tables = page.find_tables(TABLE_SETTINGS)
                     results = []
-                    for idx, cells in enumerate(tables or []):
+                    for idx, detected in enumerate(tables or []):
                         result = extractor._process_table(
-                            cells, page_number, idx,
+                            detected.extract(), page_number, idx,
                             context_by_page.get(page_number, "")
                         )
                         if result:
+                            result.bbox = tuple(detected.bbox)
                             results.append(result)
                     output[page_number] = results
                 except Exception as exc:
@@ -560,6 +562,8 @@ def extract_tables_for_pages(
 def inject_table_text_into_elements(
     elements:     list,
     table_results: list[TableResult],
+    *,
+    strict: bool = False,
 ) -> list:
     """
     Fill .text on TABLE PageElements using the closest matching TableResult
@@ -570,10 +574,34 @@ def inject_table_text_into_elements(
 
     table_els = [e for e in elements if e.element_type == ElementType.TABLE]
 
-    for i, el in enumerate(table_els):
-        if i < len(table_results):
-            el.text = table_results[i].best_text
-        else:
-            el.text = ""   # no matching extraction
-
+    if strict:
+        # A table's text must belong to its source bounding box.
+        # Blind index matching can mix up adjacent regulatory tables.
+        if len(table_els) != len(table_results):
+            raise ValueError(
+                f"Table region/result count mismatch: {len(table_els)} "
+                f"regions vs {len(table_results)} extracted tables"
+            )
+        remaining = list(table_results)
+        for el in table_els:
+            bbox = (el.bbox.x0,el.bbox.y0,el.bbox.x1,el.bbox.y1)
+            matches = [
+                (max(abs(a-b) for a,b in zip(bbox,t.bbox)),index,t)
+                for index,t in enumerate(remaining) if t.bbox is not None
+            ]
+            if not matches:
+                raise ValueError("Missing table geometry for source region")
+            distance,index,table = min(matches,key=lambda item:item[0])
+            if distance > 1.0:
+                raise ValueError(
+                    f"Table geometry mismatch: max axis offset={distance:.2f}"
+                )
+            el.text=table.best_text
+            del remaining[index]
+    else:
+        for i, el in enumerate(table_els):
+            if i < len(table_results):
+                el.text = table_results[i].best_text
+            else:
+                el.text = ""
     return elements
