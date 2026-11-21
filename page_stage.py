@@ -61,6 +61,35 @@ def settings(profile):
     return result
 
 
+def extraction_fingerprint(profile) -> str:
+    """Hash only content/accuracy-affecting extraction settings.
+
+    Runtime concurrency, page batch size, request and image RPM, timeouts,
+    memory guardrails, or downstream chunk/embedding settings MUST NOT
+    force re-OCR of already successful pages.
+    """
+    from config import (
+        OCR_RENDER_DPI, SCANNED_PAGE_TEXT_THRESHOLD,
+        TABLE_SETTINGS, TABLE_FORMAT,
+    )
+    cfg=settings(profile)
+    semantic={
+        "stage_format_version":2,
+        "ocr_enabled":cfg["ocr_enabled"],
+        "ocr_bbox_detail":cfg["ocr_bbox_detail"],
+        "ocr_confidence_min":cfg["ocr_confidence_min"],
+        "chart_descriptions_enabled":cfg["chart_descriptions_enabled"],
+        "table_summaries_enabled":cfg["table_summaries_enabled"],
+        "render_dpi":OCR_RENDER_DPI,
+        "scanned_threshold":SCANNED_PAGE_TEXT_THRESHOLD,
+        "table_settings":TABLE_SETTINGS,
+        "table_format":TABLE_FORMAT,
+    }
+    payload=json.dumps(semantic,sort_keys=True,separators=(",",":"),
+                       allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def source_hash(path: str) -> str:
     digest=hashlib.sha256()
     with open(path,"rb") as stream:
@@ -188,7 +217,7 @@ def record_document_failure(path, profile, n, error):
                     error_code,error_message
                 ) VALUES (%s,NULL,%s,%s,%s,%s)
             """,(
-                doc_id,"unavailable",profile["_fingerprint"],
+                doc_id,"unavailable",extraction_fingerprint(profile),
                 type(error).__name__[:80],str(error)[:1000],
             ))
         conn.commit()
@@ -227,7 +256,7 @@ def _toc_title(toc, page_number):
     return title
 
 
-def _page_row(page, struct, source, profile):
+def _page_row(page, struct, source, extraction_hash):
     from chunker import _page_full_text
     text=_page_full_text(page)
     if not page.is_blank and not text.strip():
@@ -248,7 +277,7 @@ def _page_row(page, struct, source, profile):
     payload=json.dumps(geometry,ensure_ascii=False,separators=(",",":"),
                        allow_nan=False)
     return (
-        struct.doc_id,source,profile["_fingerprint"],
+        struct.doc_id,source,extraction_hash,
         page.page_number,page.page_number,
         float(page.width),float(page.height),int(getattr(page,"rotation",0)),
         text,payload,
@@ -568,7 +597,7 @@ def stage_one(file_path, profile, n, limiter=None, *, doc_id=None):
     ).hexdigest())
     before=path.stat()
     source=source_hash(str(path))
-    fingerprint=profile["_fingerprint"]
+    fingerprint=extraction_fingerprint(profile)
     started=time.monotonic()
     with profile_document_lock(doc_id,fingerprint) as acquired:
         if not acquired:
@@ -607,7 +636,7 @@ def stage_one(file_path, profile, n, limiter=None, *, doc_id=None):
                 if page.page_number in invalid:
                     continue
                 try:
-                    rows.append(_page_row(page,window,source,profile))
+                    rows.append(_page_row(page,window,source,fingerprint))
                 except Exception as exc:
                     invalid[page.page_number]=exc
             _persist_window(rows,invalid,doc_id,source,fingerprint,n)
@@ -731,6 +760,7 @@ def main(argv=None):
     if args.command=="validate":
         result={"valid":True,"writes":False,
                 "page_table":names(profile)["published"],
+                "extraction_fingerprint":extraction_fingerprint(profile),
                 "settings":{key:value for key,value in cfg.items()
                             if key not in ("schema","table")}}
     elif args.command=="init":
