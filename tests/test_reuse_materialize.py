@@ -77,10 +77,10 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import psycopg2
-        cls.connect=lambda: psycopg2.connect(
+        cls.connect=staticmethod(lambda: psycopg2.connect(
             host=os.environ["PGHOST"],port=os.environ.get("PGPORT","5432"),
             dbname=os.environ["PGDATABASE"],user=os.environ["PGUSER"],
-            password=os.environ["PGPASSWORD"])
+            password=os.environ["PGPASSWORD"]))
         conn=cls.connect()
         with conn:
             with conn.cursor() as cur:
