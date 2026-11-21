@@ -25,7 +25,8 @@ def validate_source(profile: dict) -> dict:
             "schema", "table", "doc_id_column", "text_column",
             "page_column", "file_path_column", "file_name_column",
             "position_column", "section_column", "page_end_column",
-            "element_json_column",
+            "element_json_column", "width_column",
+            "height_column", "rotation_column",
             "source_columns",
         }:
             raise ValueError("Unknown extracted_content mapping: " + key)
@@ -82,7 +83,8 @@ def load_extracted_document(profile: dict, document_key):
     cols = [cfg["text_column"]]
     extras = ["page_column", "page_end_column", "file_path_column",
               "file_name_column", "position_column", "section_column",
-              "element_json_column"]
+              "element_json_column", "width_column", "height_column",
+              "rotation_column"]
     cols.extend(cfg[k] for k in extras if cfg.get(k))
     cols.extend(cfg.get("source_columns", {}).values())
     cols = list(dict.fromkeys(cols))
@@ -206,10 +208,21 @@ def load_extracted_document(profile: dict, document_key):
                 [PageElement(ElementType.TEXT, BBox(0,0,0,0),text=text)]
                 if text.strip() else []
             )
+        width = row.get(cfg.get("width_column"), 0) or 0
+        height = row.get(cfg.get("height_column"), 0) or 0
+        rotation = row.get(cfg.get("rotation_column"), 0) or 0
+        if (
+            type(width) not in (int,float) or not math.isfinite(width) or width < 0
+            or type(height) not in (int,float) or not math.isfinite(height) or height < 0
+            or type(rotation) is not int or rotation not in (0,90,180,270)
+        ):
+            raise ValueError("Invalid PDF page size or rotation metadata")
         page_entry = PageContent(
-            page_number=pg, width=0, height=0, raw_text=text,
-            is_blank=not text.strip(), elements=elements,
+            page_number=pg, width=float(width), height=float(height),
+            raw_text=text, is_blank=not text.strip(), elements=elements,
         )
+        page_entry.rotation = rotation
+        digest.update(f"{width}:{height}:{rotation}".encode("utf-8"))
         page_entry.source_section_title = title
         page_entry.source_page_end = last
         pages.append(page_entry)
