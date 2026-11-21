@@ -52,6 +52,7 @@ def settings(profile):
         "ocr_timeout_seconds":90, "ocr_bbox_detail":"word",
         "ocr_confidence_min":0.60, "max_quota_wait_seconds":600,
         "table_summaries_enabled":False, "chart_descriptions_enabled":True,
+        "chart_workers":4,
         "max_window_raster_bytes":160_000_000,
         "max_render_pixels":50_000_000,
         "ocr_enabled":True,
@@ -382,6 +383,7 @@ def _ocr_pages(pages, cfg, limiter):
                 )
         return errors,0
     processed=0
+    chart_jobs=[]
 
     def worker(group):
         result=batch_document_text_detection(
@@ -419,28 +421,49 @@ def _ocr_pages(pages, cfg, limiter):
                             errors[page.page_number]=ValueError(
                                 "Chart detected but chart descriptions disabled"
                             )
-                            continue
-                        labels=response.text
-                        description=_describe_chart_with_gpt4o(
-                            element.image_bytes, " ".join(
-                                el.text for el in page.elements
-                                if el is not element and el.text
-                            )[:500], labels,
-                        )
-                        if not description.strip():
-                            errors[page.page_number]=RuntimeError(
-                                "Chart detected without a reliable description"
-                            )
                         else:
-                            element.text=(
-                                "[CHART/GRAPH DESCRIPTION]\n"+description.strip()+
-                                ("\n[OCR LABELS]\n"+labels if labels else "")
-                            )
-                    # Retain geometry, discard full PNG buffers after OCR.
-                    element.image_bytes=b""
+                            chart_jobs.append((page,element,response.text))
+                    else:
+                        # Retain geometry but discard processed PNG raster.
+                        element.image_bytes=b""
             except Exception as exc:
                 for page,_ in group:
                     errors[page.page_number]=exc
+
+    # Chart interpretation is a separate bounded network pool, NOT a
+    # sequential call within the OCR result collector. It never alters
+    # the original detected labels or image/region provenance.
+    def describe_chart(entry):
+        page,element,labels=entry
+        context=" ".join(
+            other.text for other in page.elements
+            if other is not element and other.text
+        )[:500]
+        return _describe_chart_with_gpt4o(element.image_bytes,context,labels)
+
+    if chart_jobs:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=cfg["chart_workers"]
+        ) as chart_pool:
+            futures={chart_pool.submit(describe_chart,entry):entry
+                     for entry in chart_jobs}
+            for future in concurrent.futures.as_completed(futures):
+                page,element,labels=futures[future]
+                try:
+                    description=future.result()
+                    if not description or not description.strip():
+                        raise ValueError("Chart description unavailable")
+                    element.text=(
+                        "[CHART/GRAPH DESCRIPTION]\n"+description.strip()+
+                        ("\n[OCR LABELS]\n"+labels if labels else "")
+                    )
+                except Exception as exc:
+                    errors[page.page_number]=RuntimeError(
+                        f"Chart interpretation unresolved: {type(exc).__name__}: {exc}"
+                    )
+                finally:
+                    element.image_bytes=b""
+
     for page in pages:
         if page.needs_ocr:
             page.raw_text="\n".join(
