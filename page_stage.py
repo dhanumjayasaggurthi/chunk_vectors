@@ -220,7 +220,7 @@ def read_completed(doc_id, source, fingerprint, n):
 
 def _toc_title(toc, page_number):
     title=""
-    for entry in toc:
+    for entry in sorted(toc,key=lambda item:item.page_number):
         if entry.page_number > page_number:
             break
         title=entry.title
@@ -622,13 +622,17 @@ def stage_one(file_path, profile, n, limiter=None, *, doc_id=None):
                 "doc_id":doc_id,"status":"INCOMPLETE","pages":page_count,
                 "new_pages":pages_processed,"failed_pages":errors_total,
                 "ocr_images":images_processed,
+                "elapsed_seconds":round(time.monotonic()-started,2),
             }
         _publish(doc_id,source,fingerprint,page_count,n)
+        elapsed=max(0.001,time.monotonic()-started)
         return {
             "doc_id":doc_id,"status":"SUCCESS","pages":page_count,
             "new_pages":pages_processed,"reused_pages":len(done),
             "ocr_images":images_processed,
-            "elapsed_seconds":round(time.monotonic()-started,2),
+            "elapsed_seconds":round(elapsed,2),
+            "new_pages_per_min":round(60.0*pages_processed/elapsed,1),
+            "ocr_images_per_min":round(60.0*images_processed/elapsed,1),
         }
 
 
