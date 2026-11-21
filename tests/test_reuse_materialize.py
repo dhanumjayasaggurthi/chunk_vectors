@@ -61,6 +61,35 @@ class TestConsumerIntake(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"different tables"):
             identifiers(profile)
 
+    def test_ambiguous_extracted_row_order_fails_closed(self):
+        from extracted_source import load_extracted_document
+        from unittest.mock import patch
+        class FakeCursor:
+            def __init__(self):
+                self.calls = 0
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def execute(self, *args):
+                pass
+            def fetchmany(self, size):
+                self.calls += 1
+                return [("first paragraph", 0), ("second paragraph", 0)] if self.calls == 1 else []
+        class FakeConnection:
+            def cursor(self):
+                return FakeCursor()
+            def close(self):
+                pass
+        profile = {"extracted_content": {
+            "schema": "palm_paw", "table": "existing_chunks",
+            "doc_id_column": "doc_id", "text_column": "chunk_text",
+            "position_column": "chunk_index",
+        }}
+        with patch("extracted_source.get_conn", return_value=FakeConnection()):
+            with self.assertRaisesRegex(ValueError, "Ambiguous extracted row order"):
+                load_extracted_document(profile, "doc_1")
+
     def test_duplicate_yaml_keys_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/"bad.yml"
