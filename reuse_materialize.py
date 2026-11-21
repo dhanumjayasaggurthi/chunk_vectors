@@ -120,10 +120,15 @@ def prepare_document(struct, profile):
     source_fields = getattr(struct, "source_metadata", {})
     # A source column is authoritative only when consistent across all source
     # rows. Never replace a contradictory extracted metadata value silently.
+    evidence = dict(getattr(struct, "metadata_evidence", {}))
     for key, value in source_fields.items():
         if key in doc_meta and str(doc_meta[key]) != str(value):
             raise ValueError("Metadata conflict between source column and extracted field: " + key)
         doc_meta[key] = value
+        evidence[key] = {
+            "method": "source_column",
+            "column": profile["extracted_content"].get("source_columns", {}).get(key)
+        }
     fields = profile["embedding"].get("input_fields", ["chunk_text"])
     max_tokens = profile["embedding"].get("input_max_tokens", 6000)
     tokenizer = policy.get("tokenizer", "cl100k_base")
@@ -149,6 +154,7 @@ def prepare_document(struct, profile):
             _safe_json(getattr(chunk, "headers", [])),
             _safe_json(doc_meta), _safe_json(getattr(chunk, "chunk_metadata", {})),
             _safe_json(getattr(chunk, "content_types", [])),
+            _safe_json(evidence),
         ))
     return result
 
@@ -192,7 +198,8 @@ def init_output(profile, *, apply=False):
                   headers jsonb NOT NULL,
                   document_metadata jsonb NOT NULL,
                   chunk_metadata jsonb NOT NULL,
-                  content_types jsonb NOT NULL
+                  content_types jsonb NOT NULL,
+                  metadata_evidence jsonb NOT NULL
                 )
             """)
             cur.execute(f"""
@@ -250,7 +257,7 @@ def verify_output(profile):
                         "file_name","source_chunk_text","chunk_text","chunk_vector",
                         "embedding_processing_note","page_start","page_end",
                         "section_title","headers","document_metadata",
-                        "chunk_metadata","content_types"}
+                        "chunk_metadata","content_types","metadata_evidence"}
             if not expected.issubset(columns):
                 raise ValueError("Output table incompatible with materialization schema")
             cur.execute(f"""SELECT a.atttypmod FROM pg_attribute a
@@ -292,9 +299,9 @@ def save_document(doc_id, source_hash, profile, names, rows):
             execute_values(cur, f"""INSERT INTO {names['table']} (
                 chunk_id,doc_id,profile_hash,chunk_index,file_path,file_name,
                 source_chunk_text,chunk_text,page_start,page_end,section_title,
-                headers,document_metadata,chunk_metadata,content_types
+                headers,document_metadata,chunk_metadata,content_types,metadata_evidence
                 ) VALUES %s""", rows,
-                template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)",
+                template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)",
                 page_size=200)
             cur.execute(f"""INSERT INTO {names['status']} (
                     doc_id,profile_hash,source_hash,chunk_count,updated_at)
