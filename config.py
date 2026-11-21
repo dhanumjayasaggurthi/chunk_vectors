@@ -145,6 +145,15 @@ TABLE_SETTINGS = {
 # "markdown" → | col1 | col2 |   "csv" → col1, col2
 TABLE_FORMAT = "markdown"
 
+# One document handle is reused for each bounded set of candidate table pages.
+# Can be adjusted without changing the embedding runtime or worker counts.
+TABLE_BATCH_PAGES = int(_get("PIPELINE", "table_batch_pages", "32"))
+if not 1 <= TABLE_BATCH_PAGES <= 256:
+    raise ValueError("[PIPELINE] table_batch_pages must be 1..256")
+TABLE_SUMMARIES_ENABLED = (
+    _get("PIPELINE", "table_summaries_enabled", "true").lower() == "true"
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Retry / resilience
 # ─────────────────────────────────────────────────────────────────────────────

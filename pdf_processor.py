@@ -252,7 +252,12 @@ class PDFProcessor:
         file_path: str,
         doc_id:    str,
         file_name: str,
+        *,
+        strict: bool = False,
+        max_render_pixels: int | None = None,
     ):
+        self.strict = strict
+        self.max_render_pixels = max_render_pixels
         self.file_path = file_path
         self.doc_id    = doc_id
         self.file_name = file_name
@@ -359,7 +364,81 @@ class PDFProcessor:
 
     # ── Single page ───────────────────────────────────────────────────────────
 
-    def _process_page(self, doc, page_num: int) -> PageContent:
+    def iter_page_batches(
+        self,
+        batch_pages: int = 32,
+        completed_pages: set[int] | None = None,
+        *,
+        max_window_raster_bytes: int = 160_000_000,
+    ):
+        """Stream bounded page windows, including image-memory backpressure.
+
+        Two PDF handles are opened ONCE for the document. PyMuPDF and
+        pdfplumber page objects stay on the calling thread; each page's
+        pdfplumber cache is closed immediately. Yielding pauses parsing
+        while OCR/table calls and the durable DB checkpoint finish.
+        """
+        if type(batch_pages) is not int or not 1 <= batch_pages <= 128:
+            raise ValueError("batch_pages must be 1..128")
+        if (type(max_window_raster_bytes) is not int
+                or not 10_000_000 <= max_window_raster_bytes <= 1_000_000_000):
+            raise ValueError("max_window_raster_bytes must be 10MB..1GB")
+        fitz = _fitz()
+        pdfplumber = _pdfplumber()
+        completed = completed_pages or set()
+        with fitz.open(self.file_path) as doc, pdfplumber.open(self.file_path) as plumb_doc:
+            if doc.is_encrypted:
+                raise ValueError("Password-protected PDF cannot be staged")
+            toc = self._extract_toc(doc)
+            count = doc.page_count
+            pages = []
+            raster_bytes = 0
+
+            def window_result(items):
+                return DocumentStructure(
+                    file_path=self.file_path,
+                    file_name=self.file_name,
+                    doc_id=self.doc_id,
+                    page_count=count,
+                    toc=toc,
+                    has_toc=bool(toc),
+                    pages=items,
+                )
+
+            for i in range(count):
+                if i + 1 in completed:
+                    continue
+                plumb_page = plumb_doc.pages[i]
+                try:
+                    page = self._process_page(doc, i, plumb_page=plumb_page)
+                finally:
+                    if hasattr(plumb_page, "close"):
+                        plumb_page.close()
+                page_bytes = sum(
+                    len(element.image_bytes) for element in page.elements
+                )
+                if page_bytes > max_window_raster_bytes:
+                    # The page is explicitly recorded as failed. No silent
+                    # image downsampling that may erase microscopic labels.
+                    page.error = (
+                        "PAGE_RASTER_BUDGET_EXCEEDED: raster bytes "
+                        f"{page_bytes} > {max_window_raster_bytes}"
+                    )
+                    page.elements.clear()
+                    page_bytes = 0
+                if pages and (
+                    len(pages) >= batch_pages
+                    or raster_bytes + page_bytes > max_window_raster_bytes
+                ):
+                    yield window_result(pages)
+                    pages = []
+                    raster_bytes = 0
+                pages.append(page)
+                raster_bytes += page_bytes
+            if pages:
+                yield window_result(pages)
+
+    def _process_page(self, doc, page_num: int, *, plumb_page=None) -> PageContent:
         """
         Analyse one page. Returns PageContent.
         Never raises — all errors are caught and stored in PageContent.error.
@@ -367,7 +446,7 @@ class PDFProcessor:
         page_1based = page_num + 1
         try:
             page = doc[page_num]
-            return self._analyse_page(page, page_1based)
+            return self._analyse_page(page, page_1based, plumb_page=plumb_page)
         except Exception as e:
             self.dlog.error(
                 f"Page {page_1based} failed: {e}",
@@ -380,7 +459,7 @@ class PDFProcessor:
                 error=str(e),
             )
 
-    def _analyse_page(self, page, page_number: int) -> PageContent:
+    def _analyse_page(self, page, page_number: int, *, plumb_page=None) -> PageContent:
         """Core per-page analysis — text, images, tables, reading order."""
         fitz = _fitz()
         rect   = page.rect
@@ -391,6 +470,16 @@ class PDFProcessor:
             width=width,
             height=height,
         )
+        pc.rotation = int(page.rotation)
+        # Fail a pathological render before allocating a multi-GB pixmap.
+        if self.max_render_pixels is not None:
+            scale = OCR_RENDER_DPI / 72.0
+            pixels = int(width * scale) * int(height * scale)
+            if pixels > self.max_render_pixels:
+                raise RuntimeError(
+                    f"Page {page_number} requires {pixels} render pixels, "
+                    f"max_render_pixels={self.max_render_pixels}"
+                )
 
         # ── 1. Extract raw text dict (blocks with bboxes + font info) ────────
         try:
@@ -436,7 +525,9 @@ class PDFProcessor:
         image_elements: list[PageElement] = []
         try:
             img_list = page.get_images(full=True)
-        except Exception:
+        except Exception as e:
+            if self.strict:
+                raise RuntimeError(f"Image inventory failed p{page_number}: {e}") from e
             img_list = []
 
         for img_info in img_list:
@@ -481,11 +572,19 @@ class PDFProcessor:
                 self.dlog.debug(
                     f"Page {page_number}: image geometry error xref={xref}: {e}"
                 )
+                if self.strict:
+                    raise RuntimeError(
+                        f"Image geometry failed p{page_number} xref={xref}: {e}"
+                    ) from e
                 continue
             except Exception as e:
                 self.dlog.debug(
                     f"Page {page_number}: image extract error xref={xref}: {e}"
                 )
+                if self.strict:
+                    raise RuntimeError(
+                        f"Image extract failed p{page_number} xref={xref}: {e}"
+                    ) from e
                 continue
             finally:
                 # Explicitly free C-heap pixmap memory — critical for 6500+ page
@@ -513,11 +612,38 @@ class PDFProcessor:
                 image_elements = [whole_page_el]   # replace partial images
             except Exception as e:
                 self.dlog.warning(f"Page {page_number}: full-page render failed: {e}")
+                if self.strict:
+                    raise RuntimeError(
+                        f"Full-page OCR render failed p{page_number}: {e}"
+                    ) from e
             finally:
                 pix = None   # free C-heap memory immediately
 
-        # ── 5. Table region detection (bounding boxes only — pdfplumber extracts) ─
-        table_bboxes = self._detect_table_regions(page)
+        # ── 5. Table geometry and lossless cells ───────────────────────────
+        # The opt-in staged path already owns a live pdfplumber page.
+        # Extract each native table ONCE here, preserving small regulatory
+        # tables, the exact source bbox, and raw cell content. No second
+        # pdfplumber open / find_tables during later OCR-table assembly.
+        staged_table_results = None
+        if self.strict and plumb_page is not None:
+            from table_extractor import TableExtractor
+            extractor = TableExtractor(self.file_path, summarise=False)
+            detected = plumb_page.find_tables(TABLE_SETTINGS)
+            staged_table_results = []
+            for idx, table in enumerate(detected):
+                result = extractor._process_table(
+                    table.extract(), page_number, idx, "",
+                    allow_short=True,
+                )
+                if result is None:
+                    raise RuntimeError(
+                        f"Table {idx} page {page_number} has no recoverable cells"
+                    )
+                result.bbox = tuple(table.bbox)
+                staged_table_results.append(result)
+            table_bboxes = [BBox(*result.bbox) for result in staged_table_results]
+        else:
+            table_bboxes = self._detect_table_regions(page, plumb_page=plumb_page)
         table_elements: list[PageElement] = []
         for tb in table_bboxes:
             el = PageElement(
@@ -542,6 +668,8 @@ class PDFProcessor:
         # ── 8. Assemble PageContent ──────────────────────────────────────────
         pc.elements   = all_elements
         pc.has_tables = len(table_elements) > 0
+        if staged_table_results is not None:
+            pc.staged_table_results = staged_table_results
         pc.has_images = len(image_elements) > 0
 
         # raw_text = joined text from TEXT elements in reading order
@@ -556,25 +684,24 @@ class PDFProcessor:
 
     # ── Table region detection ────────────────────────────────────────────────
 
-    def _detect_table_regions(self, page) -> list[BBox]:
+    def _detect_table_regions(self, page, *, plumb_page=None) -> list[BBox]:
+        """Find native table bounding boxes while reusing a caller-owned
+        pdfplumber page when available. The legacy route still works.
         """
-        Use pdfplumber to detect table bounding boxes on this page.
-        Returns list of BBox objects (may be empty).
-        """
-        pdfplumber = _pdfplumber()
         bboxes = []
         try:
-            # pdfplumber needs to open the same file — we reopen just this page
-            with pdfplumber.open(self.file_path) as plumb_doc:
-                # page_number is 1-based in our system, pdfplumber is 0-based
-                if page.number < len(plumb_doc.pages):
-                    plumb_page = plumb_doc.pages[page.number]
-                    tables = plumb_page.find_tables(TABLE_SETTINGS)
-                    for tbl in tables:
-                        bb = tbl.bbox  # (x0, top, x1, bottom)
-                        bboxes.append(BBox(bb[0], bb[1], bb[2], bb[3]))
+            if plumb_page is None:
+                with _pdfplumber().open(self.file_path) as plumb_doc:
+                    if page.number >= len(plumb_doc.pages):
+                        raise ValueError("Table page index outside PDF")
+                    tables = plumb_doc.pages[page.number].find_tables(TABLE_SETTINGS)
+                    bboxes = [BBox(*tbl.bbox) for tbl in tables]
+            else:
+                tables = plumb_page.find_tables(TABLE_SETTINGS)
+                bboxes = [BBox(*tbl.bbox) for tbl in tables]
         except Exception as e:
-            # Non-fatal — page just won't have table regions flagged
+            if self.strict:
+                raise RuntimeError(f"Table detection failed page {page.number + 1}: {e}") from e
             self.dlog.debug(f"Table detection failed page {page.number + 1}: {e}")
         return bboxes
 

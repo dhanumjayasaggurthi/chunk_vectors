@@ -1,0 +1,61 @@
+# Intake-driven reuse of existing extracted content (opt-in).
+# Uses the main-branch existing source adapter and token-aware chunker.
+# Requires an existing source table with indexed doc_id and stable chunk_index.
+# No PDF, OCR, embedding API, or existing production table writes.
+name: immbot_semantic_rechunk_v1
+version: 1
+
+extracted_content:
+  schema: palm_paw
+  table: doc_chunks_immbot_approved
+  doc_id_column: doc_id
+  text_column: chunk_text
+  position_column: chunk_index
+  page_column: page_start
+  page_end_column: page_end
+  section_column: section_title
+  file_path_column: file_path
+  file_name_column: file_name
+  source_columns:
+    source_file_name: file_name
+
+chunking:
+  strategy: toc_then_semantic
+  min_tokens: 100
+  max_tokens: 800
+  overlap_tokens: 80
+  small_section_policy: merge_forward
+  preserve_headers: true
+  tokenizer: cl100k_base
+
+metadata:
+  inherit_document_fields: true
+  document:
+    protocol_number:
+      method: regex
+      pattern: '(?im)\bProtocol\s+(?:Number|No\.?)\s*[:#-]?\s*([A-Za-z0-9_-]+)'
+      type: string
+      enabled: true
+      required: false
+      first_pages: 20
+      sample_values: [ABC-2026-001]
+  chunk: {}
+
+embedding:
+  # This job only prepares text; the existing fast embedding command is run
+  # separately with its own existing_chunks profile after materialization.
+  enabled: false
+  reuse_existing: true
+  batch_size: 128
+  dimensions: 1536
+  input_max_tokens: 6000
+  input_fields:
+    - document.protocol_number
+    - source.source_file_name
+    - section_title
+    - chunk_text
+
+output:
+  # Dedicated NEW table; NEVER set equal to extracted_content source table.
+  schema: palm_paw
+  table: doc_chunks_immbot_semantic_v1
