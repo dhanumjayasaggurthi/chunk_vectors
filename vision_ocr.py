@@ -27,7 +27,7 @@ import base64
 import io
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -92,6 +92,7 @@ class OcrResult:
     language:    str           # detected language code e.g. "en"
     success:     bool          # False if API call failed
     error:       str = ""      # error message if success=False
+    regions:     list[dict] = field(default_factory=list)  # OCR polygons and text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +214,199 @@ def ocr_image_bytes(
         text="", confidence=0.0, word_count=0,
         language="", success=False, error=last_error,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Opt-in batched OCR for the staged large-document pipeline.
+# Kept separate from ocr_image_bytes to avoid changes to production callers.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _polygon(vertices) -> list[list[int]]:
+    """Preserve Vision's original quadrilateral, including rotated labels."""
+    return [
+        [int(getattr(v, "x", 0)), int(getattr(v, "y", 0))]
+        for v in vertices
+    ]
+
+
+def _parse_batch_ocr(response, min_confidence: float, bbox_detail: str) -> OcrResult:
+    if getattr(getattr(response, "error", None), "message", ""):
+        return OcrResult(
+            text="", confidence=0.0, word_count=0, language="",
+            success=False, error=str(response.error.message)[:500],
+        )
+    full = getattr(response, "full_text_annotation", None)
+    if not full or not getattr(full, "text", ""):
+        return OcrResult(
+            text="", confidence=0.0, word_count=0, language="",
+            success=True,
+        )
+    regions, confidences, languages = [], [], []
+    for page in getattr(full, "pages", []):
+        for lang in getattr(getattr(page, "property", None), "detected_languages", []):
+            if getattr(lang, "language_code", ""):
+                languages.append(lang.language_code)
+        for block in getattr(page, "blocks", []):
+            blocks_words = []
+            for para in getattr(block, "paragraphs", []):
+                for word in getattr(para, "words", []):
+                    text = "".join(getattr(sym, "text", "") for sym in word.symbols)
+                    confidence = float(getattr(word, "confidence", 0.0) or 0.0)
+                    confidences.append(confidence)
+                    if text:
+                        blocks_words.append(text)
+                    if bbox_detail == "word":
+                        regions.append({
+                            "kind": "word", "text": text,
+                            "confidence": round(confidence, 5),
+                            "polygon": _polygon(word.bounding_box.vertices),
+                        })
+            if bbox_detail == "block":
+                regions.append({
+                    "kind": "block",
+                    "text": " ".join(blocks_words),
+                    "confidence": round(
+                        sum(confidences[-len(blocks_words):]) / len(blocks_words),
+                        5,
+                    ) if blocks_words else 0.0,
+                    "polygon": _polygon(block.bounding_box.vertices),
+                })
+    conf = sum(confidences) / len(confidences) if confidences else 0.0
+    status = ""
+    if conf < min_confidence and len(confidences) > 5:
+        status = f"low_confidence_{conf:.3f}"
+    return OcrResult(
+        text=str(full.text).strip(),  # NO loss of numbers/short regulatory labels
+        confidence=conf, word_count=len(confidences),
+        language=languages[0] if languages else "",
+        success=True, error=status, regions=regions,
+    )
+
+
+def batch_document_text_detection(
+    image_bytes: list[bytes],
+    *,
+    limiter=None,
+    max_retries: int = 4,
+    timeout_seconds: int = 90,
+    min_confidence: float = _MIN_CONFIDENCE,
+    bbox_detail: str = "word",
+) -> list[OcrResult]:
+    """Send up to 16 images in one Vision annotate request.
+
+    Returns results in EXACT input order. A failure is never converted to
+    blank success, and retryable per-image failures retry only failed items.
+    If the whole batch is invalid, bisect it to isolate corrupt inputs.
+    The optional limiter accounts for BOTH request and image quotas.
+    """
+    import random
+    if not 1 <= len(image_bytes) <= 16:
+        raise ValueError("Vision synchronous batch must contain 1..16 images")
+    if bbox_detail not in {"block", "word"}:
+        raise ValueError("bbox_detail must be word or block")
+    if not 1 <= max_retries <= 10 or not 5 <= timeout_seconds <= 600:
+        raise ValueError("Invalid OCR retry / timeout settings")
+    if any(not b or len(b) > 20 * 1024 * 1024 for b in image_bytes):
+        raise ValueError("Image is empty or exceeds Vision's 20MB file limit")
+    vision = _vision()
+    client = _get_client()
+    feature = vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
+    context = vision.ImageContext(language_hints=_LANGUAGE_HINTS)
+    all_results: list[OcrResult | None] = [None] * len(image_bytes)
+
+    def failure(message):
+        return OcrResult(
+            text="", confidence=0.0, word_count=0, language="",
+            success=False, error=str(message)[:500],
+        )
+
+    def retryable(error):
+        code = getattr(error, "code", None)
+        if callable(code):
+            try:
+                code = code()
+            except Exception:
+                code = None
+        code_str = str(getattr(code, "value", code)).upper()
+        message = str(error).upper()
+        return (
+            any(k in code_str for k in ("429", "500", "503", "504", "8", "14"))
+            or any(k in message for k in (
+                "RESOURCE_EXHAUSTED", "UNAVAILABLE",
+                "DEADLINE_EXCEEDED", "429", "503", "504",
+            ))
+        )
+
+    def submit(indices, depth=0):
+        waiting = list(indices)
+        for attempt in range(max_retries):
+            if not waiting:
+                return
+            requests = [
+                vision.AnnotateImageRequest(
+                    image=vision.Image(content=image_bytes[index]),
+                    features=[feature], image_context=context,
+                )
+                for index in waiting
+            ]
+            try:
+                if limiter:
+                    limiter.acquire(len(waiting))
+                answer = client.batch_annotate_images(
+                    requests=requests, timeout=timeout_seconds, retry=None,
+                )
+                if len(answer.responses) != len(waiting):
+                    raise RuntimeError("OCR_BATCH_RESPONSE_COUNT_MISMATCH")
+                next_round = []
+                for idx, response in zip(waiting, answer.responses):
+                    item = _parse_batch_ocr(
+                        response, min_confidence, bbox_detail,
+                    )
+                    if not item.success and retryable(getattr(response, "error", item.error)):
+                        next_round.append(idx)
+                    else:
+                        all_results[idx] = item
+                waiting = next_round
+                if not waiting:
+                    if limiter:
+                        limiter.success()
+                    return
+                if limiter:
+                    limiter.cooldown(10)
+            except Exception as exc:
+                message = str(exc)
+                # Invalid single-image input is a per-image error. Never lose
+                # successful neighbors by failing an entire healthy batch.
+                if (
+                    len(waiting) > 1 and depth < 5
+                    and any(k in message.upper() for k in (
+                        "INVALID_ARGUMENT", "400", "SIZE_LIMIT",
+                    ))
+                ):
+                    middle = len(waiting) // 2
+                    submit(waiting[:middle], depth + 1)
+                    submit(waiting[middle:], depth + 1)
+                    return
+                if not retryable(exc):
+                    for idx in waiting:
+                        all_results[idx] = failure(
+                            f"{type(exc).__name__}: {message}"
+                        )
+                    return
+                if limiter:
+                    limiter.cooldown(min(60, 5 * (2 ** attempt)))
+            if attempt + 1 < max_retries:
+                time.sleep(min(30, 1.5 * (2 ** attempt)) + random.random())
+        for idx in waiting:
+            all_results[idx] = failure("OCR_API_RETRIES_EXHAUSTED")
+
+    submit(list(range(len(image_bytes))))
+    # An unexpected missing response is not acceptable in an accuracy-first
+    # ingestion pipeline, even when some siblings were processed correctly.
+    return [
+        item if item is not None else failure("OCR_RESPONSE_MISSING")
+        for item in all_results
+    ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
