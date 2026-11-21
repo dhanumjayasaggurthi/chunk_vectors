@@ -418,6 +418,8 @@ class TableExtractor:
         page_number:  int,
         table_index:  int,
         context_text: str,
+        *,
+        allow_short: bool = False,
     ) -> Optional[TableResult]:
         """Process a single raw table from pdfplumber."""
 
@@ -449,7 +451,7 @@ class TableExtractor:
         plain_text = _to_plain_text(cleaned, has_header)
 
         # Validate minimum text length
-        if len(markdown) < CHUNK_MIN_CHARS and len(plain_text) < CHUNK_MIN_CHARS:
+        if not allow_short and len(markdown) < CHUNK_MIN_CHARS and len(plain_text) < CHUNK_MIN_CHARS:
             logger.debug(
                 f"p{page_number} table {table_index}: "
                 f"too short ({len(markdown)} chars) — skipped"
