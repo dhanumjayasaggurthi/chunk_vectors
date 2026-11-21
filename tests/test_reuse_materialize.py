@@ -142,8 +142,14 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
         self.assertEqual(init_output(p,apply=False)["status"],"NO_WRITES")
         init_output(p,apply=True)
         result=run(p,max_docs=10,workers=2)
-        self.assertEqual(result["SUCCESS"],1)
-        self.assertEqual(result["FAILED"],1)
+        conn_debug=self.connect()
+        with conn_debug:
+            with conn_debug.cursor() as cur:
+                cur.execute("SELECT doc_id,error_message FROM intake_ci.out_chunks_v1_failures ORDER BY id")
+                failures_debug=cur.fetchall()
+        conn_debug.close()
+        self.assertEqual(result["SUCCESS"],1, (result,failures_debug))
+        self.assertEqual(result["FAILED"],1, (result,failures_debug))
         conn=self.connect()
         with conn:
             with conn.cursor() as cur:
