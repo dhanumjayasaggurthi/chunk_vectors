@@ -83,6 +83,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "extracted_content.doc_id_column", "extracted_content.text_column",
             "extracted_content.page_column", "extracted_content.position_column",
             "extracted_content.file_path_column", "extracted_content.file_name_column",
+            "extracted_content.element_json_column",
         }:
             raise ValueError("Invalid --set override: " + item)
         section, field = key.split(".", 1)
@@ -113,7 +114,7 @@ def validate_profile(profile: dict) -> None:
                             "vector_column", "note_column"},
         "extracted_content": {"schema", "table", "doc_id_column", "text_column",
                               "page_column", "position_column", "file_path_column",
-                              "file_name_column", "section_column",
+                              "file_name_column", "element_json_column", "section_column",
                               "page_end_column", "source_columns"},
         "output": {"schema", "table"},
     }
