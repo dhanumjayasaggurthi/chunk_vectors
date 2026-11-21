@@ -1,0 +1,82 @@
+# Stage PDFs in bounded page windows; use the SAME YAML intake for
+# rechunking and for preparing metadata-augmented embedding input.
+#
+# Use NEW, DBA-approved target tables in staging before production.
+# Google Cloud credential selection follows existing config.ini [GCP].
+name: regulatory_page_stage_pilot
+version: 1
+
+extraction:
+  enabled: true
+  schema: palm_paw
+  table: regulatory_pages_pilot_v1
+  page_batch_size: 32
+  ocr_enabled: true
+  ocr_batch_images: 8
+  ocr_workers: 4
+  # Explicit combined limits per project ACROSS all servers using this DB.
+  # Inspect live 429/error and quality data before raising.
+  ocr_requests_rpm: 900
+  ocr_images_ipm: 900
+  ocr_max_batch_bytes: 6000000
+  ocr_max_retries: 4
+  ocr_timeout_seconds: 90
+  max_quota_wait_seconds: 600
+  ocr_bbox_detail: word
+  ocr_confidence_min: 0.60
+  # Keep lossless table cells. Summaries are optional narrative additions.
+  table_summaries_enabled: false
+  # Charts must have OCR labels AND a description, or the page fails review.
+  chart_descriptions_enabled: true
+
+extracted_content:
+  schema: palm_paw
+  table: regulatory_pages_pilot_v1
+  doc_id_column: doc_id
+  text_column: chunk_text
+  page_column: page_number
+  position_column: page_number
+  page_end_column: page_end
+  file_path_column: file_path
+  file_name_column: file_name
+  section_column: section_title
+  element_json_column: elements
+  source_columns:
+    source_file_name: file_name
+
+chunking:
+  strategy: toc_then_semantic
+  min_tokens: 120
+  max_tokens: 800
+  overlap_tokens: 80
+  small_section_policy: merge_forward
+  preserve_headers: true
+  tokenizer: cl100k_base
+
+metadata:
+  inherit_document_fields: true
+  document:
+    protocol_number:
+      method: regex
+      pattern: '(?im)\bProtocol\s+(?:Number|No\.?)\s*[:#-]?\s*([A-Za-z0-9_-]+)'
+      type: string
+      enabled: true
+      required: false
+      first_pages: 25
+      sample_values: [ABC-2026-001]
+  chunk: {}
+
+embedding:
+  enabled: false
+  reuse_existing: true
+  batch_size: 128
+  dimensions: 1536
+  input_max_tokens: 6000
+  input_fields:
+    - document.protocol_number
+    - section_title
+    - chunk_text
+
+output:
+  schema: palm_paw
+  table: regulatory_chunks_pilot_v1
