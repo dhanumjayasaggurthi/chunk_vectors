@@ -181,6 +181,47 @@ class TestStageValidation(unittest.TestCase):
         p=staging_profile()
         self.assertFalse(init(p,apply=False)["writes"])
 
+    def test_pdf_windows_adapt_to_image_bytes_and_skip_checkpoints(self):
+        from pdf_processor import PDFProcessor,PageContent,PageElement,BBox,ElementType
+        from types import SimpleNamespace
+        class FakeDocument:
+            def __enter__(self):
+                return self
+            def __exit__(self,*args):
+                pass
+            is_encrypted=False
+            page_count=5
+        class FakePlumber:
+            def __enter__(self):
+                return self
+            def __exit__(self,*args):
+                pass
+            pages=[SimpleNamespace(close=lambda:None) for i in range(5)]
+        calls=[]
+        def fake_page(self, doc, index, **kw):
+            calls.append(index+1)
+            return PageContent(
+                page_number=index+1,width=600,height=800,
+                elements=[PageElement(
+                    ElementType.IMAGE,BBox(0,0,100,100),
+                    image_bytes=b"x"*6000000,
+                )],
+            )
+        proc=PDFProcessor("fake.pdf","doc","fake.pdf",strict=True)
+        with patch("pdf_processor._fitz",
+                   return_value=SimpleNamespace(open=lambda path:FakeDocument())):
+            with patch("pdf_processor._pdfplumber",
+                       return_value=SimpleNamespace(open=lambda path:FakePlumber())):
+                with patch.object(PDFProcessor,"_extract_toc",return_value=[]):
+                    with patch.object(PDFProcessor,"_process_page",new=fake_page):
+                        batches=list(proc.iter_page_batches(
+                            batch_pages=4,completed_pages={2},
+                            max_window_raster_bytes=10_000_000,
+                        ))
+        self.assertEqual(calls,[1,3,4,5])
+        self.assertEqual([len(b.pages) for b in batches],[1,1,1,1])
+        self.assertEqual(sum(len(b.pages) for b in batches),4)
+
     def test_groups_keep_batch_size_and_byte_budget(self):
         from page_stage import _images_in_groups,settings
         from pdf_processor import ElementType
