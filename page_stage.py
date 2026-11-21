@@ -81,7 +81,11 @@ def init(profile, *, apply=False):
                 CREATE TABLE IF NOT EXISTS {n['work']} (
                     doc_id text NOT NULL, source_hash text NOT NULL,
                     extraction_hash text NOT NULL, page_number integer NOT NULL,
-                    page_end integer NOT NULL, chunk_text text NOT NULL,
+                    page_end integer NOT NULL,
+                    page_width double precision NOT NULL,
+                    page_height double precision NOT NULL,
+                    page_rotation integer NOT NULL,
+                    chunk_text text NOT NULL,
                     elements jsonb NOT NULL, section_title text,
                     file_path text NOT NULL, file_name text NOT NULL,
                     content_sha256 text NOT NULL,
@@ -91,7 +95,11 @@ def init(profile, *, apply=False):
             cur.execute(f"""
                 CREATE TABLE IF NOT EXISTS {n['published']} (
                     doc_id text NOT NULL, page_number integer NOT NULL,
-                    page_end integer NOT NULL, chunk_text text NOT NULL,
+                    page_end integer NOT NULL,
+                    page_width double precision NOT NULL,
+                    page_height double precision NOT NULL,
+                    page_rotation integer NOT NULL,
+                    chunk_text text NOT NULL,
                     elements jsonb NOT NULL, section_title text,
                     file_path text NOT NULL, file_name text NOT NULL,
                     content_sha256 text NOT NULL, source_hash text NOT NULL,
@@ -143,6 +151,21 @@ def require_initialized(profile):
                     raise ValueError(
                         "Stage tables not initialized; run init --apply in staging"
                     )
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema=%s AND table_name=%s
+            """,(profile["extraction"]["schema"],profile["extraction"]["table"]))
+            columns={row[0] for row in cur.fetchall()}
+            required={
+                "doc_id","page_number","page_end","page_width",
+                "page_height","page_rotation","chunk_text","elements",
+                "file_path","file_name","source_hash","extraction_hash",
+            }
+            if not required.issubset(columns):
+                raise ValueError(
+                    "Stage output schema is outdated; use a new, versioned "
+                    "extraction.table for accurate page geometry"
+                )
     finally:
         conn.close()
     return n
@@ -198,7 +221,9 @@ def _page_row(page, struct, source, profile):
                        allow_nan=False)
     return (
         struct.doc_id,source,profile["_fingerprint"],
-        page.page_number,page.page_number,text,payload,
+        page.page_number,page.page_number,
+        float(page.width),float(page.height),int(getattr(page,"rotation",0)),
+        text,payload,
         _toc_title(struct.toc,page.page_number),
         struct.file_path,struct.file_name,
         hashlib.sha256((text+payload).encode("utf-8")).hexdigest(),
@@ -215,11 +240,15 @@ def _persist_window(rows, errors, doc_id, source, fingerprint, n):
                 execute_values(cur,f"""
                     INSERT INTO {n['work']} (
                         doc_id,source_hash,extraction_hash,page_number,
-                        page_end,chunk_text,elements,section_title,
-                        file_path,file_name,content_sha256
+                        page_end,page_width,page_height,page_rotation,
+                        chunk_text,elements,section_title,file_path,file_name,
+                        content_sha256
                     ) VALUES %s
                     ON CONFLICT (doc_id,source_hash,extraction_hash,page_number)
                     DO UPDATE SET page_end=EXCLUDED.page_end,
+                        page_width=EXCLUDED.page_width,
+                        page_height=EXCLUDED.page_height,
+                        page_rotation=EXCLUDED.page_rotation,
                         chunk_text=EXCLUDED.chunk_text,
                         elements=EXCLUDED.elements,
                         section_title=EXCLUDED.section_title,
@@ -227,7 +256,7 @@ def _persist_window(rows, errors, doc_id, source, fingerprint, n):
                         file_name=EXCLUDED.file_name,
                         content_sha256=EXCLUDED.content_sha256
                 """,rows,
-                    template="(" + ",".join(["%s"]*6 +
+                    template="(" + ",".join(["%s"]*9 +
                         ["%s::jsonb"] + ["%s"]*4) + ")",
                     page_size=100)
             if errors:
@@ -267,11 +296,12 @@ def _publish(doc_id, source, fingerprint, page_count, n):
             cur.execute(f"DELETE FROM {n['published']} WHERE doc_id=%s",(doc_id,))
             cur.execute(f"""
                 INSERT INTO {n['published']} (
-                    doc_id,page_number,page_end,chunk_text,elements,
-                    section_title,file_path,file_name,content_sha256,
-                    source_hash,extraction_hash
-                ) SELECT doc_id,page_number,page_end,chunk_text,elements,
-                         section_title,file_path,file_name,content_sha256,
+                    doc_id,page_number,page_end,page_width,page_height,
+                    page_rotation,chunk_text,elements,section_title,file_path,
+                    file_name,content_sha256,source_hash,extraction_hash
+                ) SELECT doc_id,page_number,page_end,page_width,page_height,
+                         page_rotation,chunk_text,elements,section_title,
+                         file_path,file_name,content_sha256,
                          source_hash,extraction_hash
                 FROM {n['work']}
                 WHERE doc_id=%s AND source_hash=%s AND extraction_hash=%s
