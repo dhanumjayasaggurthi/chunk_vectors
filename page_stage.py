@@ -174,6 +174,31 @@ def require_initialized(profile):
     return n
 
 
+def record_document_failure(path, profile, n, error):
+    """Persist failures before page processing or after a source-change check."""
+    doc_id=hashlib.sha256(
+        str(Path(path).resolve()).encode("utf-8")
+    ).hexdigest()
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                INSERT INTO {n['errors']} (
+                    doc_id,page_number,source_hash,extraction_hash,
+                    error_code,error_message
+                ) VALUES (%s,NULL,%s,%s,%s,%s)
+            """,(
+                doc_id,"unavailable",profile["_fingerprint"],
+                type(error).__name__[:80],str(error)[:1000],
+            ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def read_completed(doc_id, source, fingerprint, n):
     conn=get_conn()
     try:
@@ -627,8 +652,15 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
                     result=future.result()
                     LOG.info("FILE %s %s",path,result)
                     status=result["status"]
-                except Exception:
+                except Exception as exc:
                     LOG.exception("PDF staging failed for %s",path)
+                    try:
+                        record_document_failure(path,profile,n,exc)
+                    except Exception:
+                        LOG.exception(
+                            "Could not persist document-level failure for %s",path
+                        )
+                        raise  # fail the batch if durable error logging is unavailable
                     status="FAILED"
                 counts[status]+=1
         for index, path in enumerate(files):
