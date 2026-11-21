@@ -58,7 +58,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             raise ValueError("Profile root must be an object")
     result = copy.deepcopy(_DEFAULTS)
     for key, value in data.items():
-        if key not in result and key not in {"name"}:
+        if key not in result and key not in {"name", "extraction"}:
             raise ValueError("Unknown profile setting: " + key)
         if isinstance(result.get(key), dict):
             if not isinstance(value, dict):
@@ -117,6 +117,16 @@ def validate_profile(profile: dict) -> None:
                               "page_end_column", "source_columns"},
         "output": {"schema", "table"},
     }
+    if "extraction" in profile:
+        allowed_nested["extraction"] = {
+            "enabled", "schema", "table",
+            "page_batch_size", "ocr_batch_images", "ocr_workers",
+            "ocr_requests_rpm", "ocr_images_ipm",
+            "ocr_max_batch_bytes", "ocr_max_retries", "ocr_timeout_seconds",
+            "ocr_bbox_detail", "ocr_confidence_min",
+            "chart_descriptions_enabled", "table_summaries_enabled",
+            "max_quota_wait_seconds", "ocr_enabled",
+        }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
         if unexpected:
@@ -199,6 +209,41 @@ def validate_profile(profile: dict) -> None:
                     or not isinstance(col, str)
                     or not re.fullmatch(r"[a-z_][a-z0-9_]*", col, re.I)):
                 raise ValueError("Invalid source_columns mapping")
+    if "extraction" in profile:
+        extract = profile["extraction"]
+        if not isinstance(extract, dict):
+            raise ValueError("extraction must be a mapping")
+        for required in ("schema", "table"):
+            value = extract.get(required)
+            if not isinstance(value, str) or not re.fullmatch(
+                r"[a-z_][a-z0-9_]{0,45}",value,re.I,
+            ):
+                raise ValueError("extraction." + required + " requires a safe table identifier")
+        for field in ("enabled", "ocr_enabled", "chart_descriptions_enabled",
+                      "table_summaries_enabled"):
+            if field in extract and type(extract[field]) is not bool:
+                raise ValueError("extraction." + field + " must be boolean")
+        limits = {
+            "page_batch_size":(1,128), "ocr_batch_images":(1,16),
+            "ocr_workers":(1,32), "ocr_requests_rpm":(1,100000),
+            "ocr_images_ipm":(16,100000),
+            "ocr_max_batch_bytes":(100000,8500000),
+            "ocr_max_retries":(1,10), "ocr_timeout_seconds":(5,600),
+            "max_quota_wait_seconds":(1,3600),
+        }
+        for field,(low,high) in limits.items():
+            if field in extract and (
+                type(extract[field]) is not int or
+                not low <= extract[field] <= high
+            ):
+                raise ValueError(f"extraction.{field} must be {low}..{high}")
+        if extract.get("ocr_bbox_detail","word") not in ("word","block"):
+            raise ValueError("extraction.ocr_bbox_detail must be word or block")
+        threshold = extract.get("ocr_confidence_min",0.6)
+        if type(threshold) not in (float,int) or not 0.0 <= threshold <= 1.0:
+            raise ValueError("extraction.ocr_confidence_min must be 0..1")
+        if extract.get("ocr_max_batch_bytes",6_000_000) < 1024 * extract.get("ocr_batch_images",8):
+            raise ValueError("OCR batch byte budget too small")
     meta = profile["metadata"]
     if type(meta.get("inherit_document_fields")) is not bool:
         raise ValueError("metadata.inherit_document_fields must be boolean")
