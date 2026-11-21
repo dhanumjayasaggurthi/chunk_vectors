@@ -119,11 +119,15 @@ extraction:
 ```
 
 **Different controls:** `--doc-workers` parallelizes separate PDFs.
-`ocr_workers` parallelizes GCP requests *within each document*.
-`ocr_batch_images` controls images per GCP RPC and does not change the
-image feature quota. `chart_workers` controls optional Azure vision
-descriptions independently. `page_batch_size` and
-`max_window_raster_bytes` bound in-memory page/raster work.
+`ocr_workers` sets a **process-wide concurrency ceiling** across all document
+workers; the OCR thread pools may run inside individual documents but share
+that one gate. `ocr_batch_images` controls images per GCP RPC and does not
+change the image feature quota. `chart_workers` similarly caps chart
+descriptions **across documents within a process**, separate from the OCR gate.
+`page_batch_size` and `max_window_raster_bytes` bound in-memory
+page/raster work. Azure chat quota is NOT coordinated across servers by the
+OCR quota limiter; monitor GPT chart-description 429s before running multiple
+chart-heavy hosts.
 
 Several servers using the **same GCP project** must use the **same
 PostgreSQL quota database** to obtain cross-host enforcement. Each
@@ -196,6 +200,12 @@ FROM ocr_runtime.quota;
   directory walk. The existing S3 downloader may produce local input
   files, but a first-class S3 document-level staging/discovery adapter
   with stable canonical IDs is still a separate release requirement.
+- Changing worker counts, OCR batch sizes, timeouts or RPM/IPM limits
+  **does not change the extraction-content fingerprint** and therefore does
+  not invalidate completed page checkpoints. Accuracy-affecting OCR/table
+  policies deliberately create a new checkpoint identity.
+- A significant non-chart image producing no OCR text is **quarantined** as
+  requiring visual review. Do not treat it as a successfully extracted figure.
 - An already flattened source table cannot reconstruct missing
   table-cell geometry or native page images. The new staged-page
   output retains whatever the actual PDF extractor detected.
