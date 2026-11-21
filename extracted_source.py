@@ -6,6 +6,8 @@ embedding, and profiled transactional output stages; no PDF/OCR work is needed.
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 from pathlib import Path
 
 from db import get_conn
@@ -23,6 +25,7 @@ def validate_source(profile: dict) -> dict:
             "schema", "table", "doc_id_column", "text_column",
             "page_column", "file_path_column", "file_name_column",
             "position_column", "section_column", "page_end_column",
+            "element_json_column",
             "source_columns",
         }:
             raise ValueError("Unknown extracted_content mapping: " + key)
@@ -78,7 +81,8 @@ def load_extracted_document(profile: dict, document_key):
     doc_col = _safe_identifier(cfg["doc_id_column"])
     cols = [cfg["text_column"]]
     extras = ["page_column", "page_end_column", "file_path_column",
-              "file_name_column", "position_column", "section_column"]
+              "file_name_column", "position_column", "section_column",
+              "element_json_column"]
     cols.extend(cfg[k] for k in extras if cfg.get(k))
     cols.extend(cfg.get("source_columns", {}).values())
     cols = list(dict.fromkeys(cols))
@@ -160,11 +164,51 @@ def load_extracted_document(profile: dict, document_key):
         digest.update(str(last).encode("utf-8") + b"\x00")
         digest.update(title.encode("utf-8") + b"\x00")
         digest.update(text.encode("utf-8") + b"\x00")
+        elements = None
+        if cfg.get("element_json_column"):
+            payload = row.get(cfg["element_json_column"])
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, list) or len(payload) > 50000:
+                raise ValueError("Invalid page geometry JSON array")
+            elements = []
+            for item in payload:
+                if not isinstance(item, dict) or item.get("type") not in {
+                    kind.value for kind in ElementType
+                }:
+                    raise ValueError("Unsupported staged page element type")
+                coords = item.get("bbox")
+                if (
+                    not isinstance(coords, list) or len(coords) != 4
+                    or any(type(v) not in (float,int) or not math.isfinite(v)
+                           for v in coords)
+                    or coords[0] > coords[2] or coords[1] > coords[3]
+                ):
+                    raise ValueError("Invalid staged element bounding box")
+                el = PageElement(
+                    ElementType(item["type"]), BBox(*coords),
+                    text=str(item.get("text") or ""),
+                    confidence=float(item.get("confidence",1.0)),
+                    reading_order=int(item.get("reading_order",len(elements))),
+                )
+                if "ocr_regions" in item:
+                    regions = item["ocr_regions"]
+                    if not isinstance(regions,list):
+                        raise ValueError("Invalid OCR geometry payload")
+                    el.ocr_regions = regions
+                elements.append(el)
+            digest.update(json.dumps(
+                payload,sort_keys=True,ensure_ascii=False,
+                separators=(",",":"),allow_nan=False
+            ).encode("utf-8"))
+        if elements is None:
+            elements = (
+                [PageElement(ElementType.TEXT, BBox(0,0,0,0),text=text)]
+                if text.strip() else []
+            )
         page_entry = PageContent(
             page_number=pg, width=0, height=0, raw_text=text,
-            is_blank=not text.strip(),
-            elements=[PageElement(ElementType.TEXT, BBox(0, 0, 0, 0), text=text)]
-            if text.strip() else [],
+            is_blank=not text.strip(), elements=elements,
         )
         page_entry.source_section_title = title
         page_entry.source_page_end = last
@@ -178,6 +222,6 @@ def load_extracted_document(profile: dict, document_key):
     )
     doc.source_metadata = source_metadata
     digest.update(
-        __import__("json").dumps(source_metadata, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(source_metadata, sort_keys=True, default=str).encode("utf-8")
     )
     return doc, digest.hexdigest()
