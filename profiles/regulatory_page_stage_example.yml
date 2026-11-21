@@ -16,8 +16,8 @@ extraction:
   ocr_workers: 4
   # Explicit combined limits per project ACROSS all servers using this DB.
   # Inspect live 429/error and quality data before raising.
-  ocr_requests_rpm: 900
-  ocr_images_ipm: 900
+  ocr_requests_rpm: 1500
+  ocr_images_ipm: 1500
   ocr_max_batch_bytes: 6000000
   ocr_max_retries: 4
   ocr_timeout_seconds: 90
