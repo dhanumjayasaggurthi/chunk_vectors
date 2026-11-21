@@ -32,7 +32,28 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
         p = Path(path)
         if p.stat().st_size > 128 * 1024:
             raise ValueError("Profile exceeds 128 KiB")
-        data = json.loads(p.read_text(encoding="utf-8"))
+        content = p.read_text(encoding="utf-8")
+        if p.suffix.lower() in (".yml", ".yaml"):
+            try:
+                import yaml
+            except ImportError as exc:
+                raise ValueError("Install PyYAML to use YAML intake profiles") from exc
+            class UniqueLoader(yaml.SafeLoader):
+                pass
+            def unique_mapping(loader, node):
+                loader.flatten_mapping(node)
+                result = {}
+                for k, v in node.value:
+                    key = loader.construct_object(k, deep=True)
+                    if not isinstance(key, str) or key in result:
+                        raise ValueError("Invalid or duplicate YAML mapping key")
+                    result[key] = loader.construct_object(v, deep=True)
+                return result
+            UniqueLoader.add_constructor(
+                yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, unique_mapping)
+            data = yaml.load(content, Loader=UniqueLoader)
+        else:
+            data = json.loads(content)
         if not isinstance(data, dict):
             raise ValueError("Profile root must be an object")
     result = copy.deepcopy(_DEFAULTS)
@@ -85,13 +106,14 @@ def validate_profile(profile: dict) -> None:
         "embedding": {"enabled", "reuse_existing", "batch_size",
                       "dimensions", "deployment", "model", "progress_every_batches",
                       "batch_tokens", "rpm", "tpm", "max_attempts",
-                      "timeout_seconds", "lease_seconds", "enqueue_page_size"},
+                      "timeout_seconds", "lease_seconds", "enqueue_page_size",
+                      "input_fields", "input_max_tokens"},
         "metadata": {"document", "chunk", "inherit_document_fields"},
         "existing_chunks": {"schema", "table", "id_column", "text_column",
                             "vector_column", "note_column"},
         "extracted_content": {"schema", "table", "doc_id_column", "text_column",
                               "page_column", "position_column", "file_path_column", "file_name_column"},
-        "output": set(),
+        "output": {"schema", "table"},
     }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -144,6 +166,37 @@ def validate_profile(profile: dict) -> None:
         or not 1 <= emb["progress_every_batches"] <= 10000
     ):
         raise ValueError("embedding.progress_every_batches must be a positive integer")
+    if "input_fields" in emb:
+        fields = emb["input_fields"]
+        valid_field = re.compile(
+            r"^(chunk_text|section_title|file_name|file_path|"
+            r"(?:document|chunk|source)\.[a-z][a-z0-9_]{0,63})$"
+        )
+        if (not isinstance(fields, list) or not 1 <= len(fields) <= 32
+                or not all(isinstance(f, str) and valid_field.fullmatch(f) for f in fields)
+                or len(set(fields)) != len(fields)
+                or "chunk_text" not in fields):
+            raise ValueError("embedding.input_fields must include chunk_text and valid, unique fields")
+    if "input_max_tokens" in emb:
+        if type(emb["input_max_tokens"]) is not int or not 100 <= emb["input_max_tokens"] <= 8000:
+            raise ValueError("embedding.input_max_tokens must be 100..8000")
+    output = profile["output"]
+    if output:
+        if not output.get("schema") or not output.get("table"):
+            raise ValueError("output.schema and output.table are required together")
+        for value in (output["schema"], output["table"]):
+            if not isinstance(value, str) or not re.fullmatch(r"[a-z_][a-z0-9_]{0,49}", value, re.I):
+                raise ValueError("Invalid output table identifier")
+    source = profile["extracted_content"]
+    if "source_columns" in source:
+        mapping = source["source_columns"]
+        if not isinstance(mapping, dict) or len(mapping) > 50:
+            raise ValueError("extracted_content.source_columns must be a mapping of <=50 fields")
+        for key, col in mapping.items():
+            if (not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key)
+                    or not isinstance(col, str)
+                    or not re.fullmatch(r"[a-z_][a-z0-9_]*", col, re.I)):
+                raise ValueError("Invalid source_columns mapping")
     meta = profile["metadata"]
     if type(meta.get("inherit_document_fields")) is not bool:
         raise ValueError("metadata.inherit_document_fields must be boolean")
