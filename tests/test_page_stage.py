@@ -214,6 +214,25 @@ class TestStageValidation(unittest.TestCase):
         self.assertNotIn("extraction",old)
         self.assertEqual(old["embedding"]["tpm"],900000)
 
+    def test_throttle_tuning_does_not_invalidate_extraction_checkpoints(self):
+        from page_stage import extraction_fingerprint
+        p=staging_profile()
+        baseline=extraction_fingerprint(p)
+        p["extraction"].update(
+            ocr_workers=12,ocr_batch_images=16,
+            ocr_requests_rpm=250,ocr_images_ipm=250,
+            page_batch_size=8,max_window_raster_bytes=90_000_000,
+            chart_workers=8,ocr_timeout_seconds=180,
+        )
+        p["chunking"]["max_tokens"]=1200
+        p["embedding"]["input_fields"]=["chunk_text"]
+        self.assertEqual(extraction_fingerprint(p),baseline)
+        p["extraction"]["ocr_confidence_min"]=0.9
+        self.assertNotEqual(extraction_fingerprint(p),baseline)
+        p["extraction"]["ocr_confidence_min"]=0.6
+        p["extraction"]["table_summaries_enabled"]=True
+        self.assertNotEqual(extraction_fingerprint(p),baseline)
+
     def test_page_stage_is_read_only_when_init_without_apply(self):
         from page_stage import init
         p=staging_profile()
