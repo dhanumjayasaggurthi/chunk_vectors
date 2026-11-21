@@ -47,6 +47,55 @@ class TestTableSummaryOnePass(unittest.TestCase):
         self.assertEqual(calls,{"extract":1,"summarize":1})
         self.assertEqual(result[0].summary,"Approved table summary")
 
+    def test_pdf_table_batch_opens_once_and_releases_page_cache(self):
+        from table_extractor import extract_tables_for_pages, TableExtractor
+        pages = []
+        for n in range(3):
+            p=types.SimpleNamespace(
+                extract_tables=lambda *args: [[["A", "B"],["X", "Y"]]],
+                close=lambda:None,
+            )
+            p.closed=False
+            p.close=lambda p=p: setattr(p,"closed",True)
+            pages.append(p)
+        opened=[]
+        class MockPDF:
+            def __enter__(self):
+                opened.append(1)
+                return self
+            def __exit__(self,*args):
+                pass
+        pdf=MockPDF()
+        pdf.pages=pages
+        def process(self,cells,page_number,table_index,context):
+            return types.SimpleNamespace(page_number=page_number,summary="")
+        with patch("table_extractor._pdfplumber",
+                   return_value=types.SimpleNamespace(open=lambda path:pdf)):
+            with patch.object(TableExtractor,"_process_table",new=process):
+                output,errors=extract_tables_for_pages(
+                    "sample.pdf",[1,3],{1:"before",3:"after"})
+        self.assertEqual(len(opened),1)
+        self.assertEqual(errors,{})
+        self.assertEqual(sorted(output),[1,3])
+        self.assertTrue(pages[0].closed)
+        self.assertFalse(pages[1].closed)
+        self.assertTrue(pages[2].closed)
+
+    def test_ocr_low_confidence_is_not_accepted_in_strict_mode(self):
+        from vision_ocr import ocr_page_elements,OcrResult
+        from pdf_processor import ElementType
+        element=types.SimpleNamespace(
+            element_type=ElementType.IMAGE,image_bytes=b"synthetic",
+            text="",confidence=0.0
+        )
+        result=OcrResult(
+            text="",confidence=0.12,word_count=15,language="en",
+            success=True,error="low_confidence_0.12",
+        )
+        with patch("vision_ocr.ocr_image_bytes",return_value=result):
+            with self.assertRaisesRegex(RuntimeError,"OCR_UNRESOLVED"):
+                ocr_page_elements([element],"sample.pdf",3,raise_on_error=True)
+
     def test_metadata_required_and_evidence(self):
         from metadata_extractor import attach_metadata
         from pdf_processor import ElementType
