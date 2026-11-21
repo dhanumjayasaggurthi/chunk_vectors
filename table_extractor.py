@@ -503,6 +503,60 @@ def extract_tables_for_page(
         return []
 
 
+def extract_tables_for_pages(
+    file_path: str,
+    page_numbers: list[int],
+    context_by_page: dict[int, str] | None = None,
+) -> tuple[dict[int, list[TableResult]], dict[int, str]]:
+    """Batch many PDF pages using ONE pdfplumber document handle.
+
+    Existing extraction/table serialization logic is reused. No GPT calls
+    while a PDF handle is open. Errors are isolated per page and returned
+    to the caller, so document completeness cannot silently pass.
+    A caller should submit a bounded list (default 32 pages).
+    """
+    if not page_numbers:
+        return {}, {}
+    if len(page_numbers) > 256 or len(set(page_numbers)) != len(page_numbers):
+        raise ValueError("Table page batch must contain 1..256 distinct pages")
+    if any(type(page) is not int or page < 1 for page in page_numbers):
+        raise ValueError("Invalid table page number")
+    context_by_page = context_by_page or {}
+    extractor = TableExtractor(file_path, summarise=False)
+    pdfplumber = _pdfplumber()
+    output = {}
+    errors = {}
+    try:
+        with pdfplumber.open(file_path) as doc:
+            for page_number in page_numbers:
+                if page_number > len(doc.pages):
+                    errors[page_number] = "Page outside PDF bounds"
+                    continue
+                page = None
+                try:
+                    page = doc.pages[page_number - 1]
+                    tables = page.extract_tables(TABLE_SETTINGS)
+                    results = []
+                    for idx, cells in enumerate(tables or []):
+                        result = extractor._process_table(
+                            cells, page_number, idx,
+                            context_by_page.get(page_number, "")
+                        )
+                        if result:
+                            results.append(result)
+                    output[page_number] = results
+                except Exception as exc:
+                    errors[page_number] = f"{type(exc).__name__}: {str(exc)[:300]}"
+                finally:
+                    if page is not None and hasattr(page, "close"):
+                        page.close()  # release pdfplumber per-page layout caches
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {str(exc)[:300]}"
+        for page_number in page_numbers:
+            errors.setdefault(page_number, message)
+    return output, errors
+
+
 def inject_table_text_into_elements(
     elements:     list,
     table_results: list[TableResult],
