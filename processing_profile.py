@@ -114,7 +114,8 @@ def validate_profile(profile: dict) -> None:
                             "vector_column", "note_column"},
         "extracted_content": {"schema", "table", "doc_id_column", "text_column",
                               "page_column", "position_column", "file_path_column",
-                              "file_name_column", "element_json_column", "section_column",
+                              "file_name_column", "element_json_column", "width_column",
+                              "height_column", "rotation_column", "section_column",
                               "page_end_column", "source_columns"},
         "output": {"schema", "table"},
     }
