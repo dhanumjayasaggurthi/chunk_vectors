@@ -128,6 +128,7 @@ def validate_profile(profile: dict) -> None:
             "ocr_bbox_detail", "ocr_confidence_min",
             "chart_descriptions_enabled", "table_summaries_enabled",
             "max_quota_wait_seconds", "ocr_enabled",
+            "max_window_raster_bytes", "max_render_pixels",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -232,6 +233,8 @@ def validate_profile(profile: dict) -> None:
             "ocr_max_batch_bytes":(100000,8500000),
             "ocr_max_retries":(1,10), "ocr_timeout_seconds":(5,600),
             "max_quota_wait_seconds":(1,3600),
+            "max_window_raster_bytes":(10_000_000,1_000_000_000),
+            "max_render_pixels":(1_000_000,75_000_000),
         }
         for field,(low,high) in limits.items():
             if field in extract and (
