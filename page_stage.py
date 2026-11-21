@@ -512,9 +512,20 @@ def _tables(pages, path, cfg):
     if not candidates:
         return {}
     context={pn:p.raw_text for pn,p in candidates.items()}
-    table_map, failures=extract_tables_for_pages(
-        path,list(candidates),context,
-    )
+    # Strict PDFProcessor already extracted table cells and bboxes using
+    # its live pdfplumber page. Avoid another PDF open and second find_tables.
+    # Preserve the older extraction fallback for any legacy PageContent input.
+    precomputed = {
+        pn:getattr(page,"staged_table_results",None)
+        for pn,page in candidates.items()
+    }
+    missing=[pn for pn,results in precomputed.items() if results is None]
+    table_map={pn:results for pn,results in precomputed.items()
+               if results is not None}
+    failures={}
+    if missing:
+        extracted, failures = extract_tables_for_pages(path,missing,context)
+        table_map.update(extracted)
     for pn, results in table_map.items():
         if not results:
             failures[pn]="Detected table has no recoverable cells"
