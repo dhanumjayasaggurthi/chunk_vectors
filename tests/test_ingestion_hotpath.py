@@ -49,8 +49,12 @@ class TestTableSummaryOnePass(unittest.TestCase):
 
     def test_metadata_required_and_evidence(self):
         from metadata_extractor import attach_metadata
-        page=types.SimpleNamespace(page_number=1,raw_text="Protocol Number: ABC-123",
-                                   elements=[],is_blank=False,error="")
+        from pdf_processor import ElementType
+        page=types.SimpleNamespace(
+            page_number=1,raw_text="Protocol Number: ABC-123",
+            elements=[types.SimpleNamespace(
+                element_type=ElementType.TEXT,text="Protocol Number: ABC-123"
+            )],is_blank=False,error="")
         struct=types.SimpleNamespace(pages=[page])
         chunk=types.SimpleNamespace(
             chunk_text="Study text",section_title="Study",headers=[],
@@ -69,6 +73,7 @@ class TestTableSummaryOnePass(unittest.TestCase):
         self.assertEqual(struct.metadata_evidence["protocol_number"]["page"],1)
         self.assertEqual(chunk.document_metadata["protocol_number"],"ABC-123")
         page.raw_text="No matching document metadata"
+        page.elements[0].text="No matching document metadata"
         with self.assertRaisesRegex(ValueError,"Required document metadata"):
             attach_metadata(struct,[chunk],policy)
 
