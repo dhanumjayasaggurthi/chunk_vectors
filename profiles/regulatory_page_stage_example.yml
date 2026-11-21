@@ -32,6 +32,7 @@ extraction:
   table_summaries_enabled: false
   # Charts must have OCR labels AND a description, or the page fails review.
   chart_descriptions_enabled: true
+  chart_workers: 4
 
 extracted_content:
   schema: palm_paw
