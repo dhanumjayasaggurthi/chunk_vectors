@@ -441,6 +441,18 @@ def _ocr_pages(pages, cfg, limiter):
                     element.text=response.text
                     element.confidence=response.confidence
                     element.ocr_regions=response.regions
+                    if (element.element_type==ElementType.IMAGE
+                            and not response.text.strip()):
+                        # A non-text figure or unreadable regulatory label is
+                        # not equivalent to successful extraction. It must be
+                        # reviewed or handled by an explicitly approved
+                        # visual-description policy before publication.
+                        errors[page.page_number]=RuntimeError(
+                            "IMAGE_REGION_UNRESOLVED: no text or visual "
+                            "description; review required"
+                        )
+                        element.image_bytes=b""
+                        continue
                     if element.element_type==ElementType.CHART:
                         if not cfg["chart_descriptions_enabled"]:
                             errors[page.page_number]=ValueError(
