@@ -1,0 +1,67 @@
+name: Ingestion v2 isolated foundation tests
+on:
+  push:
+    branches: [feat/ingestion-v2-foundation]
+  pull_request:
+    paths:
+      - 'ingestion_v2/**'
+      - 'scripts/check_gcp_quotas.py'
+      - 'profiles/ingestion_v2_general.json'
+      - 'profiles/document_pipeline_use_case.yml'
+      - 'ingestion_v2/sql/**'
+      - 'tests/test_ingestion_v2*.py'
+      - '.github/workflows/ingestion-v2-tests.yml'
+
+jobs:
+  native-extraction-and-chunking:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.13']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install native PDF, tokenization and YAML packages
+        run: python -m pip install --upgrade pip pymupdf "tiktoken>=0.7,<1" "PyYAML>=6.0.2,<7" "psycopg2-binary>=2.9,<3" "google-auth>=2.20,<4"
+      - name: Python syntax checks
+        run: python -m compileall -q ingestion_v2 scripts/check_gcp_quotas.py
+      - name: Deterministic unit and real-PDF integration tests
+        run: python -m unittest discover -s tests -p "test_ingestion_v2*.py" -v
+      - name: Google Cloud key selection and quota error tests (offline)
+        run: python -m unittest discover -s tests -p "test_check_gcp_quotas.py" -v
+
+  postgres-ledger-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: ingestion_v2_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ingestion_v2_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: test
+      PGDATABASE: ingestion_v2_ci
+      INGESTION_V2_TEST_DB: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install database client and PDF parser
+        run: python -m pip install "psycopg2-binary>=2.9,<3" "pymupdf>=1.24,<2"
+      - name: Run durable PostgreSQL ledger integration tests
+        run: python -m unittest discover -s tests -p 'test_ingestion_v2_*integration.py' -v

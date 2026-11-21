@@ -1,0 +1,166 @@
+# DOCUMENT PROCESSING | USE-CASE CONFIGURATION
+# Contract version 1. Complete business sections first; platform engineering
+# reviews the technical settings. This file contains NO credentials.
+#
+# Current ingestion-v2 pilot executes only: native-PDF extraction, token-aware
+# chunking and deterministic metadata rules. All other requirements below are
+# recorded for design/approval but are NOT automatically executed.
+#
+# Do not change approval.status to pilot_approved without the data owner's sign-off.
+schema_version: 1
+profile_id: regulatory_protocol_search_v1
+approval:
+  status: draft                  # draft | pilot_approved
+  business_approver: null
+  data_owner_approver: null
+  approved_date: null           # e.g. "2026-11-30"
+
+# SECTION A — consumer requirements
+use_case:
+  name: "Regulatory document evidence search"   # Replace with your use case
+  business_unit: "REPLACE WITH TEAM"
+  business_owner: "REPLACE WITH OWNER"
+  technical_contact: "REPLACE WITH CONTACT"
+  purpose: "Find source-grounded answers in regulatory submissions."
+  outputs: [document_metadata, chunked_text, evidence_search]
+  priority: standard            # standard | high | critical
+  desired_pilot_date: null
+
+source:
+  type: s3                      # s3 | nas | database | sharepoint | other
+  uri: "s3://REPLACE-BUCKET/REPLACE-PREFIX/"
+  document_id_rule: source_uri  # stable document identity across reprocessing
+  formats: [pdf]
+  languages: [en]
+  classification: confidential # internal | confidential | regulated
+  expected_volume:
+    documents_total: 1000000
+    new_documents_per_day: 100
+    typical_pages: 200
+    maximum_pages: 25000
+  sample_documents:             # Approved links only; no secrets or raw document bytes
+    - type: typical
+      uri: "s3://REPLACE-BUCKET/samples/typical.pdf"
+    - type: complex
+      uri: "s3://REPLACE-BUCKET/samples/tables-and-scans.pdf"
+    - type: large
+      uri: "s3://REPLACE-BUCKET/samples/large.pdf"
+
+content_requirements:
+  preserve: [heading_hierarchy, paragraphs, tables, figures, page_numbers, bounding_boxes]
+  cross_page_paragraphs: required
+  cross_page_tables: required
+  missing_or_ambiguous_content: flag_for_review
+  exclude_from_search: [repeating_headers, repeating_footers]
+
+# Consumer-defined document-level fields. Examples are schema guidance, never
+# substitutes for actual evidence from the document. Add or disable fields.
+metadata:
+  enabled: true
+  fields:
+    protocol_number:
+      enabled: true
+      type: string
+      method: label             # supported in pilot: label | regex
+      label: "Protocol Number"
+      first_pages: 15
+      required: true
+      sample_values: ["ABC-2026-001"]
+    application_number:
+      enabled: true
+      type: string
+      method: regex
+      pattern: '(?i)Application\s+(?:No\.?|Number):?\s*([A-Z0-9-]+)'
+      first_pages: 20
+      required: false
+      sample_values: ["NDA-123456"]
+    study_phase:
+      enabled: false
+      type: enum
+      method: label
+      label: "Study Phase"
+      first_pages: 20
+      required: false
+      allowed_values: ["Phase I", "Phase II", "Phase III", "Phase IV"]
+      sample_values: ["Phase III"]
+
+search_requirements:
+  example_questions:
+    - question: "What is the protocol number and where is it stated?"
+      expected_evidence: "Protocol title page with page citation"
+      filters: [protocol_number]
+    - question: "Find the inclusion criteria for this study."
+      expected_evidence: "Relevant section, page and supporting excerpt"
+      filters: []
+  results_should_include: [source_document, page, excerpt, bounding_box]
+  access_model: document_level # document_level | team | approved_users
+
+acceptance:
+  required_field_accuracy_target: 0.95  # Proposed pilot goal, confirm with owner
+  evidence_citation_required: true
+  no_silent_partial_extraction: true
+  max_turnaround_hours_for_25000_pages: null  # Consumer to set realistic SLA
+  review_owner: "REPLACE WITH SME"
+
+security:
+  data_residency: "REPLACE WITH APPROVED REGION"
+  external_ai_processing_approved: false
+  retention_days: null
+  security_policy_reference: null
+
+# SECTION B — platform technical policy (reviewed by engineering)
+# These keys are directly supported by ingestion-v2 native pilot.
+extraction:
+  range_pages: 32
+  native_text_min_chars: 100
+  cpu_processes: 2
+  gcp_workers: 2                # reserved; GCP dispatch is NOT implemented
+  ocr_dpi: 150                  # reserved; OCR is NOT implemented
+  max_attempts: 5
+  lease_seconds: 600            # reserved for future distributed leases
+
+chunking:
+  target_tokens: 600
+  max_tokens: 800
+  min_tokens: 100
+  overlap_tokens: 80
+  tokenizer: cl100k_base
+  include_headings: true
+  split_oversized_tables: true
+
+# These are design requirements, NOT switches to execute the stages today.
+embedding_request:
+  desired: true
+  model_family: text-embedding-3-small
+  dimensions: 1536
+  text_fields: [chunk_text, section_title, protocol_number]
+  filter_only_fields: [study_phase, source_document_id]
+  retrieval_strategy: hybrid    # vector | keyword | hybrid
+  embedding_model_change: create_new_index
+
+output_request:
+  storage: postgresql
+  target_schema: "REPLACE_WITH_SCHEMA"
+  target_table: "REPLACE_WITH_NEW_VERSIONED_TABLE"
+  preserve_previous_version: true
+  source_traceability: [document_id, source_version, page, element_id, bounding_box]
+
+# Features the consumer needs in the finished solution; these do not execute.
+requested_future_features:
+  gcp_ocr: true
+  cross_page_layout_stitching: true
+  table_and_figure_structure: true
+  ai_metadata_fallback: false
+  distributed_multi_server_workers: true
+  postgres_publication: true
+  embeddings: true
+
+# Safety gate. The native pilot does NOT perform network OCR, vectorization
+# or database writes; setting those stages to true fails validation.
+execution:
+  mode: native_pdf_pilot
+  native_pdf: true
+  gcp_ocr: false
+  ai_metadata: false
+  postgres_write: false
+  embedding: false
