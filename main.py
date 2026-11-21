@@ -267,13 +267,16 @@ def _extract_tables_for_page_guarded(
         )
 
     if summarise and results:
-        # Summarise outside the pdfplumber lock — GPT-4o call is pure network
+        # Do not re-open/re-parse the PDF to add summaries: the original code
+        # called extract_tables_for_page twice for every candidate page.
+        # The network-only helper consumes the tables already extracted above.
+        from table_extractor import _summarise_table_with_gpt4o
         with _SEM_GPT4O:
-            results = extract_tables_for_page(
-                file_path, page_number,
-                context_text=context_text,
-                summarise=True,
-            )
+            for table in results:
+                if table.markdown:
+                    table.summary = _summarise_table_with_gpt4o(
+                        table.markdown, context_text
+                    )
     return results
 
 
