@@ -11,6 +11,10 @@ extraction:
   schema: palm_paw
   table: regulatory_pages_pilot_v1
   page_batch_size: 32
+  # Max encoded raster bytes held per window; window shrinks automatically
+  # when scanned/image-heavy pages are encountered.
+  max_window_raster_bytes: 160000000
+  max_render_pixels: 50000000
   ocr_enabled: true
   ocr_batch_images: 8
   ocr_workers: 4
