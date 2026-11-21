@@ -380,7 +380,7 @@ class PDFProcessor:
         fitz = _fitz()
         pdfplumber = _pdfplumber()
         completed = completed_pages or set()
-        with fitz.open(self.file_path) as doc:
+        with fitz.open(self.file_path) as doc, pdfplumber.open(self.file_path) as plumb_doc:
             if doc.is_encrypted:
                 raise ValueError("Password-protected PDF cannot be staged")
             toc = self._extract_toc(doc)
@@ -393,19 +393,18 @@ class PDFProcessor:
                 if not numbers:
                     continue
                 pages = []
-                # pdfplumber.Page.close() releases its cached layout objects.
-                # Only one PDF handle per bounded window (not once per page).
-                with pdfplumber.open(self.file_path) as plumb_doc:
-                    for i in numbers:
-                        plumb_page = plumb_doc.pages[i]
-                        try:
-                            page = self._process_page(
-                                doc, i, plumb_page=plumb_page
-                            )
-                        finally:
-                            if hasattr(plumb_page, "close"):
-                                plumb_page.close()
-                        pages.append(page)
+                # Reuse TWO handles for the entire file, but release each
+                # pdfplumber page's heavy layout cache immediately.
+                for i in numbers:
+                    plumb_page = plumb_doc.pages[i]
+                    try:
+                        page = self._process_page(
+                            doc, i, plumb_page=plumb_page
+                        )
+                    finally:
+                        if hasattr(plumb_page, "close"):
+                            plumb_page.close()
+                    pages.append(page)
                 yield DocumentStructure(
                     file_path=self.file_path,
                     file_name=self.file_name,
