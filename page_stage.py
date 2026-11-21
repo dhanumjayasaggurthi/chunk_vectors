@@ -525,7 +525,12 @@ def _tables(pages, path, cfg):
                     table.summary=_summarise_table_with_gpt4o(
                         table.markdown,context.get(pn,""),
                     )
-        inject_table_text_into_elements(candidates[pn].elements,results)
+        try:
+            inject_table_text_into_elements(
+                candidates[pn].elements,results,strict=True,
+            )
+        except (ValueError, RuntimeError) as exc:
+            failures[pn]=str(exc)
     return {pn:RuntimeError(message) for pn,message in failures.items()}
 
 
