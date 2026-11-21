@@ -40,13 +40,17 @@ def _units(struct):
         if toc_entries:
             first = toc_entries[0]
             headings = headings[:max(0, first.level - 1)] + [first.title]
+        source_title = getattr(page, "source_section_title", "")
+        if source_title:
+            headings = [source_title]
+        source_end = getattr(page, "source_page_end", page.page_number)
         elements = [element for element in page.elements if element.text]
         if not elements and page.raw_text:
-            yield (page.raw_text.strip(), page.page_number, tuple(headings), "text")
+            yield (page.raw_text.strip(), page.page_number, tuple(headings), "text", source_end)
         for element in elements:
             kind = getattr(element.element_type, "value", str(element.element_type))
             if kind != "text":
-                yield (element.text.strip(), page.page_number, tuple(headings), kind)
+                yield (element.text.strip(), page.page_number, tuple(headings), kind, source_end)
                 continue
             # Preserve paragraphs where the extractor provided them.
             for paragraph in re.split(r"\n\s*\n", element.text):
@@ -59,15 +63,15 @@ def _units(struct):
                     matched = _heading(line, known_titles)
                     if matched:
                         if buffer:
-                            yield (" ".join(buffer), page.page_number, tuple(headings), kind)
+                            yield (" ".join(buffer), page.page_number, tuple(headings), kind, source_end)
                             buffer = []
                         depth, title = matched
                         headings = headings[:depth - 1] + [title]
-                        yield (title, page.page_number, tuple(headings), kind)
+                        yield (title, page.page_number, tuple(headings), kind, source_end)
                     else:
                         buffer.append(line.strip())
                 if buffer:
-                    yield (" ".join(buffer), page.page_number, tuple(headings), kind)
+                    yield (" ".join(buffer), page.page_number, tuple(headings), kind, source_end)
 
 
 def chunk_with_profile(struct, policy: dict) -> list[Chunk]:
@@ -112,13 +116,13 @@ def chunk_with_profile(struct, policy: dict) -> list[Chunk]:
             chunk_total=0, chunk_level="section" if headers else "page",
             section_title=parts[0][2][-1] if parts[0][2] else "",
             page_start=min(item[1] for item in parts),
-            page_end=max(item[1] for item in parts),
+            page_end=max(item[4] for item in parts),
             content_types=kind, chunk_text=value,
         )
         chunk.headers = headers
         emitted.append(chunk)
 
-    for text, page, path, kind in _units(struct):
+    for text, page, path, kind, page_end in _units(struct):
         if not text:
             continue
         # Ensure an oversized individual block never forces silent truncation.
@@ -152,7 +156,7 @@ def chunk_with_profile(struct, policy: dict) -> list[Chunk]:
             if current.strip():
                 pieces.append(current.strip())
         for piece in pieces:
-            unit = (piece, page, path, kind)
+            unit = (piece, page, path, kind, page_end)
             if pending:
                 new_section = path != pending[-1][2]
                 overflow = len(tokens(render(pending + [unit]))) > maximum
@@ -163,7 +167,8 @@ def chunk_with_profile(struct, policy: dict) -> list[Chunk]:
                     if overflow and not new_section and overlap:
                         previous_ids = tokens(previous[-1][0])
                         tail = encoder.decode(previous_ids[-overlap:])
-                        carry = (tail, previous[-1][1], previous[-1][2], previous[-1][3])
+                        carry = (tail, previous[-1][1], previous[-1][2], previous[-1][3],
+                                 previous[-1][4])
                         if len(tokens(render([carry, unit]))) <= maximum:
                             pending = [carry]
             pending.append(unit)
