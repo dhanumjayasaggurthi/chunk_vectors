@@ -112,7 +112,9 @@ def validate_profile(profile: dict) -> None:
         "existing_chunks": {"schema", "table", "id_column", "text_column",
                             "vector_column", "note_column"},
         "extracted_content": {"schema", "table", "doc_id_column", "text_column",
-                              "page_column", "position_column", "file_path_column", "file_name_column"},
+                              "page_column", "position_column", "file_path_column",
+                              "file_name_column", "section_column",
+                              "page_end_column", "source_columns"},
         "output": {"schema", "table"},
     }
     for section, allowed in allowed_nested.items():
