@@ -493,7 +493,9 @@ class PDFProcessor:
         image_elements: list[PageElement] = []
         try:
             img_list = page.get_images(full=True)
-        except Exception:
+        except Exception as e:
+            if self.strict:
+                raise RuntimeError(f"Image inventory failed p{page_number}: {e}") from e
             img_list = []
 
         for img_info in img_list:
@@ -538,11 +540,19 @@ class PDFProcessor:
                 self.dlog.debug(
                     f"Page {page_number}: image geometry error xref={xref}: {e}"
                 )
+                if self.strict:
+                    raise RuntimeError(
+                        f"Image geometry failed p{page_number} xref={xref}: {e}"
+                    ) from e
                 continue
             except Exception as e:
                 self.dlog.debug(
                     f"Page {page_number}: image extract error xref={xref}: {e}"
                 )
+                if self.strict:
+                    raise RuntimeError(
+                        f"Image extract failed p{page_number} xref={xref}: {e}"
+                    ) from e
                 continue
             finally:
                 # Explicitly free C-heap pixmap memory — critical for 6500+ page
@@ -570,6 +580,10 @@ class PDFProcessor:
                 image_elements = [whole_page_el]   # replace partial images
             except Exception as e:
                 self.dlog.warning(f"Page {page_number}: full-page render failed: {e}")
+                if self.strict:
+                    raise RuntimeError(
+                        f"Full-page OCR render failed p{page_number}: {e}"
+                    ) from e
             finally:
                 pix = None   # free C-heap memory immediately
 
