@@ -47,7 +47,7 @@ def settings(profile):
     names(profile)
     result = {
         "page_batch_size":32, "ocr_batch_images":8, "ocr_workers":4,
-        "ocr_requests_rpm":900, "ocr_images_ipm":900,
+        "ocr_requests_rpm":1500, "ocr_images_ipm":1500,
         "ocr_max_batch_bytes":6000000, "ocr_max_retries":4,
         "ocr_timeout_seconds":90, "ocr_bbox_detail":"word",
         "ocr_confidence_min":0.60, "max_quota_wait_seconds":600,
