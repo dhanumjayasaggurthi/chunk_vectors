@@ -149,11 +149,34 @@ Or specify the project explicitly:
 ./venv/bin/python ../rimdocs_ingestion_v2_pilot/scripts/check_gcp_quotas.py --project YOUR_GCP_PROJECT_ID --json
 ```
 
-This uses `GET` requests to Cloud Quotas, never enables APIs, submits
-OCR jobs or changes quotas. The service account must have
-`cloudquotas.quotas.get`. The Cloud Quotas API needs to be enabled
-by a project administrator. A permissions failure is NOT evidence of
-unlimited or zero quota.
+This script now **loads the actual service-account JSON directly** from
+`[GCP] gcp_key_path`, matching the production Vision OCR credential
+precedence (explicit `--key-file` overrides all sources;
+`GOOGLE_APPLICATION_CREDENTIALS` wins over implicit config.ini). Relative
+`gcp_key_path` values resolve from the working directory or config file
+directory. A local `gcp_key.json` is recognized as a last fallback.
+
+On Windows PowerShell, run from the application's current directory:
+
+```powershell
+python scripts/check_gcp_quotas.py --check-config
+python scripts/check_gcp_quotas.py --service vision
+# Optional explicit key, if the configured path differs:
+python scripts/check_gcp_quotas.py --key-file "C:\\secure\\gcp_key.json" --service vision
+```
+
+`--check-config` reads and validates the key identity without making
+a network call. The quota call prints the service-account email and
+project ID (never the private key), and reports HTTP authorization codes
+for Vision and Document AI independently. **A 403 is not a quota limit**:
+the exact service account may need `roles/cloudquotas.viewer`, and
+`cloudquotas.googleapis.com` must be enabled on the target project.
+
+The script only performs Cloud Quotas `GET` requests. It does not enable
+APIs, submit OCR jobs, change quota limits or touch production tables.
+If the OCR key lacks quota inspection rights, an administrator can run the
+read-only `gcloud` alternative instead; don't grant broad roles or
+replace the working OCR credentials merely to inspect quotas.
 
 Alternative for cloud administrators using `gcloud`:
 
