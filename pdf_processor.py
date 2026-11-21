@@ -252,7 +252,10 @@ class PDFProcessor:
         file_path: str,
         doc_id:    str,
         file_name: str,
+        *,
+        strict: bool = False,
     ):
+        self.strict = strict
         self.file_path = file_path
         self.doc_id    = doc_id
         self.file_name = file_name
@@ -359,7 +362,61 @@ class PDFProcessor:
 
     # ── Single page ───────────────────────────────────────────────────────────
 
-    def _process_page(self, doc, page_num: int) -> PageContent:
+    def iter_page_batches(
+        self,
+        batch_pages: int = 32,
+        completed_pages: set[int] | None = None,
+    ):
+        """Yield bounded, still-incomplete PDF pages.
+
+        A PyMuPDF document is reused for the file lifetime, and a pdfplumber
+        document is reused within a bounded window, not reopened per page.
+        The caller must finish OCR, table extraction and persistence before
+        requesting another window; no complete-document image collection is
+        allocated. This is an opt-in route, leaving process() unchanged.
+        """
+        if type(batch_pages) is not int or not 1 <= batch_pages <= 128:
+            raise ValueError("batch_pages must be 1..128")
+        fitz = _fitz()
+        pdfplumber = _pdfplumber()
+        completed = completed_pages or set()
+        with fitz.open(self.file_path) as doc:
+            if doc.is_encrypted:
+                raise ValueError("Password-protected PDF cannot be staged")
+            toc = self._extract_toc(doc)
+            count = doc.page_count
+            for start in range(0, count, batch_pages):
+                numbers = [
+                    i for i in range(start, min(count, start + batch_pages))
+                    if i + 1 not in completed
+                ]
+                if not numbers:
+                    continue
+                pages = []
+                # pdfplumber.Page.close() releases its cached layout objects.
+                # Only one PDF handle per bounded window (not once per page).
+                with pdfplumber.open(self.file_path) as plumb_doc:
+                    for i in numbers:
+                        plumb_page = plumb_doc.pages[i]
+                        try:
+                            page = self._process_page(
+                                doc, i, plumb_page=plumb_page
+                            )
+                        finally:
+                            if hasattr(plumb_page, "close"):
+                                plumb_page.close()
+                        pages.append(page)
+                yield DocumentStructure(
+                    file_path=self.file_path,
+                    file_name=self.file_name,
+                    doc_id=self.doc_id,
+                    page_count=count,
+                    toc=toc,
+                    has_toc=bool(toc),
+                    pages=pages,
+                )
+
+    def _process_page(self, doc, page_num: int, *, plumb_page=None) -> PageContent:
         """
         Analyse one page. Returns PageContent.
         Never raises — all errors are caught and stored in PageContent.error.
@@ -367,7 +424,7 @@ class PDFProcessor:
         page_1based = page_num + 1
         try:
             page = doc[page_num]
-            return self._analyse_page(page, page_1based)
+            return self._analyse_page(page, page_1based, plumb_page=plumb_page)
         except Exception as e:
             self.dlog.error(
                 f"Page {page_1based} failed: {e}",
@@ -380,7 +437,7 @@ class PDFProcessor:
                 error=str(e),
             )
 
-    def _analyse_page(self, page, page_number: int) -> PageContent:
+    def _analyse_page(self, page, page_number: int, *, plumb_page=None) -> PageContent:
         """Core per-page analysis — text, images, tables, reading order."""
         fitz = _fitz()
         rect   = page.rect
@@ -391,6 +448,7 @@ class PDFProcessor:
             width=width,
             height=height,
         )
+        pc.rotation = int(page.rotation)
 
         # ── 1. Extract raw text dict (blocks with bboxes + font info) ────────
         try:
@@ -517,7 +575,7 @@ class PDFProcessor:
                 pix = None   # free C-heap memory immediately
 
         # ── 5. Table region detection (bounding boxes only — pdfplumber extracts) ─
-        table_bboxes = self._detect_table_regions(page)
+        table_bboxes = self._detect_table_regions(page, plumb_page=plumb_page)
         table_elements: list[PageElement] = []
         for tb in table_bboxes:
             el = PageElement(
@@ -556,25 +614,24 @@ class PDFProcessor:
 
     # ── Table region detection ────────────────────────────────────────────────
 
-    def _detect_table_regions(self, page) -> list[BBox]:
+    def _detect_table_regions(self, page, *, plumb_page=None) -> list[BBox]:
+        """Find native table bounding boxes while reusing a caller-owned
+        pdfplumber page when available. The legacy route still works.
         """
-        Use pdfplumber to detect table bounding boxes on this page.
-        Returns list of BBox objects (may be empty).
-        """
-        pdfplumber = _pdfplumber()
         bboxes = []
         try:
-            # pdfplumber needs to open the same file — we reopen just this page
-            with pdfplumber.open(self.file_path) as plumb_doc:
-                # page_number is 1-based in our system, pdfplumber is 0-based
-                if page.number < len(plumb_doc.pages):
-                    plumb_page = plumb_doc.pages[page.number]
-                    tables = plumb_page.find_tables(TABLE_SETTINGS)
-                    for tbl in tables:
-                        bb = tbl.bbox  # (x0, top, x1, bottom)
-                        bboxes.append(BBox(bb[0], bb[1], bb[2], bb[3]))
+            if plumb_page is None:
+                with _pdfplumber().open(self.file_path) as plumb_doc:
+                    if page.number >= len(plumb_doc.pages):
+                        raise ValueError("Table page index outside PDF")
+                    tables = plumb_doc.pages[page.number].find_tables(TABLE_SETTINGS)
+                    bboxes = [BBox(*tbl.bbox) for tbl in tables]
+            else:
+                tables = plumb_page.find_tables(TABLE_SETTINGS)
+                bboxes = [BBox(*tbl.bbox) for tbl in tables]
         except Exception as e:
-            # Non-fatal — page just won't have table regions flagged
+            if self.strict:
+                raise RuntimeError(f"Table detection failed page {page.number + 1}: {e}") from e
             self.dlog.debug(f"Table detection failed page {page.number + 1}: {e}")
         return bboxes
 
