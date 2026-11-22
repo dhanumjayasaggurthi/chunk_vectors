@@ -193,6 +193,22 @@ def load_extracted_document(profile: dict, document_key):
                     confidence=float(item.get("confidence",1.0)),
                     reading_order=int(item.get("reading_order",len(elements))),
                 )
+                if "runs" in item:
+                    from rich_document import validate_runs
+                    el.runs = validate_runs(item["runs"])
+                if "language" in item:
+                    lang = item["language"]
+                    if not isinstance(lang, str) or len(lang) > 32:
+                        raise ValueError("Invalid extracted language")
+                    el.language = lang
+                if "semantic_role" in item:
+                    if item["semantic_role"] not in ("heading", ""):
+                        raise ValueError("Unsupported semantic role")
+                    level = item.get("heading_level", 0)
+                    if type(level) is not int or not 0 <= level <= 6:
+                        raise ValueError("Invalid heading level")
+                    el.semantic_role = item["semantic_role"]
+                    el.heading_level = level
                 if "ocr_regions" in item:
                     regions = item["ocr_regions"]
                     if not isinstance(regions,list):
