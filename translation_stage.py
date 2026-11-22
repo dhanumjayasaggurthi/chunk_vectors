@@ -64,36 +64,63 @@ def create_translation_table(conn, *, schema: str = "public"):
                 attempts integer NOT NULL DEFAULT 0,
                 lease_owner text,
                 lease_until timestamptz,
+                next_retry_at timestamptz NOT NULL DEFAULT now(),
                 last_error text,
                 updated_at timestamptz NOT NULL DEFAULT now(),
                 PRIMARY KEY(segment_id,source_sha256,translation_hash)
             )
         """)
         cur.execute(f"""CREATE INDEX IF NOT EXISTS rich_translation_claim_idx
-            ON {qualified}(state,lease_until) WHERE state IN ('pending','leased','failed')""")
+            ON {qualified}(state,next_retry_at,lease_until)
+            WHERE state IN ('pending','leased','failed')""")
     conn.commit()
 
 
-def enqueue_segments(conn, segments, *, translation_hash: str, schema="public"):
-    """Bounded generator input; duplicate segments are safe to replay."""
+def enqueue_segments(conn, segments, *, translation_hash: str, schema="public",
+                     batch_size: int = 256):
+    """Batched, idempotent generator ingestion with O(batch_size) memory.
+
+    The source digest includes language to prevent stale reuse when language
+    identification changes while the original source text stays identical.
+    A failed validation or DB write rolls back this invocation entirely.
+    """
     from profile_store import _safe_identifier
     from psycopg2.extras import execute_values
+    if type(batch_size) is not int or not 1 <= batch_size <= 1000:
+        raise ValueError("Invalid translation enqueue batch size")
+    if not isinstance(translation_hash,str) or not re.fullmatch(
+            r"[0-9a-f]{64}",translation_hash):
+        raise ValueError("Invalid translation semantic fingerprint")
     table = _safe_identifier(schema) + ".rich_translation"
+    sql = f"""INSERT INTO {table}
+        (segment_id,source_sha256,translation_hash,source_language,native_text)
+        VALUES %s ON CONFLICT DO NOTHING"""
     inserted = 0
-    for segment in segments:
-        sid, native, language = segment
-        if not sid or not isinstance(native, str) or not native.strip():
-            raise ValueError("Invalid translation segment")
-        if not LANGUAGE.fullmatch(language):
-            raise ValueError("Invalid source language")
-        source_hash = hashlib.sha256(native.encode("utf-8")).hexdigest()
+    batch = []
+    try:
         with conn.cursor() as cur:
-            cur.execute(f"""INSERT INTO {table}
-                (segment_id,source_sha256,translation_hash,source_language,native_text)
-                VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
-                (sid,source_hash,translation_hash,language,native))
-            inserted += cur.rowcount
-    conn.commit()
+            for sid, native, language in segments:
+                if (not isinstance(sid,str) or not 1 <= len(sid) <= 1024
+                        or not isinstance(native,str) or not native.strip()
+                        or len(native) > 32000):
+                    raise ValueError("Invalid or oversized translation segment")
+                if not isinstance(language,str) or not LANGUAGE.fullmatch(language):
+                    raise ValueError("Invalid source language")
+                source_hash=hashlib.sha256(
+                    (language.casefold() + "\0" + native).encode("utf-8")
+                ).hexdigest()
+                batch.append((sid,source_hash,translation_hash,language,native))
+                if len(batch)>=batch_size:
+                    execute_values(cur,sql,batch,page_size=len(batch))
+                    inserted+=cur.rowcount
+                    batch.clear()
+            if batch:
+                execute_values(cur,sql,batch,page_size=len(batch))
+                inserted+=cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return inserted
 
 
@@ -109,9 +136,9 @@ def claim_batch(conn, *, owner: str, batch_size=16, lease_seconds=300,
             WITH picked AS (
                 SELECT segment_id,source_sha256,translation_hash
                 FROM {table}
-                WHERE attempts < %s AND
+                WHERE attempts < %s AND next_retry_at <= now() AND
                       (state IN ('pending','failed') OR (state='leased' AND lease_until < now()))
-                ORDER BY updated_at,segment_id
+                ORDER BY next_retry_at,updated_at,segment_id
                 FOR UPDATE SKIP LOCKED LIMIT %s
             )
             UPDATE {table} AS t SET state='leased',lease_owner=%s,
@@ -136,15 +163,40 @@ def finish_segment(conn, row, *, owner: str, english: str | None,
     sid, source_sha, fingerprint = row[:3]
     if english is not None and (not isinstance(english, str) or not english.strip()):
         raise ValueError("Translation result must be nonempty")
+    if len(row)<6 or type(row[5]) is not int or row[5]<1:
+        raise ValueError("Missing translation attempt count")
+    retry_delay = 0 if english is not None else min(300,2**min(row[5],8))
     with conn.cursor() as cur:
         cur.execute(f"""
             UPDATE {table} SET state=%s,translated_text=%s,last_error=%s,
-                lease_owner=NULL,lease_until=NULL,updated_at=now()
+                lease_owner=NULL,lease_until=NULL,updated_at=now(),
+                next_retry_at=now()+(%s * interval '1 second')
             WHERE segment_id=%s AND source_sha256=%s AND translation_hash=%s
               AND state='leased' AND lease_owner=%s AND lease_until > now()
         """, ("complete" if english is not None else "failed",
-              english, str(error)[:1000] if error else None,
+              english, str(error)[:1000] if error else None, retry_delay,
               sid,source_sha,fingerprint,owner))
+        changed=cur.rowcount
+    conn.commit()
+    return bool(changed)
+
+
+
+
+def extend_lease(conn, row, *, owner: str, lease_seconds=300, schema="public") -> bool:
+    """Heartbeat a translation claim without ever reviving an expired lease."""
+    from profile_store import _safe_identifier
+    if not owner or type(lease_seconds) is not int or not 30<=lease_seconds<=3600:
+        raise ValueError("Invalid translation heartbeat")
+    table=_safe_identifier(schema)+".rich_translation"
+    sid,source_sha,fingerprint=row[:3]
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            UPDATE {table} SET lease_until=now()+(%s * interval '1 second'),
+                updated_at=now()
+            WHERE segment_id=%s AND source_sha256=%s AND translation_hash=%s
+              AND state='leased' AND lease_owner=%s AND lease_until>now()
+        """,(lease_seconds,sid,source_sha,fingerprint,owner))
         changed=cur.rowcount
     conn.commit()
     return bool(changed)
