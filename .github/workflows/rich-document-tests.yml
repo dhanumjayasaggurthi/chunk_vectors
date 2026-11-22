@@ -14,6 +14,7 @@ on:
       - tests/test_rich_document.py
       - tests/stress_rich_document.py
       - tests/test_online_regulatory_benchmark.py
+      - tests/test_translation_stage.py
       - tests/online_public_regulatory_benchmark.py
       - .github/workflows/rich-document-tests.yml
   workflow_dispatch:
@@ -52,6 +53,7 @@ jobs:
           EOF
       - run: python -m py_compile rich_document.py translation_stage.py pdf_processor.py page_stage.py extracted_source.py processing_profile.py
       - run: python -m unittest discover -s tests -p test_rich_document.py -v
+      - run: python -m unittest discover -s tests -p test_translation_stage.py -v
       - run: python -m unittest discover -s tests -p test_online_regulatory_benchmark.py -v
       - name: Run 100 mixed-content synthetic PDF smoke test
         run: python tests/stress_rich_document.py --documents 100 --pages-per-doc 12 --workers 8
