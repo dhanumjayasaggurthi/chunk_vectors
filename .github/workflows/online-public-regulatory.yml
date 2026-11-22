@@ -1,0 +1,61 @@
+name: Public regulatory PDF native extraction benchmark
+
+on:
+  push:
+    branches: [feat/rich-document-multilingual-v2]
+    paths:
+      - tests/online_public_regulatory_benchmark.py
+      - .github/workflows/online-public-regulatory.yml
+  workflow_dispatch:
+    inputs:
+      documents:
+        description: Official public PDFs to fully or partially extract
+        default: '100'
+        required: false
+      max_pages:
+        description: Page limit per PDF (0 is full document)
+        default: '0'
+        required: false
+      min_pages:
+        description: Required original document page count
+        default: '100'
+        required: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "requests>=2.32,<3"
+      - name: CI-only config (no credentials)
+        run: |
+          cat > config.ini <<'EOF'
+          [POSTGRES]
+          host=localhost
+          port=5432
+          database=embedding_test
+          user=postgres
+          password=test
+          schema=intake_ci
+          folder=ci
+          [GCP]
+          gcp_key_path=not-used.json
+          EOF
+      - name: Download and test actual public regulatory PDFs
+        env:
+          REQUESTED_DOCUMENTS: ${{ github.event_name == 'workflow_dispatch' && inputs.documents || '5' }}
+          MAX_PAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_pages || '12' }}
+          MIN_PAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.min_pages || '100' }}
+        run: |
+          python tests/online_public_regulatory_benchmark.py --documents "$REQUESTED_DOCUMENTS" --min-pages "$MIN_PAGES" --max-pages "$MAX_PAGES" --workers 4 --download-workers 2 --batch-size 8 --include-fda --report public_corpus_report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-regulatory-benchmark-${{ github.run_id }}
+          path: public_corpus_report.json
+          retention-days: 14
+          if-no-files-found: warn
