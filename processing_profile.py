@@ -130,6 +130,7 @@ def validate_profile(profile: dict) -> None:
             "max_quota_wait_seconds", "ocr_enabled",
             "max_window_raster_bytes", "max_render_pixels",
             "chart_workers", "capture_rich_text",
+            "publish_unreviewed_vector_regions",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -223,7 +224,8 @@ def validate_profile(profile: dict) -> None:
                 r"[a-z_][a-z0-9_]{0,45}",value,re.I,
             ):
                 raise ValueError("extraction." + required + " requires a safe table identifier")
-        for field in ("enabled", "ocr_enabled", "capture_rich_text", "chart_descriptions_enabled",
+        for field in ("enabled", "ocr_enabled", "capture_rich_text",
+                      "publish_unreviewed_vector_regions", "chart_descriptions_enabled",
                       "table_summaries_enabled"):
             if field in extract and type(extract[field]) is not bool:
                 raise ValueError("extraction." + field + " must be boolean")
