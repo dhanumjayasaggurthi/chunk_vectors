@@ -52,10 +52,16 @@ jobs:
           MIN_PAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.min_pages || '100' }}
         run: |
           python tests/online_public_regulatory_benchmark.py --documents "$REQUESTED_DOCUMENTS" --min-pages "$MIN_PAGES" --max-pages "$MAX_PAGES" --workers 4 --download-workers 2 --batch-size 8 --include-fda --report public_corpus_report.json
+      - name: Test illustrated FDA reports end-to-end native page extraction
+        if: always()
+        run: |
+          python tests/online_public_regulatory_benchmark.py --documents 2 --min-pages 1 --max-pages 0 --max-candidates 2 --workers 2 --download-workers 2 --include-fda --report illustrated_fda_report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: public-regulatory-benchmark-${{ github.run_id }}
-          path: public_corpus_report.json
+          path: |
+            public_corpus_report.json
+            illustrated_fda_report.json
           retention-days: 14
           if-no-files-found: warn
