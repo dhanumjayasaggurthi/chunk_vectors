@@ -88,6 +88,64 @@ class TestPageStageIntegration(unittest.TestCase):
         finally:
             cls.dir.cleanup()
 
+    def test_unreviewed_visual_artifact_is_checkpointed_but_not_published(self):
+        import io
+        from PIL import Image
+        from pdf_processor import PDFProcessor,PageElement,BBox,ElementType
+        from page_stage import init,stage_one,names,extraction_fingerprint
+        from extracted_source import load_extracted_document
+
+        p=staging_profile()
+        p["extraction"]["capture_rich_text"]=True
+        n=names(p)
+        init(p,apply=True)
+        buffer=io.BytesIO()
+        Image.new("RGB",(15,15),"white").save(buffer,format="PNG")
+        png=buffer.getvalue()
+        original=PDFProcessor._process_page
+
+        def add_vector(self, doc, page_num, **kwargs):
+            page=original(self,doc,page_num,**kwargs)
+            if page_num==0:
+                page.elements.append(PageElement(
+                    ElementType.VECTOR_REGION,BBox(60,100,80,120),
+                    vector_png=png))
+            return page
+
+        doc_id="rich_review_stage_case"
+        with patch.object(PDFProcessor,"_process_page",new=add_vector):
+            pending=stage_one(str(self.pdf),p,n,doc_id=doc_id)
+        self.assertEqual(pending["status"],"REVIEW_REQUIRED")
+        self.assertEqual(pending["review_pages"],1)
+        conn=self.connection()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM intake_ci.ci_pdf_pages WHERE doc_id=%s",
+                            (doc_id,))
+                self.assertEqual(cur.fetchone()[0],0)
+                cur.execute("""SELECT COUNT(*) FROM intake_ci.ci_pdf_pages_work
+                    WHERE doc_id=%s AND extraction_hash=%s""",
+                    (doc_id,extraction_fingerprint(p)))
+                self.assertEqual(cur.fetchone()[0],5)
+        conn.close()
+
+        # Review policy is independent of extraction fingerprint. Approval can
+        # publish existing checkpoints WITHOUT reading the source a second time.
+        before=extraction_fingerprint(p)
+        p["extraction"]["publish_unreviewed_vector_regions"]=True
+        self.assertEqual(extraction_fingerprint(p),before)
+        with patch.object(PDFProcessor,"_process_page",
+                          side_effect=AssertionError("Re-extraction is forbidden")):
+            approved=stage_one(str(self.pdf),p,n,doc_id=doc_id)
+        self.assertEqual(approved["status"],"SUCCESS")
+        self.assertEqual(approved["new_pages"],0)
+        self.assertEqual(approved["reused_pages"],5)
+        struct,_=load_extracted_document(p,doc_id)
+        visual=[el for page in struct.pages for el in page.elements
+                if el.element_type==ElementType.VECTOR_REGION]
+        self.assertEqual(len(visual),1)
+        self.assertEqual(visual[0].vector_png,png)
+
     def test_real_native_table_cells_keep_matching_bbox(self):
         import fitz
         from page_stage import stage_one,names
