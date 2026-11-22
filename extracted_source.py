@@ -207,7 +207,7 @@ def load_extracted_document(profile: dict, document_key):
                     except Exception as exc:
                         raise ValueError("Invalid vector preview base64") from exc
                     if (not 0<len(png)<=128_000
-                            or not png.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+                            or not png.startswith(b"\x89PNG\r\n\x1a\n")
                             or hashlib.sha256(png).hexdigest()!=preview.get("sha256")):
                         raise ValueError("Corrupt vector preview checksum")
                     el.vector_png=png
