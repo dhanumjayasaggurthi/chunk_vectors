@@ -75,7 +75,8 @@ def extraction_fingerprint(profile) -> str:
     )
     cfg=settings(profile)
     semantic={
-        "stage_format_version":3 if cfg["capture_rich_text"] else 2,
+        "stage_format_version":4 if cfg["capture_rich_text"] else 3,
+        "unclassified_vector_preview_version":1,
         "capture_rich_text":cfg["capture_rich_text"],
         "ocr_enabled":cfg["ocr_enabled"],
         "ocr_bbox_detail":cfg["ocr_bbox_detail"],
@@ -272,6 +273,17 @@ def _page_row(page, struct, source, extraction_hash):
             "text":element.text, "confidence":round(float(element.confidence),5),
             "reading_order":element.reading_order,
         }
+        if getattr(element, "vector_png", b""):
+            import base64
+            png = element.vector_png
+            if not 0 < len(png) <= 128_000 or not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("Invalid bounded vector preview PNG")
+            entry["vector_preview"]={
+                "format":"png", "dpi":144,
+                "sha256":hashlib.sha256(png).hexdigest(),
+                "base64":base64.b64encode(png).decode("ascii"),
+                "review_required":True,
+            }
         if cfg_rich := getattr(element, "runs", None):
             from rich_document import validate_runs
             entry["runs"]=validate_runs(cfg_rich)
