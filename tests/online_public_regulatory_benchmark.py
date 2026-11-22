@@ -11,6 +11,8 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import multiprocessing
+from functools import partial
 import logging
 import os
 import sys
@@ -130,8 +132,14 @@ def extract(item, *, max_pages, batch_size):
             italic_runs += sum(bool(r.get("italic")) for r in text_runs)
         if max_pages and processed >= max_pages:
             break
+    try:
+        import resource
+        peak_rss_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except ImportError:
+        peak_rss_kib = None
     return {
         "name": item["name"], "source_url": item["url"],
+        "peak_worker_rss_kib": peak_rss_kib,
         "source_sha256": item["sha256"], "bytes": item["bytes"],
         "source_pages": item["pages"], "extracted_pages": processed,
         "style_pages": style_pages, "table_pages": table_pages,
@@ -143,9 +151,11 @@ def extract(item, *, max_pages, batch_size):
 
 def gather_downloads(directory, *, target_documents, max_candidates,
                      min_pages, max_bytes, download_workers, timeout,
-                     include_fda):
+                     include_fda, shard_index=0, shard_count=1):
     """Keep only bounded pending downloads; stop once target unique PDFs pass."""
-    items = list(candidates(include_fda=include_fda))[:max_candidates]
+    universe = list(candidates(include_fda=include_fda))[:max_candidates]
+    items = [item for idx, item in enumerate(universe)
+             if idx % shard_count == shard_index]
     accepted = []
     skipped = Counter()
     rejected = []
@@ -212,6 +222,10 @@ def main():
     parser.add_argument("--max-download-mb", type=int, default=32)
     parser.add_argument("--download-timeout", type=int, default=40)
     parser.add_argument("--include-fda", action="store_true")
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument("--process-pool", action="store_true",
+                        help="Spawn isolated PDF worker processes instead of threads")
     parser.add_argument("--report", required=True)
     args = parser.parse_args()
     if not (1 <= args.documents <= 180
@@ -219,7 +233,9 @@ def main():
             and 1 <= args.workers <= 16 and 1 <= args.download_workers <= 6
             and 1 <= args.batch_size <= 32 and 1 <= args.max_download_mb <= 64
             and 1 <= args.download_timeout <= 120
-            and 1 <= args.max_candidates <= 190):
+            and 1 <= args.max_candidates <= 190
+            and 1 <= args.shard_count <= 16
+            and 0 <= args.shard_index < args.shard_count):
         parser.error("Invalid bounded online benchmark settings")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     started = time.monotonic()
@@ -229,16 +245,33 @@ def main():
             max_candidates=args.max_candidates, min_pages=args.min_pages,
             max_bytes=args.max_download_mb * 1024 * 1024,
             download_workers=args.download_workers, timeout=args.download_timeout,
-            include_fda=args.include_fda)
+            include_fda=args.include_fda, shard_index=args.shard_index,
+            shard_count=args.shard_count)
         LOG.info("Downloaded %d unique official PDFs", len(accepted))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-            results = list(executor.map(
-                lambda item: extract(item, max_pages=args.max_pages,
-                                     batch_size=args.batch_size), accepted))
+        # Processes isolate PDF native caches/GIL for CPU-bound native parsing;
+        # worker recycling caps long-lived allocator growth on giant corpora.
+        if args.process_pool:
+            executor = concurrent.futures.ProcessPoolExecutor(
+                max_workers=args.workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                max_tasks_per_child=8,
+            )
+        else:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=args.workers)
+        with executor:
+            work=partial(extract, max_pages=args.max_pages,
+                         batch_size=args.batch_size)
+            results=list(executor.map(work, accepted, chunksize=1))
         report = {
             "kind": "public_official_cfr_fda_native_extraction",
             "tested_full_documents": args.max_pages == 0,
             "requested_documents": args.documents,
+            "shard_index": args.shard_index,
+            "shard_count": args.shard_count,
+            "isolated_process_workers": args.process_pool,
+            "worker_count": args.workers,
+            "peak_worker_rss_kib": max(
+                (x.get("peak_worker_rss_kib") or 0 for x in results),default=0),
             "accepted_documents": len(accepted),
             "min_source_pages": args.min_pages,
             "sample_page_limit_per_document": args.max_pages,
