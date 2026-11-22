@@ -709,11 +709,19 @@ class PDFProcessor:
                     # Rasterize ONLY the tiny ambiguous region. Store source
                     # geometry and a bounded PNG for future human/visual review,
                     # rather than dropping graphical evidence from the page.
+                    if len(vector_elements) >= 8:
+                        raise RuntimeError(
+                            f"Too many unclassified vector regions p{page_number}"
+                        )
                     png = page.get_pixmap(
                         matrix=fitz.Matrix(2, 2),
                         clip=fitz.Rect(*table.bbox),
                         alpha=False,
                     ).tobytes("png")
+                    if sum(len(x.vector_png) for x in vector_elements) + len(png) > 256_000:
+                        raise RuntimeError(
+                            f"Vector preview page budget exceeded p{page_number}"
+                        )
                     if not 0 < len(png) <= 128_000:
                         raise RuntimeError(
                             f"Vector region p{page_number} PNG budget exceeded"
