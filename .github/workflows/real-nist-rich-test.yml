@@ -1,0 +1,61 @@
+name: NIST illustrated regulatory PDF full extraction
+
+on:
+  push:
+    branches: [feat/rich-document-multilingual-v2]
+    paths: [.github/workflows/real-nist-rich-test.yml]
+  workflow_dispatch:
+
+jobs:
+  nist-complete-document:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "requests>=2.32,<3"
+      - name: Minimal test config
+        run: |
+          cat > config.ini <<'EOF'
+          [POSTGRES]
+          host=localhost
+          port=5432
+          database=embedding_test
+          user=postgres
+          password=test
+          schema=intake_ci
+          folder=ci
+          [GCP]
+          gcp_key_path=not-used.json
+          EOF
+      - name: Download and extract full authentic NIST report
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          import tempfile
+          from pathlib import Path
+          sys.path.insert(0, 'tests')
+          from online_public_regulatory_benchmark import download, extract
+          with tempfile.TemporaryDirectory() as folder:
+              row = download(('NIST-IR-8524', 'https://nvlpubs.nist.gov/nistpubs/ir/2024/NIST.IR.8524.pdf'),
+                             Path(folder), min_pages=100, max_bytes=32*1024*1024, timeout=40)
+              if 'error' in row:
+                  raise RuntimeError('NIST download failed: '+row['error'])
+              data = extract(row, max_pages=0, batch_size=8)
+              print('NIST_FULL_SUMMARY='+json.dumps(data, sort_keys=True))
+              Path('nist_full_report.json').write_text(json.dumps(data,indent=2))
+              assert data['source_pages'] == data['extracted_pages']
+              assert data['source_pages'] >= 100
+              assert not data['errors']
+              assert data['style_pages'] > 0
+              assert data['image_pages'] > 0
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nist-full-${{ github.run_id }}
+          path: nist_full_report.json
+          retention-days: 14
