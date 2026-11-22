@@ -64,7 +64,7 @@ def run_one(path, batch_size):
             if page.error:
                 raise RuntimeError(f"{path.name} page {page.page_number}: {page.error}")
             pages += 1
-            styled += sum(bool(el.runs) for el in page.elements)
+            styled += int(any(bool(el.runs) for el in page.elements))
             tables += int(page.has_tables)
             images += int(page.has_images)
     return pages, styled, tables, images
