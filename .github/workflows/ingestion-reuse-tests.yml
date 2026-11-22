@@ -23,6 +23,8 @@ on:
       - vision_ocr.py
       - profiles/regulatory_page_stage_example.yml
       - .github/workflows/ingestion-reuse-tests.yml
+      - translation_stage.py
+      - tests/test_translation_stage.py
 
 jobs:
   unit:
@@ -117,3 +119,5 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_page_stage.py' -v
       - name: Test cross-worker shared quota accounting and 429 cooldown
         run: python -m unittest discover -s tests -p 'test_ocr_quota.py' -v
+      - name: Verify durable translation leases and retry backoff
+        run: python -m unittest discover -s tests -p 'test_translation_stage.py' -v
