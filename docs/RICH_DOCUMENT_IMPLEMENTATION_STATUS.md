@@ -66,3 +66,13 @@ The stress harness deliberately does not call paid OCR, translation, or embeddin
 - **Gate D — production:** 25,000-page soak tests, peak RSS and DB WAL budgets, failure injection, per-stage costs, staged rollout and rollback.
 
 Do not merge into the production ingestion path until these gates pass.
+
+## Real-corpus benchmark command
+
+After an authorized corpus of at least 100 substantial PDFs is mounted, run:
+
+```bash
+python tests/benchmark_regulatory_corpus.py --corpus /approved/regulatory --min-documents 100 --min-pages 100 --workers 8 --report benchmark_results.json
+```
+
+This reports per-document page extraction errors and native text/style/table/image counts. It explicitly fails if the minimum document/page requirements are not met, or if DOCX files are present without being tested. It is **not** an OCR, translation, source-fidelity, or 25,000-page acceptance test; those need separately instrumented full-pipeline validation.
