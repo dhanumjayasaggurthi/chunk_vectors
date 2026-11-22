@@ -76,3 +76,22 @@ python tests/benchmark_regulatory_corpus.py --corpus /approved/regulatory --min-
 ```
 
 This reports per-document page extraction errors and native text/style/table/image counts. It explicitly fails if the minimum document/page requirements are not met, or if DOCX files are present without being tested. It is **not** an OCR, translation, source-fidelity, or 25,000-page acceptance test; those need separately instrumented full-pipeline validation.
+
+
+## Verified public regulatory PDF benchmarks (2026-11-22)
+
+- **100 authentic CFR PDFs, sampled:** 100 unique downloaded sources, each with at least 100 pages; combined source inventory **80,312 pages**. Sampled **12 per PDF (1,200 pages)**. **0 page errors**. This is explicitly NOT a 100 full-document test. [Source workflow](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45065699998).
+- **5 authentic CFR PDFs, full:** **2,702/2,702 pages**, **0 page errors**, 205 detected table pages, 17 image pages, 2,691 pages with native style spans; elapsed time **245.844s including downloads**. Same [source workflow](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45065699998); its overall conclusion was failure because a separate illustrated-document source test returned incomplete results, not because the five CFR volumes failed.
+- **NIST IR 8524, full:** originally 6 errors on pages 46/48/61/78/96/101, all due to tiny word-empty graphical subregions (1,034–2,460 pt²) nested inside successfully extracted larger tables. A guarded classifier now preserves a 144-DPI bounded PNG for each such region while keeping source bbox and a review flag. Updated **150/150 pages, 0 parser errors** in **15.896s**, 35 pages with detected tables, 78 pages with detected images or vector regions, and 20 pages with text+table+visuals. [Retest](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45066891902).
+
+**Safety policy:** The page may be checkpointed with a recovered preview, but the PDF stage refuses to publish documents containing unreviewed \`vector_region\` elements by default (\`REVIEW_REQUIRED\`). Manual acceptance can opt into \`extraction.publish_unreviewed_vector_regions: true\`; this setting does not invalidate extraction fingerprints or re-extract the document. An automated real PostgreSQL integration test verifies checkpoint retention, default publication refusal, and approval without rerunning extraction.
+
+**Full 100-source benchmark:** Four independent shards of 25 official CFR PDFs each have been launched with a spawned four-worker PDF process pool, worker recycling and complete-document extraction (\`max_pages=0\`). [Run 45067297563](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45067297563). Do not mark complete until all 100 per-document artifact reports and digests have been checked. Some other source hosts (FDA / GAO) block GitHub runner downloads; public GovInfo and NIST sources were verified.
+
+### Additional throughput and translation improvements
+
+- Benchmarks support disjoint 25-document shards, process isolation, worker recycling, source SHA-256, and per-worker peak RSS measurements.
+- Translation stage now supports batched \`execute_values\` queue insertion, language-sensitive source hashes, bounded remote RPC concurrency, durable exponential retry cooldown, lease expiry recovery, stale-owner fencing and lease heartbeat; **no cloud translation provider has yet been integrated**.
+- Checkpoint tests run against real isolated PostgreSQL in CI. Native PDF extraction benchmark success is not proof of complete regulated evidence fidelity or provider OCR quality.
+
+**Known limitation:** A small PNG preview is raster evidence, not the original editable vector drawing or a complete image asset pipeline. Big page artifacts, OCR imagery, figures, charts, DOCX and all styles still need a dedicated immutable object-storage representation. The currently published page-table delete/insert and full-document in-memory materializer remain production scale blockers.
