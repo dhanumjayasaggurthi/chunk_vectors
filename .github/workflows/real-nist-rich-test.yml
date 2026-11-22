@@ -3,7 +3,11 @@ name: NIST illustrated regulatory PDF full extraction
 on:
   push:
     branches: [feat/rich-document-multilingual-v2]
-    paths: [.github/workflows/real-nist-rich-test.yml]
+    paths:
+      - .github/workflows/real-nist-rich-test.yml
+      - tests/diagnose_pdf_tables.py
+      - pdf_processor.py
+      - table_extractor.py
   workflow_dispatch:
 
 jobs:
@@ -44,6 +48,11 @@ jobs:
                              Path(folder), min_pages=100, max_bytes=32*1024*1024, timeout=40)
               if 'error' in row:
                   raise RuntimeError('NIST download failed: '+row['error'])
+              from diagnose_pdf_tables import diagnose
+              suspect_pages=[46,48,61,78,96,101]
+              diagnosis=diagnose(row['path'],suspect_pages)
+              print('TABLE_CANDIDATE_DIAGNOSTICS='+json.dumps(diagnosis,separators=(',',':')))
+              Path('nist_table_diagnostics.json').write_text(json.dumps(diagnosis,indent=2))
               data = extract(row, max_pages=0, batch_size=8)
               print('NIST_FULL_SUMMARY='+json.dumps(data, sort_keys=True))
               Path('nist_full_report.json').write_text(json.dumps(data,indent=2))
@@ -57,5 +66,7 @@ jobs:
         if: always()
         with:
           name: nist-full-${{ github.run_id }}
-          path: nist_full_report.json
+          path: |
+            nist_full_report.json
+            nist_table_diagnostics.json
           retention-days: 14
