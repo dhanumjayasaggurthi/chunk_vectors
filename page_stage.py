@@ -22,6 +22,15 @@ from profile_store import _safe_identifier, profile_document_lock
 LOG = logging.getLogger("epod.page_stage")
 
 
+class VisualReviewRequired(RuntimeError):
+    """The full document is checkpointed but must not be published yet."""
+
+    def __init__(self, review_pages: int):
+        super().__init__(f"{review_pages} pages contain unreviewed vector regions")
+        self.review_pages = review_pages
+
+
+
 def names(profile):
     opts = profile.get("extraction") or {}
     if opts.get("enabled") is not True:
@@ -57,6 +66,7 @@ def settings(profile):
         "max_render_pixels":50_000_000,
         "ocr_enabled":True,
         "capture_rich_text":False,
+        "publish_unreviewed_vector_regions":False,
     }
     result.update(opts)
     return result
@@ -357,7 +367,7 @@ def _persist_window(rows, errors, doc_id, source, fingerprint, n):
         conn.close()
 
 
-def _publish(doc_id, source, fingerprint, page_count, n):
+def _publish(doc_id, source, fingerprint, page_count, n, *, allow_unreviewed=False):
     """Atomically swap ONLY complete document pages into the visible table."""
     conn=get_conn()
     try:
@@ -372,6 +382,19 @@ def _publish(doc_id, source, fingerprint, page_count, n):
                 raise RuntimeError(
                     f"Cannot publish incomplete document: {count}/{page_count} pages"
                 )
+            # JSONB containment is exact on type. A completed page can still
+            # require visual review: preserve work checkpoints and refuse
+            # publication until explicitly approved. This check is durable
+            # across resumed invocations, not just the current worker state.
+            if not allow_unreviewed:
+                cur.execute(f"""
+                    SELECT COUNT(*) FROM {n['work']}
+                    WHERE doc_id=%s AND source_hash=%s AND extraction_hash=%s
+                      AND elements @> '[{"type":"vector_region"}]'::jsonb
+                """,(doc_id,source,fingerprint))
+                review_pages=cur.fetchone()[0]
+                if review_pages:
+                    raise VisualReviewRequired(review_pages)
             cur.execute(f"DELETE FROM {n['published']} WHERE doc_id=%s",(doc_id,))
             cur.execute(f"""
                 INSERT INTO {n['published']} (
@@ -700,7 +723,18 @@ def stage_one(
                 "ocr_images":images_processed,
                 "elapsed_seconds":round(time.monotonic()-started,2),
             }
-        _publish(doc_id,source,fingerprint,page_count,n)
+        try:
+            _publish(
+                doc_id,source,fingerprint,page_count,n,
+                allow_unreviewed=cfg["publish_unreviewed_vector_regions"],
+            )
+        except VisualReviewRequired as pending:
+            return {
+                "doc_id":doc_id, "status":"REVIEW_REQUIRED",
+                "pages":page_count, "review_pages":pending.review_pages,
+                "new_pages":pages_processed, "reused_pages":len(done),
+                "elapsed_seconds":round(time.monotonic()-started,2),
+            }
         elapsed=max(0.001,time.monotonic()-started)
         return {
             "doc_id":doc_id,"status":"SUCCESS","pages":page_count,
@@ -743,7 +777,8 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
             max_wait_seconds=cfg["max_quota_wait_seconds"],
         )
     files=[file_path] if file_path else iter_pdf_files(root)
-    counts={"SUCCESS":0,"SKIPPED":0,"BUSY":0,"INCOMPLETE":0,"FAILED":0}
+    counts={"SUCCESS":0,"SKIPPED":0,"BUSY":0,"INCOMPLETE":0,
+            "REVIEW_REQUIRED":0,"FAILED":0}
     pending={}
     with concurrent.futures.ThreadPoolExecutor(max_workers=doc_workers) as pool:
         def collect(done):
@@ -823,7 +858,8 @@ def main(argv=None):
             max_docs=args.max_docs,doc_workers=args.doc_workers,
         )
     print(json.dumps(result,indent=2))
-    return int(result.get("INCOMPLETE",0)>0 or result.get("FAILED",0)>0)
+    return int(result.get("INCOMPLETE",0)>0 or
+               result.get("REVIEW_REQUIRED",0)>0 or result.get("FAILED",0)>0)
 
 
 if __name__=="__main__":
