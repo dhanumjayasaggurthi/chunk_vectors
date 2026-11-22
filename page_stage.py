@@ -390,7 +390,7 @@ def _publish(doc_id, source, fingerprint, page_count, n, *, allow_unreviewed=Fal
                 cur.execute(f"""
                     SELECT COUNT(*) FROM {n['work']}
                     WHERE doc_id=%s AND source_hash=%s AND extraction_hash=%s
-                      AND elements @> '[{"type":"vector_region"}]'::jsonb
+                      AND elements @> '[{{"type":"vector_region"}}]'::jsonb
                 """,(doc_id,source,fingerprint))
                 review_pages=cur.fetchone()[0]
                 if review_pages:
