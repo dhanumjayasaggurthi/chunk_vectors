@@ -32,9 +32,12 @@ CFR_VOLUMES = [
 FDA_REPORTS = [
     "https://www.fda.gov/media/187276/download",
     "https://www.fda.gov/media/190779/download?attachment=",
+    "https://nvlpubs.nist.gov/nistpubs/ir/2024/NIST.IR.8524.pdf",
+    "https://www.gao.gov/assets/gao-25-107743.pdf",
 ]
 MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
-_ALLOWED_HOSTS = {"www.govinfo.gov", "govinfo.gov", "www.fda.gov", "fda.gov"}
+_ALLOWED_HOSTS = {"www.govinfo.gov", "govinfo.gov", "www.fda.gov", "fda.gov",
+                  "nvlpubs.nist.gov", "www.gao.gov", "gao.gov"}
 
 
 def candidates(*, include_fda=False):
@@ -260,6 +263,8 @@ def main():
             ],
         }
         Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if rejected["rejected_sample"]:
+            print("REJECTION_SAMPLES=" + json.dumps(rejected["rejected_sample"][:8]))
         print("BENCHMARK_SUMMARY=" + json.dumps(
             {k: v for k, v in report.items()
              if k not in ("documents", "rejected_sources", "limitations")},
