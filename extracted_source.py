@@ -193,6 +193,24 @@ def load_extracted_document(profile: dict, document_key):
                     confidence=float(item.get("confidence",1.0)),
                     reading_order=int(item.get("reading_order",len(elements))),
                 )
+                if "vector_preview" in item:
+                    import base64
+                    preview=item["vector_preview"]
+                    encoded=preview.get("base64") if isinstance(preview,dict) else None
+                    if (item["type"] != ElementType.VECTOR_REGION.value
+                            or not isinstance(encoded,str) or len(encoded)>172_000
+                            or preview.get("format")!="png"
+                            or preview.get("dpi")!=144):
+                        raise ValueError("Invalid vector preview metadata")
+                    try:
+                        png=base64.b64decode(encoded,validate=True)
+                    except Exception as exc:
+                        raise ValueError("Invalid vector preview base64") from exc
+                    if (not 0<len(png)<=128_000
+                            or not png.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+                            or hashlib.sha256(png).hexdigest()!=preview.get("sha256")):
+                        raise ValueError("Corrupt vector preview checksum")
+                    el.vector_png=png
                 if "runs" in item:
                     from rich_document import validate_runs
                     el.runs = validate_runs(item["runs"])
