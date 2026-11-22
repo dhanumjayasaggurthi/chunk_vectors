@@ -56,6 +56,60 @@ class RichDocumentUnitTests(unittest.TestCase):
             translation_fingerprint(provider="test", model="v1"),
             translation_fingerprint(provider="test", model="v2"))
 
+    def test_nested_empty_table_is_evidence_not_dropped_text(self):
+        from types import SimpleNamespace
+        from pdf_processor import _is_nested_empty_table_artifact, BBox
+        outer=SimpleNamespace(bbox=(100,100,300,300))
+        nested=SimpleNamespace(bbox=(150,150,190,190))
+        class FakePlumber:
+            def __init__(self,words=()):
+                self.words=list(words)
+            def crop(self, box):
+                return SimpleNamespace(extract_words=lambda:self.words)
+        args=(nested, [[None,None],[None,None]], [outer], FakePlumber(), [])
+        self.assertTrue(_is_nested_empty_table_artifact(*args))
+        self.assertFalse(_is_nested_empty_table_artifact(
+            nested, [["30 mg"]], [outer], FakePlumber(), []))
+        self.assertFalse(_is_nested_empty_table_artifact(
+            nested, [[None]], [outer], FakePlumber(["dose"]), []))
+        self.assertFalse(_is_nested_empty_table_artifact(
+            nested, [[None]], [], FakePlumber(), []))
+        overlapping=SimpleNamespace(bbox=BBox(150,150,190,190))
+        self.assertFalse(_is_nested_empty_table_artifact(
+            nested, [[None]], [outer], FakePlumber(), [overlapping]))
+        oversized=SimpleNamespace(bbox=(150,150,210,210))
+        self.assertFalse(_is_nested_empty_table_artifact(
+            oversized, [[None]], [outer], FakePlumber(), []))
+
+    def test_vector_preview_persists_with_checksum_and_review_label(self):
+        import hashlib
+        import io
+        import json
+        from types import SimpleNamespace
+        from PIL import Image
+        from pdf_processor import PageContent,PageElement,BBox,ElementType,DocumentStructure
+        from page_stage import _page_row
+        buf=io.BytesIO()
+        Image.new("RGB",(20,20),"white").save(buf,format="PNG")
+        png=buf.getvalue()
+        vector=PageElement(ElementType.VECTOR_REGION,
+                           BBox(50,70,80,90),vector_png=png)
+        page=PageContent(
+            page_number=1,width=600,height=800,
+            raw_text="Clinical results and dose 25 mg",
+            elements=[PageElement(ElementType.TEXT,BBox(50,50,400,80),
+                                  text="Clinical results and dose 25 mg"),vector])
+        struct=DocumentStructure(
+            file_path="/test.pdf",file_name="test.pdf",doc_id="doc1",
+            page_count=1,pages=[page])
+        row=_page_row(page,struct,"src","fingerprint")
+        elements=json.loads(row[9])
+        entry=next(v for v in elements if v["type"]=="vector_region")
+        self.assertEqual(entry["vector_preview"]["sha256"],
+                         hashlib.sha256(png).hexdigest())
+        self.assertTrue(entry["vector_preview"]["review_required"])
+        self.assertGreater(len(entry["vector_preview"]["base64"]),10)
+
     def test_native_pdf_mixed_styles_and_resumable_windows(self):
         import fitz
         from pdf_processor import PDFProcessor
