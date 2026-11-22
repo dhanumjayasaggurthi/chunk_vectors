@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/real-nist-rich-test.yml
       - tests/diagnose_pdf_tables.py
+      - tests/benchmark_rich_capture_overhead.py
       - pdf_processor.py
       - table_extractor.py
   workflow_dispatch:
@@ -56,6 +57,10 @@ jobs:
               data = extract(row, max_pages=0, batch_size=8)
               print('NIST_FULL_SUMMARY='+json.dumps(data, sort_keys=True))
               Path('nist_full_report.json').write_text(json.dumps(data,indent=2))
+              from benchmark_rich_capture_overhead import compare_rich_capture
+              overhead=compare_rich_capture(row['path'],batch_size=16,repeats=2)
+              print('RICH_CAPTURE_OVERHEAD='+json.dumps(overhead,sort_keys=True))
+              Path('nist_rich_style_overhead.json').write_text(json.dumps(overhead,indent=2))
               assert data['source_pages'] == data['extracted_pages']
               assert data['source_pages'] >= 100
               assert not data['errors']
@@ -69,4 +74,5 @@ jobs:
           path: |
             nist_full_report.json
             nist_table_diagnostics.json
+            nist_rich_style_overhead.json
           retention-days: 14
