@@ -70,7 +70,7 @@ def create_translation_table(conn, *, schema: str = "public"):
             )
         """)
         cur.execute(f"""CREATE INDEX IF NOT EXISTS rich_translation_claim_idx
-            ON {qualified}(state,lease_until) WHERE state IN ('pending','leased')""")
+            ON {qualified}(state,lease_until) WHERE state IN ('pending','leased','failed')""")
     conn.commit()
 
 
@@ -110,7 +110,7 @@ def claim_batch(conn, *, owner: str, batch_size=16, lease_seconds=300,
                 SELECT segment_id,source_sha256,translation_hash
                 FROM {table}
                 WHERE attempts < %s AND
-                      (state='pending' OR (state='leased' AND lease_until < now()))
+                      (state IN ('pending','failed') OR (state='leased' AND lease_until < now()))
                 ORDER BY updated_at,segment_id
                 FOR UPDATE SKIP LOCKED LIMIT %s
             )
