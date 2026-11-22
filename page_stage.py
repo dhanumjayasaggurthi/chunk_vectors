@@ -56,6 +56,7 @@ def settings(profile):
         "max_window_raster_bytes":160_000_000,
         "max_render_pixels":50_000_000,
         "ocr_enabled":True,
+        "capture_rich_text":False,
     }
     result.update(opts)
     return result
@@ -74,7 +75,8 @@ def extraction_fingerprint(profile) -> str:
     )
     cfg=settings(profile)
     semantic={
-        "stage_format_version":2,
+        "stage_format_version":3 if cfg["capture_rich_text"] else 2,
+        "capture_rich_text":cfg["capture_rich_text"],
         "ocr_enabled":cfg["ocr_enabled"],
         "ocr_bbox_detail":cfg["ocr_bbox_detail"],
         "ocr_confidence_min":cfg["ocr_confidence_min"],
@@ -270,6 +272,14 @@ def _page_row(page, struct, source, extraction_hash):
             "text":element.text, "confidence":round(float(element.confidence),5),
             "reading_order":element.reading_order,
         }
+        if cfg_rich := getattr(element, "runs", None):
+            from rich_document import validate_runs
+            entry["runs"]=validate_runs(cfg_rich)
+            if getattr(element,"semantic_role",""):
+                entry["semantic_role"]=element.semantic_role
+                entry["heading_level"]=element.heading_level
+        if getattr(element, "language", ""):
+            entry["language"]=element.language
         if getattr(element,"ocr_regions",None):
             entry["ocr_regions"]=element.ocr_regions
             entry["ocr_render_dpi"]=OCR_RENDER_DPI
@@ -471,6 +481,7 @@ def _ocr_pages(pages, cfg, limiter, *, ocr_gate=None, chart_gate=None):
                         continue
                     element.text=response.text
                     element.confidence=response.confidence
+                    element.language=getattr(response,"language","") or ""
                     element.ocr_regions=response.regions
                     if (element.element_type==ElementType.IMAGE
                             and not response.text.strip()):
@@ -615,6 +626,7 @@ def stage_one(
         proc=PDFProcessor(
             str(path),doc_id,path.name,strict=True,
             max_render_pixels=cfg["max_render_pixels"],
+            capture_rich_text=cfg["capture_rich_text"],
         )
         # Header-only read is cheap; don't render completed pages during resume.
         with __import__("fitz").open(str(path)) as pdf:
