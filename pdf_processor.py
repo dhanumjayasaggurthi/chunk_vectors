@@ -107,6 +107,10 @@ class PageElement:
     image_bytes:  bytes      = field(default=b"", repr=False)  # PNG bytes for OCR
     confidence:   float      = 1.0   # OCR confidence  (0-1)
     reading_order: int       = 0
+    runs:          list[dict] = field(default_factory=list)  # optional rich text spans
+    language:      str        = ""
+    semantic_role: str        = ""
+    heading_level: int        = 0
 
 
 @dataclass
@@ -255,8 +259,10 @@ class PDFProcessor:
         *,
         strict: bool = False,
         max_render_pixels: int | None = None,
+        capture_rich_text: bool = False,
     ):
         self.strict = strict
+        self.capture_rich_text = capture_rich_text
         self.max_render_pixels = max_render_pixels
         self.file_path = file_path
         self.doc_id    = doc_id
@@ -501,11 +507,19 @@ class PDFProcessor:
             b = block.get("bbox", (0, 0, 0, 0))
             bbox = BBox(b[0], b[1], b[2], b[3])
 
-            # Gather all span text within block
+            # Capture typography in the SAME native text pass; no extra PDF I/O.
+            # Legacy runs remain empty unless capture_rich_text is explicitly enabled.
             block_text = ""
-            for line in block.get("lines", []):
+            rich_runs = []
+            largest_font = 0.0
+            if self.capture_rich_text:
+                from rich_document import native_run
+            for line_index, line in enumerate(block.get("lines", [])):
                 for span in line.get("spans", []):
                     block_text += span.get("text", "")
+                    if self.capture_rich_text:
+                        rich_runs.append(native_run(span, line_index))
+                        largest_font = max(largest_font, float(span.get("size") or 0))
                 block_text += "\n"
 
             block_text = _clean_text(block_text)
@@ -518,7 +532,11 @@ class PDFProcessor:
                 element_type=ElementType.TEXT,
                 bbox=bbox,
                 text=block_text,
+                runs=rich_runs,
             )
+            if rich_runs and _looks_like_heading(block_text, largest_font, median_size):
+                el.semantic_role = "heading"  # heuristic, not a PDF semantic tag
+                el.heading_level = 1 if largest_font >= median_size * 1.5 else 2
             text_elements.append(el)
 
         # ── 3. Image elements ────────────────────────────────────────────────
