@@ -67,6 +67,7 @@ class ElementType(str, Enum):
     TABLE = "table"
     CHART = "chart"
     MIXED = "mixed"
+    VECTOR_REGION = "vector_region"  # unclassified graphical artifact, not a text table
 
 
 @dataclass
@@ -111,6 +112,7 @@ class PageElement:
     language:      str        = ""
     semantic_role: str        = ""
     heading_level: int        = 0
+    vector_png:    bytes     = field(default=b"", repr=False)
 
 
 @dataclass
@@ -234,6 +236,42 @@ def _is_chart(img_bbox: BBox, text_elements: list[PageElement]) -> bool:
     # If there are numbers/% in nearby text → likely chart
     num_matches = len(re.findall(r"\d+[.,]?\d*\s*%?", nearby_text))
     return num_matches >= 3
+
+
+
+def _is_nested_empty_table_artifact(table, cells, valid_tables, plumb_page,
+                                    image_elements: list[PageElement]) -> bool:
+    """Guarded classification of PDF line-work mistaken for a nested table.
+
+    Never discard a region that contains text, overlaps an image, is not fully
+    inside a valid extracted table, or exceeds the bounded tiny-region limit.
+    The caller MUST preserve a PNG snapshot of classified vector geometry.
+    """
+    if not isinstance(cells, list):
+        return False
+    if any(str(cell).strip() for row in cells if row
+           for cell in row if cell is not None):
+        return False
+    try:
+        bbox = BBox(*(float(v) for v in table.bbox))
+    except (TypeError, ValueError):
+        return False
+    if not 0 < bbox.area <= 2500:
+        return False
+    if any(el.bbox.overlaps(bbox) for el in image_elements):
+        return False
+    if not any(
+        parent is not table
+        and parent.bbox[0] <= bbox.x0 and parent.bbox[1] <= bbox.y0
+        and parent.bbox[2] >= bbox.x1 and parent.bbox[3] >= bbox.y1
+        and (parent.bbox[2]-parent.bbox[0]) *
+            (parent.bbox[3]-parent.bbox[1]) >= 4 * bbox.area
+        for parent in valid_tables
+    ):
+        return False
+    # A successful table extraction in the parent does NOT license dropping
+    # textual content from nested boxes. Require zero source PDF words.
+    return not plumb_page.crop(tuple(table.bbox)).extract_words()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -643,20 +681,48 @@ class PDFProcessor:
         # tables, the exact source bbox, and raw cell content. No second
         # pdfplumber open / find_tables during later OCR-table assembly.
         staged_table_results = None
+        vector_elements: list[PageElement] = []
         if self.strict and plumb_page is not None:
             from table_extractor import TableExtractor
             extractor = TableExtractor(self.file_path, summarise=False)
             detected = plumb_page.find_tables(TABLE_SETTINGS)
+            candidates = [
+                (idx, table, table.extract())
+                for idx, table in enumerate(detected)
+            ]
+            assessed = [
+                (idx, table, raw, extractor._process_table(
+                    raw, page_number, idx, "", allow_short=True))
+                for idx, table, raw in candidates
+            ]
+            valid_tables = [table for _, table, _, result in assessed
+                            if result is not None]
             staged_table_results = []
-            for idx, table in enumerate(detected):
-                result = extractor._process_table(
-                    table.extract(), page_number, idx, "",
-                    allow_short=True,
-                )
+            for idx, table, raw, result in assessed:
                 if result is None:
-                    raise RuntimeError(
-                        f"Table {idx} page {page_number} has no recoverable cells"
-                    )
+                    if not _is_nested_empty_table_artifact(
+                        table, raw, valid_tables, plumb_page, image_elements
+                    ):
+                        raise RuntimeError(
+                            f"Table {idx} page {page_number} has no recoverable cells"
+                        )
+                    # Rasterize ONLY the tiny ambiguous region. Store source
+                    # geometry and a bounded PNG for future human/visual review,
+                    # rather than dropping graphical evidence from the page.
+                    png = page.get_pixmap(
+                        matrix=fitz.Matrix(2, 2),
+                        clip=fitz.Rect(*table.bbox),
+                        alpha=False,
+                    ).tobytes("png")
+                    if not 0 < len(png) <= 128_000:
+                        raise RuntimeError(
+                            f"Vector region p{page_number} PNG budget exceeded"
+                        )
+                    vector_elements.append(PageElement(
+                        element_type=ElementType.VECTOR_REGION,
+                        bbox=BBox(*table.bbox), vector_png=png,
+                    ))
+                    continue
                 result.bbox = tuple(table.bbox)
                 staged_table_results.append(result)
             table_bboxes = [BBox(*result.bbox) for result in staged_table_results]
@@ -671,7 +737,7 @@ class PDFProcessor:
             table_elements.append(el)
 
         # ── 6. Blank page check ──────────────────────────────────────────────
-        all_elements = text_elements + image_elements + table_elements
+        all_elements = text_elements + image_elements + table_elements + vector_elements
         if not all_elements:
             pc.is_blank = True
             return pc
@@ -688,7 +754,7 @@ class PDFProcessor:
         pc.has_tables = len(table_elements) > 0
         if staged_table_results is not None:
             pc.staged_table_results = staged_table_results
-        pc.has_images = len(image_elements) > 0
+        pc.has_images = len(image_elements) > 0 or bool(vector_elements)
 
         # raw_text = joined text from TEXT elements in reading order
         # (image/table .text filled later by vision_ocr + table_extractor)
