@@ -48,6 +48,11 @@ if not 1 <= POSTGRES["connect_timeout_seconds"] <= 120:
     raise ValueError("POSTGRES connect_timeout_seconds must be 1..120")
 if not (1 <= POSTGRES["pool_min_connections"] <= POSTGRES["pool_max_connections"] <= 128):
     raise ValueError("Invalid POSTGRES pool size; 1 <= min <= max <= 128")
+if POSTGRES["pool_enabled"] and POSTGRES["pool_max_connections"] < 2:
+    raise ValueError(
+        "POSTGRES pool_max_connections must be >=2; extraction holds "
+        "a session advisory lock while it checkpoints through another lease"
+    )
 if not 1 <= POSTGRES["pool_acquire_timeout_seconds"] <= 600:
     raise ValueError("POSTGRES pool_acquire_timeout_seconds must be 1..600")
 
