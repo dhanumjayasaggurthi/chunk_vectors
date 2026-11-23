@@ -101,8 +101,15 @@ def attach_metadata(struct, chunks: list, config: dict) -> dict:
             elif rule.get("required",False):
                 raise ValueError("Required chunk metadata not found: " + name)
         chunk.document_metadata = dict(doc_metadata)
-        chunk.chunk_metadata = local
-        chunk.effective_metadata = {**(doc_metadata if inherit else {}), **local}
+        structural=getattr(chunk,"chunk_metadata",{}) or {}
+        collisions=set(structural).intersection(local)
+        if collisions:
+            raise ValueError("Configured metadata conflicts with reserved structural metadata: "
+                             + ", ".join(sorted(collisions)))
+        chunk.chunk_metadata = {**structural,**local}
+        chunk.effective_metadata = {
+            **(doc_metadata if inherit else {}),**chunk.chunk_metadata
+        }
         if not getattr(chunk,"headers",None):
             chunk.headers = [chunk.section_title] if chunk.section_title else []
     struct.metadata_evidence = evidence
