@@ -31,6 +31,7 @@ class ReviewSettings:
     review_table: str
     statement_timeout_ms: int = 15000
     lock_timeout_ms: int = 3000
+    max_manifest_bytes: int = 65536
 
     def validate(self):
         for item in (self.schema,self.ledger_table,self.review_table):
@@ -43,6 +44,8 @@ class ReviewSettings:
             raise ValueError("Invalid statement timeout")
         if type(self.lock_timeout_ms) is not int or not 100 <= self.lock_timeout_ms <= 30000:
             raise ValueError("Invalid lock timeout")
+        if type(self.max_manifest_bytes) is not int or not 1024 <= self.max_manifest_bytes <= 524288:
+            raise ValueError("Invalid review manifest size limit")
         return self
 
     @property
@@ -131,10 +134,9 @@ def record(settings, *, manifest_path, pdf_path, extraction_hash,
     if not isinstance(lease_token,str) or not re.fullmatch(r"[a-f0-9-]{36}",lease_token):
         raise ValueError("Invalid lease token")
 
-    from visual_task_ledger import LedgerSettings
     evidence=validate_evidence(
         Path(manifest_path),Path(pdf_path),extraction_hash,
-        LedgerSettings(schema=settings.schema,table=settings.ledger_table).max_manifest_bytes,
+        settings.max_manifest_bytes,
     )
     task_id=evidence["visual_task_id"]
     response={
