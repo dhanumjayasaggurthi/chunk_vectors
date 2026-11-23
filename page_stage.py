@@ -74,6 +74,7 @@ def settings(profile):
         "max_visual_regions_per_page":256,
         "worker_backend":"threads",
         "worker_recycle_documents":0,
+        "profile_stage_timings":False,
     }
     result.update(opts)
     return result
@@ -717,7 +718,9 @@ def stage_one(
         str(path).encode("utf-8")
     ).hexdigest())
     before=path.stat()
+    source_hash_started=time.monotonic()
     source=source_hash(str(path))
+    initial_hash_seconds=time.monotonic()-source_hash_started
     fingerprint=extraction_fingerprint(profile)
     from approved_images import read_approved_image_manifest
     approved_images, _ = read_approved_image_manifest(
@@ -750,20 +753,29 @@ def stage_one(
         pages_processed=0
         images_processed=0
         visuals_deferred=0
+        timings={"pdf_parse":0.0,"ocr":0.0,"table_postprocessing":0.0,
+                 "checkpoint_sql":0.0,"publish_sql":0.0,
+                 "source_verification":0.0}
+        parse_started=time.monotonic()
         for window in proc.iter_page_batches(
             cfg["page_batch_size"],completed_pages=done,
             max_window_raster_bytes=cfg["max_window_raster_bytes"],
         ):
+            timings["pdf_parse"]+=time.monotonic()-parse_started
             invalid={
                 page.page_number:RuntimeError(page.error)
                 for page in window.pages if page.error
             }
             active=[page for page in window.pages if not page.error]
+            phase_started=time.monotonic()
             ocr_errors,ocr_count=_ocr_pages(
                 active,cfg,limiter,ocr_gate=ocr_gate,chart_gate=chart_gate
             )
+            timings["ocr"]+=time.monotonic()-phase_started
             invalid.update(ocr_errors)
+            phase_started=time.monotonic()
             table_errors=_tables(active,str(path),cfg)
+            timings["table_postprocessing"]+=time.monotonic()-phase_started
             invalid.update(table_errors)
             rows=[]
             for page in active:
@@ -773,7 +785,9 @@ def stage_one(
                     rows.append(_page_row(page,window,source,fingerprint))
                 except Exception as exc:
                     invalid[page.page_number]=exc
+            phase_started=time.monotonic()
             _persist_window(rows,invalid,doc_id,source,fingerprint,n)
+            timings["checkpoint_sql"]+=time.monotonic()-phase_started
             visuals_deferred+=sum(
                 1 for page in active if page.page_number not in invalid
                 for element in page.elements if getattr(element,"visual_asset",None)
@@ -789,13 +803,16 @@ def stage_one(
                 doc_id[:12],len(done)+pages_processed,page_count,
                 errors_total,images_processed,(pages_processed*60)/elapsed,
             )
+            parse_started=time.monotonic()
         # Full content hash protects against a PDF being modified during
         # a long-running extraction, including changes undetected by mtime.
+        verification_started=time.monotonic()
         after=path.stat()
         if (before.st_size!=after.st_size
             or before.st_mtime_ns!=after.st_mtime_ns
             or source_hash(str(path))!=source):
             raise RuntimeError("Source PDF changed during extraction; no publication")
+        timings["source_verification"]+=time.monotonic()-verification_started
         if errors_total:
             return {
                 "doc_id":doc_id,"status":"INCOMPLETE","pages":page_count,
@@ -804,11 +821,13 @@ def stage_one(
                 "elapsed_seconds":round(time.monotonic()-started,2),
             }
         try:
+            publication_started=time.monotonic()
             _publish(
                 doc_id,source,fingerprint,page_count,n,
                 allow_unreviewed=(cfg["publish_unreviewed_vector_regions"]
                                   or cfg["visual_processing"]=="preserve_defer"),
             )
+            timings["publish_sql"]+=time.monotonic()-publication_started
         except VisualReviewRequired as pending:
             return {
                 "doc_id":doc_id, "status":"REVIEW_REQUIRED",
@@ -827,6 +846,10 @@ def stage_one(
             "native_extraction_complete":True,
             "visual_enrichment_complete":visuals_deferred==0,
             "visual_assets_deferred_this_run":visuals_deferred,
+            **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
+                "stage_timings_seconds":{key:round(value,3)
+                                         for key,value in timings.items()}}
+               if cfg["profile_stage_timings"] else {}),
         }
 
 
