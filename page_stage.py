@@ -306,7 +306,10 @@ def _page_row(page, struct, source, extraction_hash):
         if getattr(element, "visual_asset", None):
             if entry["type"] not in ("image","chart") or element.image_bytes:
                 raise ValueError("Invalid preserved visual source reference")
-            entry["visual_asset"]=element.visual_asset
+            from pdf_processor import validate_visual_asset
+            entry["visual_asset"]=validate_visual_asset(
+                element.visual_asset, page_number=page.page_number,
+            )
         if getattr(element, "source_table", None) is not None:
             from table_extractor import validate_source_table
             if entry["type"]!="table":
