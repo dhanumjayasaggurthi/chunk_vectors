@@ -1,8 +1,0 @@
-# Independent, append-only reviewer decisions; not a replacement for OCR
-# or chart numeric interpretation. Review only source-image fidelity.
-version: 1
-schema: cv_validation_v1
-ledger_table: cv_bench_visual_tasks_v1
-review_table: cv_bench_visual_reviews_v1
-statement_timeout_ms: 15000
-lock_timeout_ms: 3000
