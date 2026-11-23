@@ -67,6 +67,7 @@ def settings(profile):
         "ocr_enabled":True,
         "capture_rich_text":False,
         "publish_unreviewed_vector_regions":False,
+        "approved_image_manifest":"",
     }
     result.update(opts)
     return result
@@ -98,6 +99,12 @@ def extraction_fingerprint(profile) -> str:
         "table_settings":TABLE_SETTINGS,
         "table_format":TABLE_FORMAT,
     }
+    # The approved-asset manifest changes extraction meaning and must never
+    # reuse checkpoints produced under an older approval policy.
+    if cfg["approved_image_manifest"]:
+        from approved_images import read_approved_image_manifest
+        _,manifest_hash=read_approved_image_manifest(cfg["approved_image_manifest"])
+        semantic["approved_image_manifest_sha256"]=manifest_hash
     payload=json.dumps(semantic,sort_keys=True,separators=(",",":"),
                        allow_nan=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -283,6 +290,14 @@ def _page_row(page, struct, source, extraction_hash):
             "text":element.text, "confidence":round(float(element.confidence),5),
             "reading_order":element.reading_order,
         }
+        if getattr(element, "approved_asset", None):
+            metadata=element.approved_asset
+            if (not isinstance(metadata,dict)
+                    or metadata.get("approval_status")!="approved"
+                    or metadata.get("text") != element.text
+                    or element.image_bytes):
+                raise ValueError("Approved asset metadata or OCR policy invalid")
+            entry["approved_asset"]=metadata
         if getattr(element, "vector_png", b""):
             import base64
             png = element.vector_png
@@ -440,6 +455,15 @@ def _images_in_groups(pages, cfg):
             continue
         for element in page.elements:
             if element.element_type not in (ElementType.IMAGE,ElementType.CHART):
+                continue
+            if getattr(element, "approved_asset", None):
+                if element.text and not element.image_bytes:
+                    # Exact, manually approved source-image digest, not a
+                    # general skip for small/non-text images.
+                    continue
+                errors[page.page_number]=ValueError(
+                    "Approved image lost its provenance or text"
+                )
                 continue
             if not element.image_bytes:
                 errors[page.page_number]=ValueError("Image region could not render")
@@ -653,6 +677,10 @@ def stage_one(
     before=path.stat()
     source=source_hash(str(path))
     fingerprint=extraction_fingerprint(profile)
+    from approved_images import read_approved_image_manifest
+    approved_images, _ = read_approved_image_manifest(
+        cfg["approved_image_manifest"]
+    )
     started=time.monotonic()
     with profile_document_lock(doc_id,fingerprint) as acquired:
         if not acquired:
@@ -662,6 +690,7 @@ def stage_one(
             str(path),doc_id,path.name,strict=True,
             max_render_pixels=cfg["max_render_pixels"],
             capture_rich_text=cfg["capture_rich_text"],
+            approved_image_assets=approved_images,
         )
         # Header-only read is cheap; don't render completed pages during resume.
         with __import__("fitz").open(str(path)) as pdf:
