@@ -249,8 +249,9 @@ def chunk_semantic_v2(struct,policy):
             )
             if first.table_header:
                 prefix.append(first.table_header)
-                prefix.append("|"+ " --- |" * (first.table_header.count(r"\|")+
-                     first.table_header.count("|")-1) if False else "")
+                columns=info.get("column_count",0)
+                if type(columns) is int and columns > 0:
+                    prefix.append("| " + " | ".join(["---"]*columns) + " |")
         return "\n".join(x for x in prefix if x)+"\n\n"+body if prefix else body
 
     def emit(parts):
@@ -329,10 +330,12 @@ def chunk_semantic_v2(struct,policy):
     section_key=None
     section_id=""
     section_ordinal=0
+    section_chunk_index=0
     for index,chunk in enumerate(chunks):
         key=chunk._section_path
         if key!=section_key:
             section_ordinal+=1
+            section_chunk_index=0
             section_key=key
             section_id=hashlib.sha256(
                 f"{struct.doc_id}:section:{section_ordinal}:{chunk.page_start}:"
@@ -340,13 +343,11 @@ def chunk_semantic_v2(struct,policy):
             ).hexdigest()
         chunk.chunk_metadata.update({
             "section_id":section_id,
-            "section_chunk_index":sum(
-                1 for prev in chunks[:index]
-                if prev.chunk_metadata.get("section_id")==section_id
-            ),
+            "section_chunk_index":section_chunk_index,
             "previous_chunk_id":chunks[index-1].chunk_id if index else None,
             "next_chunk_id":chunks[index+1].chunk_id if index+1<len(chunks) else None,
         })
         chunk.chunk_total=len(chunks)
+        section_chunk_index+=1
         del chunk._section_path
     return chunks
