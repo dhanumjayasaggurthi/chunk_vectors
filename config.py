@@ -37,7 +37,19 @@ POSTGRES = {
     "password": _get("POSTGRES", "password"),
     "schema": _get("POSTGRES", "schema"),
     "folder": _get("POSTGRES", "folder"),
+    "connect_timeout_seconds": int(_get("POSTGRES", "connect_timeout_seconds", 10)),
+    "pool_enabled": _get("POSTGRES", "pool_enabled", "false").strip().lower() in ("1", "yes", "true"),
+    "pool_min_connections": int(_get("POSTGRES", "pool_min_connections", 1)),
+    "pool_max_connections": int(_get("POSTGRES", "pool_max_connections", 8)),
+    "pool_acquire_timeout_seconds": int(_get("POSTGRES", "pool_acquire_timeout_seconds", 30)),
 }
+
+if not 1 <= POSTGRES["connect_timeout_seconds"] <= 120:
+    raise ValueError("POSTGRES connect_timeout_seconds must be 1..120")
+if not (1 <= POSTGRES["pool_min_connections"] <= POSTGRES["pool_max_connections"] <= 128):
+    raise ValueError("Invalid POSTGRES pool size; 1 <= min <= max <= 128")
+if not 1 <= POSTGRES["pool_acquire_timeout_seconds"] <= 600:
+    raise ValueError("POSTGRES pool_acquire_timeout_seconds must be 1..600")
 
 # Schema to create EPOD tables inside (keeps them separate from rimdocs_nipo)
 DB_SCHEMA = _get("POSTGRES", "schema")
