@@ -65,6 +65,7 @@ extracted_content:
 chunking:
   strategy: toc_then_semantic
   boundary_mode: semantic_v2
+  merge_cross_page_paragraphs: true
   table_row_mode: rows
   table_continuation: conservative
   max_table_pages: 8
