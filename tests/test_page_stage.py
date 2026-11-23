@@ -88,6 +88,73 @@ class TestPageStageIntegration(unittest.TestCase):
         finally:
             cls.dir.cleanup()
 
+    def test_explicit_approved_logo_publishes_with_original_sha_provenance(self):
+        import io
+        import fitz
+        import yaml
+        from PIL import Image
+        from page_stage import init, stage_one, names
+
+        sample=Path(self.dir.name)/"known-logo.pdf"
+        png_io=io.BytesIO()
+        Image.new("RGB",(585,217),"white").save(png_io,format="PNG")
+        with fitz.open() as pdf:
+            for i in range(2):
+                pg=pdf.new_page()
+                pg.insert_image(fitz.Rect(72,36,263.5,106.9),
+                                stream=png_io.getvalue())
+                pg.insert_text((72,200),
+                    "Regulatory original text remains separate from the "
+                    "approved image description. Protocol ABC-123 "
+                    "safety evidence on page "+str(i+1),fontsize=11)
+                pg.insert_text((72,220),
+                    "More native text dose and compliance audit "
+                    "details retained without using cloud OCR.",fontsize=11)
+            pdf.save(sample)
+        with fitz.open(sample) as pdf:
+            xref=pdf[0].get_images(full=True)[0][0]
+            image=pdf.extract_image(xref)["image"]
+            source_digest=hashlib.sha256(image).hexdigest()
+        manifest=Path(self.dir.name)/"reviewed-logo.yml"
+        manifest.write_text(yaml.safe_dump({
+            "version":1,"assets":[{
+                "sha256":source_digest, "status":"approved","kind":"logo",
+                "text":"Verified approval: example agency logo",
+                "reviewed_by":"test-operator",
+                "approval_reference":"integration-evidence-1",
+            }]
+        }),encoding="utf-8")
+        p=staging_profile()
+        p["extraction"].update(
+            capture_rich_text=True,
+            approved_image_manifest=str(manifest),
+        )
+        n=names(p)
+        init(p,apply=True)
+        result=stage_one(str(sample),p,n,doc_id="approved_asset_stage_case")
+        self.assertEqual(result["status"],"SUCCESS")
+        self.assertEqual(result["new_pages"],2)
+        conn=self.connection()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT page_number,chunk_text,elements
+                    FROM intake_ci.ci_pdf_pages
+                    WHERE doc_id=%s ORDER BY page_number""",
+                    ("approved_asset_stage_case",))
+                rows=cur.fetchall()
+        conn.close()
+        self.assertEqual(len(rows),2)
+        for number,text,elements in rows:
+            self.assertIn("Regulatory original text",text)
+            self.assertIn("Verified approval: example agency logo",text)
+            images=[item for item in elements if item["type"]=="image"]
+            self.assertEqual(len(images),1)
+            image=images[0]
+            self.assertEqual(image["approved_asset"]["source_sha256"],source_digest)
+            self.assertEqual(image["approved_asset"]["approval_reference"],
+                             "integration-evidence-1")
+            self.assertGreater(image["approved_asset"]["source_xref"],0)
+
     def test_unreviewed_visual_artifact_is_checkpointed_but_not_published(self):
         import io
         from PIL import Image
