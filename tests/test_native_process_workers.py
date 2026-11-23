@@ -7,6 +7,40 @@ import unittest
 from pathlib import Path
 
 
+def _process_native_pdf(path):
+    from pdf_processor import PDFProcessor
+    processor=PDFProcessor(
+        str(path),"synthetic","synthetic.pdf",
+        strict=True,preserve_uninterpreted_visuals=True,
+    )
+    pages=[]
+    for window in processor.iter_page_batches(batch_pages=2):
+        pages.extend(p.page_number for p in window.pages if not p.error)
+    return pages
+
+
+class ProcessSpawnSmokeTests(unittest.TestCase):
+    def test_native_pdf_documents_parse_in_distinct_spawned_processes(self):
+        import concurrent.futures
+        import multiprocessing
+        import fitz
+        with tempfile.TemporaryDirectory() as tmp:
+            paths=[]
+            for doc in range(2):
+                path=Path(tmp)/f"document-{doc}.pdf"
+                with fitz.open() as pdf:
+                    for page_num in range(2):
+                        page=pdf.new_page()
+                        page.insert_text((70,70),f"Native text document {doc} page {page_num}.")
+                    pdf.save(path)
+                paths.append(str(path))
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=2,mp_context=multiprocessing.get_context("spawn"),
+            ) as pool:
+                results=list(pool.map(_process_native_pdf,paths))
+            self.assertEqual(results,[[1,2],[1,2]])
+
+
 @unittest.skipUnless(
     os.getenv("INGESTION_REUSE_TEST_DB") == "1"
     and os.getenv("PGDATABASE") == "embedding_test",
