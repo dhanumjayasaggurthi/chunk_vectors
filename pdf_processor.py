@@ -569,7 +569,7 @@ class PDFProcessor:
         )
         pc.rotation = int(page.rotation)
         # Fail a pathological render before allocating a multi-GB pixmap.
-        if self.max_render_pixels is not None:
+        if self.max_render_pixels is not None and not self.preserve_uninterpreted_visuals:
             scale = OCR_RENDER_DPI / 72.0
             pixels = int(width * scale) * int(height * scale)
             if pixels > self.max_render_pixels:
