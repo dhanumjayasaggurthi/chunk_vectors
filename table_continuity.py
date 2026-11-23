@@ -1,0 +1,120 @@
+"""Conservative cross-page table linkage on already-preserved source cells.
+
+Never modifies source_tables or fabricates missing rows. When a continuation
+is ambiguous, it remains separate. Output is lightweight element metadata,
+which the existing chunk JSONB metadata column can carry without new tables.
+"""
+from __future__ import annotations
+
+import hashlib
+import re
+
+
+def _header(element):
+    table = getattr(element, "source_table", None) or {}
+    cells = table.get("source_cells") or []
+    for row in cells[:3]:
+        if not isinstance(row, list):
+            continue
+        values=tuple(re.sub(r"\s+", " ", str(cell or "")).strip().casefold()
+                     for cell in row)
+        if sum(bool(v) for v in values) >= 2:
+            return values
+    return ()
+
+
+def _candidate(prev_page, prev, page, nxt, *, edge_fraction, x_tolerance):
+    prev_data=getattr(prev,"source_table",None)
+    next_data=getattr(nxt,"source_table",None)
+    if not prev_data or not next_data:
+        return False
+    if prev_data.get("max_columns") != next_data.get("max_columns"):
+        return False
+    if prev_data.get("max_columns",0) < 2:
+        return False
+    # Both page-edge positioning AND a repeated source header are required.
+    # Similar widths alone can merge unrelated adjacent regulatory tables.
+    if (prev.bbox.y1 < prev_page.height * (1-edge_fraction)
+            or nxt.bbox.y0 > page.height * edge_fraction):
+        return False
+    if (_header(prev) != _header(nxt) or not _header(prev)):
+        return False
+    if (abs(prev.bbox.x0/prev_page.width - nxt.bbox.x0/page.width) > x_tolerance
+            or abs(prev.bbox.x1/prev_page.width - nxt.bbox.x1/page.width) > x_tolerance):
+        return False
+    return True
+
+
+def link_tables(struct, policy):
+    mode=policy.get("table_continuation","none")
+    if mode not in ("none","conservative"):
+        raise ValueError("Unsupported cross-page table policy")
+    maximum=policy.get("max_table_pages",8)
+    edge=policy.get("table_edge_fraction",0.25)
+    tolerance=policy.get("table_x_tolerance",0.05)
+    if type(maximum) is not int or not 1<=maximum<=64:
+        raise ValueError("Invalid max_table_pages")
+    if type(edge) not in (float,int) or not 0.05<=edge<=0.45:
+        raise ValueError("Invalid table_edge_fraction")
+    if type(tolerance) not in (float,int) or not 0.0<=tolerance<=0.2:
+        raise ValueError("Invalid table_x_tolerance")
+    pages=sorted(struct.pages,key=lambda p:p.page_number)
+    groups=[]
+    last_page=None
+    last_element=None
+    last_group=None
+    for page in pages:
+        if page.error or page.is_blank:
+            last_page=page
+            last_element=None
+            last_group=None
+            continue
+        page_tables=[
+            el for el in page.elements
+            if getattr(getattr(el,"element_type",None),"value","")
+               == "table" and getattr(el,"source_table",None)
+        ]
+        for index,element in enumerate(page_tables):
+            merged=False
+            if (mode=="conservative" and index==0
+                    and last_group is not None and last_element is not None
+                    and last_page is not None
+                    and page.page_number==last_page.page_number+1
+                    and len(last_group)<maximum
+                    and _candidate(last_page,last_element,page,element,
+                                   edge_fraction=edge,x_tolerance=tolerance)):
+                last_group.append((page,element))
+                merged=True
+            if not merged:
+                last_group=[(page,element)]
+                groups.append(last_group)
+            # Only LAST table on the previous page may continue to FIRST
+            # table on the next page.
+            last_element=element if index==len(page_tables)-1 else None
+        last_page=page
+        if not page_tables:
+            last_group=None
+            last_element=None
+    result={}
+    for group in groups:
+        first_page=group[0][0].page_number
+        last_page=group[-1][0].page_number
+        group_id=hashlib.sha256(
+            f"{struct.doc_id}::table::{first_page}::{group[0][1].reading_order}".encode()
+        ).hexdigest()
+        pages_in_group=[p.page_number for p,_ in group]
+        for position,(page,element) in enumerate(group):
+            info={
+                "table_id":group_id,
+                "page_start":first_page,
+                "page_end":last_page,
+                "fragment_index":position,
+                "fragment_count":len(group),
+                "source_pages":pages_in_group,
+                "continuation_verified":len(group)>1,
+                "method":"repeated_header_and_page_edge" if len(group)>1 else "single_page",
+                "header_cells":list(_header(group[0][1])),
+            }
+            element.table_continuity=info
+        result[group_id]=[el for _,el in group]
+    return result
