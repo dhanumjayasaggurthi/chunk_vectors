@@ -13,13 +13,7 @@ on:
       - processing_profile.py
       - tests/test_rich_document.py
       - figure_recovery.py
-      - visual_task_ledger.py
-      - visual_review_decision.py
-      - tests/test_visual_review_decision.py
       - tests/test_deferred_visual_native.py
-      - profiles/visual_review_decision_example.yml
-      - profiles/visual_recovery_ledger_example.yml
-      - tests/test_visual_task_ledger.py
       - tests/test_figure_recovery.py
       - logger.py
       - tests/test_logger_encoding.py
@@ -67,11 +61,9 @@ jobs:
           [GCP]
           gcp_key_path=not-used.json
           EOF
-      - run: python -m py_compile rich_document.py translation_stage.py pdf_processor.py page_stage.py extracted_source.py processing_profile.py figure_recovery.py visual_task_ledger.py visual_review_decision.py logger.py
+      - run: python -m py_compile rich_document.py translation_stage.py pdf_processor.py page_stage.py extracted_source.py processing_profile.py figure_recovery.py logger.py
       - run: python -m unittest discover -s tests -p test_rich_document.py -v
       - run: python -m unittest discover -s tests -p test_figure_recovery.py -v
-      - run: python -m unittest discover -s tests -p test_visual_task_ledger.py -v
-      - run: python -m unittest discover -s tests -p test_visual_review_decision.py -v
       - run: python -m unittest discover -s tests -p test_deferred_visual_native.py -v
       - run: python -m unittest discover -s tests -p test_logger_encoding.py -v
       - run: python -m unittest discover -s tests -p test_table_source_fidelity.py -v
