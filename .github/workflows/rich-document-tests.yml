@@ -12,6 +12,8 @@ on:
       - extracted_source.py
       - processing_profile.py
       - tests/test_rich_document.py
+      - table_extractor.py
+      - tests/test_table_source_fidelity.py
       - tests/stress_rich_document.py
       - tests/test_online_regulatory_benchmark.py
       - tests/test_translation_stage.py
@@ -56,6 +58,7 @@ jobs:
           EOF
       - run: python -m py_compile rich_document.py translation_stage.py pdf_processor.py page_stage.py extracted_source.py processing_profile.py
       - run: python -m unittest discover -s tests -p test_rich_document.py -v
+      - run: python -m unittest discover -s tests -p test_table_source_fidelity.py -v
       - run: python -m unittest discover -s tests -p test_approved_images.py -v
       - run: python -m unittest discover -s tests -p test_translation_stage.py -v
       - run: python -m unittest discover -s tests -p test_public_corpus_aggregation.py -v
