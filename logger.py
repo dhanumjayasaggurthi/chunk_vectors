@@ -73,6 +73,30 @@ class _ColourFormatter(logging.Formatter):
         )
 
 
+class _EncodingSafeConsoleHandler(logging.StreamHandler):
+    """Preserve UTF-8 file logs while safely escaping unsupported console chars.
+
+    Windows PowerShell redirection may expose a cp1252 stdout stream. The
+    default StreamHandler raises UnicodeEncodeError and emits tracebacks for
+    non-cp1252 characters, hiding operational messages. Encode once using the
+    stream's declared encoding with backslash replacement; UTF-8 streams
+    retain the exact original message.
+    """
+
+    def emit(self, record):
+        try:
+            message = self.format(record) + self.terminator
+            encoding = getattr(self.stream, "encoding", None)
+            if encoding:
+                message = message.encode(
+                    encoding, errors="backslashreplace"
+                ).decode(encoding)
+            self.stream.write(message)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
 class _FileFormatter(logging.Formatter):
     """Plain text formatter for the rotating file log."""
 
@@ -151,7 +175,7 @@ def _setup_root_logger():
     root.addHandler(jh)
 
     # 3. Console  (INFO+)
-    ch = logging.StreamHandler(sys.stdout)
+    ch = _EncodingSafeConsoleHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(_ColourFormatter())
     root.addHandler(ch)
