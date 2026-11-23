@@ -1,0 +1,11 @@
+# Isolated visual evidence ledger for local regulatory validation.
+# This is NOT the native PDF extraction profile, and does not change its fingerprint.
+version: 1
+schema: cv_validation_v1
+table: cv_bench_visual_tasks_v1
+max_manifest_bytes: 65536
+max_claim_batch: 16
+lease_seconds: 600
+max_claims: 5
+statement_timeout_ms: 15000
+lock_timeout_ms: 3000
