@@ -98,8 +98,7 @@ class ApprovedImageTests(unittest.TestCase):
                 self.assertEqual(logo.image_bytes,b"")
                 self.assertEqual(logo.approved_asset["source_sha256"],digest)
                 self.assertEqual(logo.approved_asset["source_bytes"],image_length)
-                self.assertEqual(logo.approved_asset["source_xref"],208 if False else
-                    logo.approved_asset["source_xref"])
+                self.assertGreater(logo.approved_asset["source_xref"],0)
                 self.assertEqual(logo.text,"Test agency logo approved text")
                 errors,count=_ocr_pages([page],{
                     "ocr_enabled":False,
