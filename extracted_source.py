@@ -193,6 +193,34 @@ def load_extracted_document(profile: dict, document_key):
                     confidence=float(item.get("confidence",1.0)),
                     reading_order=int(item.get("reading_order",len(elements))),
                 )
+                if "approved_asset" in item:
+                    import re as _re
+                    approval=item["approved_asset"]
+                    if (not isinstance(approval,dict)
+                            or set(approval)!={"source_sha256","source_xref",
+                                "source_bytes","kind","text","reviewed_by",
+                                "approval_reference","approval_status"}
+                            or approval["approval_status"]!="approved"
+                            or not isinstance(approval["source_sha256"],str)
+                            or not _re.fullmatch(r"[0-9a-f]{64}",
+                                                 approval["source_sha256"])
+                            or type(approval["source_xref"]) is not int
+                            or approval["source_xref"]<=0
+                            or type(approval["source_bytes"]) is not int
+                            or approval["source_bytes"]<=0
+                            or approval["kind"] not in
+                                ("logo","seal","repeated_header")
+                            or not isinstance(approval["text"],str)
+                            or not approval["text"].strip()
+                            or len(approval["text"])>512
+                            or item["type"]!="image"
+                            or item.get("text")!=approval["text"]
+                            or not isinstance(approval["reviewed_by"],str)
+                            or not approval["reviewed_by"].strip()
+                            or not isinstance(approval["approval_reference"],str)
+                            or not approval["approval_reference"].strip()):
+                        raise ValueError("Invalid approved-image provenance")
+                    el.approved_asset=approval
                 if "vector_preview" in item:
                     import base64
                     preview=item["vector_preview"]
