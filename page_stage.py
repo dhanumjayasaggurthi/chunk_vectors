@@ -70,6 +70,8 @@ def settings(profile):
         "approved_image_manifest":"",
         "capture_table_structure":False,
         "max_table_source_json_bytes":8_000_000,
+        "visual_processing":"blocking",
+        "max_visual_regions_per_page":256,
     }
     result.update(opts)
     return result
@@ -103,6 +105,10 @@ def extraction_fingerprint(profile) -> str:
         "table_settings":TABLE_SETTINGS,
         "table_format":TABLE_FORMAT,
     }
+    # Deferred visual preservation changes page content; version it independently.
+    if cfg["visual_processing"] != "blocking":
+        semantic["visual_processing"]=cfg["visual_processing"]
+        semantic["visual_source_reference_format"]=1
     # The approved-asset manifest changes extraction meaning and must never
     # reuse checkpoints produced under an older approval policy.
     if cfg["approved_image_manifest"]:
@@ -284,7 +290,10 @@ def _page_row(page, struct, source, extraction_hash):
     from chunker import _page_full_text
     text=_page_full_text(page)
     if not page.is_blank and not text.strip():
-        raise ValueError("Nonblank page has no recoverable text")
+        # An image-only page may be indexed later by OCR. Retain its
+        # original source references; never invent a textual transcription.
+        if not any(getattr(el,"visual_asset",None) for el in page.elements):
+            raise ValueError("Nonblank page has no recoverable text")
     geometry=[]
     for element in page.elements:
         box=element.bbox
@@ -294,6 +303,10 @@ def _page_row(page, struct, source, extraction_hash):
             "text":element.text, "confidence":round(float(element.confidence),5),
             "reading_order":element.reading_order,
         }
+        if getattr(element, "visual_asset", None):
+            if entry["type"] not in ("image","chart") or element.image_bytes:
+                raise ValueError("Invalid preserved visual source reference")
+            entry["visual_asset"]=element.visual_asset
         if getattr(element, "source_table", None) is not None:
             from table_extractor import validate_source_table
             if entry["type"]!="table":
@@ -702,6 +715,8 @@ def stage_one(
             approved_image_assets=approved_images,
             capture_table_structure=cfg["capture_table_structure"],
             max_table_source_json_bytes=cfg["max_table_source_json_bytes"],
+            preserve_uninterpreted_visuals=cfg["visual_processing"]=="preserve_defer",
+            max_visual_regions_per_page=cfg["max_visual_regions_per_page"],
         )
         # Header-only read is cheap; don't render completed pages during resume.
         with __import__("fitz").open(str(path)) as pdf:
@@ -714,6 +729,7 @@ def stage_one(
         errors_total=0
         pages_processed=0
         images_processed=0
+        visuals_deferred=0
         for window in proc.iter_page_batches(
             cfg["page_batch_size"],completed_pages=done,
             max_window_raster_bytes=cfg["max_window_raster_bytes"],
@@ -738,6 +754,10 @@ def stage_one(
                 except Exception as exc:
                     invalid[page.page_number]=exc
             _persist_window(rows,invalid,doc_id,source,fingerprint,n)
+            visuals_deferred+=sum(
+                1 for page in active if page.page_number not in invalid
+                for element in page.elements if getattr(element,"visual_asset",None)
+            )
             # No page data or raster buffers are retained across windows.
             pages_processed+=len(rows)
             images_processed+=ocr_count
@@ -766,7 +786,8 @@ def stage_one(
         try:
             _publish(
                 doc_id,source,fingerprint,page_count,n,
-                allow_unreviewed=cfg["publish_unreviewed_vector_regions"],
+                allow_unreviewed=(cfg["publish_unreviewed_vector_regions"]
+                                  or cfg["visual_processing"]=="preserve_defer"),
             )
         except VisualReviewRequired as pending:
             return {
@@ -783,6 +804,9 @@ def stage_one(
             "elapsed_seconds":round(elapsed,2),
             "new_pages_per_min":round(60.0*pages_processed/elapsed,1),
             "ocr_images_per_min":round(60.0*images_processed/elapsed,1),
+            "native_extraction_complete":True,
+            "visual_enrichment_complete":visuals_deferred==0,
+            "visual_assets_deferred_this_run":visuals_deferred,
         }
 
 
