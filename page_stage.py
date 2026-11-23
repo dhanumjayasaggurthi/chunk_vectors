@@ -72,6 +72,8 @@ def settings(profile):
         "max_table_source_json_bytes":8_000_000,
         "visual_processing":"blocking",
         "max_visual_regions_per_page":256,
+        "worker_backend":"threads",
+        "worker_recycle_documents":0,
     }
     result.update(opts)
     return result
@@ -846,8 +848,27 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
     cfg=settings(profile)
     # Global per-process caps across ALL document workers. The DB quota
     # independently coordinates combined requests/images across servers.
-    ocr_gate=threading.BoundedSemaphore(cfg["ocr_workers"])
-    chart_gate=threading.BoundedSemaphore(cfg["chart_workers"])
+    backend=cfg["worker_backend"]
+    if backend=="processes":
+        if (cfg["ocr_enabled"] or cfg["chart_descriptions_enabled"]
+                or cfg["table_summaries_enabled"]
+                or cfg["visual_processing"]!="preserve_defer"):
+            raise ValueError(
+                "Process workers require native preserve_defer extraction "
+                "with OCR, chart descriptions and GPT table summaries disabled"
+            )
+        import multiprocessing
+        executor_type=concurrent.futures.ProcessPoolExecutor
+        executor_kwargs={"mp_context":multiprocessing.get_context("spawn")}
+        if cfg["worker_recycle_documents"]:
+            executor_kwargs["max_tasks_per_child"]=cfg["worker_recycle_documents"]
+        ocr_gate=None
+        chart_gate=None
+    else:
+        executor_type=concurrent.futures.ThreadPoolExecutor
+        executor_kwargs={}
+        ocr_gate=threading.BoundedSemaphore(cfg["ocr_workers"])
+        chart_gate=threading.BoundedSemaphore(cfg["chart_workers"])
     limiter=None
     if cfg["ocr_enabled"]:
         from ocr_quota import detect_project_id,PostgresOcrLimiter
@@ -862,7 +883,7 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
     counts={"SUCCESS":0,"SKIPPED":0,"BUSY":0,"INCOMPLETE":0,
             "REVIEW_REQUIRED":0,"FAILED":0}
     pending={}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=doc_workers) as pool:
+    with executor_type(max_workers=doc_workers,**executor_kwargs) as pool:
         def collect(done):
             for future in done:
                 path=pending.pop(future)
@@ -884,10 +905,14 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
         for index, path in enumerate(files):
             if index>=max_docs:
                 break
-            pending[pool.submit(
-                stage_one,path,profile,n,limiter,
-                ocr_gate=ocr_gate,chart_gate=chart_gate,
-            )]=path
+            if backend=="processes":
+                future=pool.submit(stage_one,path,profile,n,None)
+            else:
+                future=pool.submit(
+                    stage_one,path,profile,n,limiter,
+                    ocr_gate=ocr_gate,chart_gate=chart_gate,
+                )
+            pending[future]=path
             if len(pending)>=doc_workers*2:
                 done,_=concurrent.futures.wait(
                     pending,return_when=concurrent.futures.FIRST_COMPLETED,
