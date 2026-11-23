@@ -193,6 +193,13 @@ def load_extracted_document(profile: dict, document_key):
                     confidence=float(item.get("confidence",1.0)),
                     reading_order=int(item.get("reading_order",len(elements))),
                 )
+                if "visual_asset" in item:
+                    from pdf_processor import validate_visual_asset
+                    if item["type"] not in ("image","chart") or item.get("text"):
+                        raise ValueError("Invalid deferred visual element")
+                    el.visual_asset = validate_visual_asset(
+                        item["visual_asset"], page_number=pg,
+                    )
                 if "source_table" in item:
                     if item["type"] != ElementType.TABLE.value:
                         raise ValueError("Source table attached to non-table element")
