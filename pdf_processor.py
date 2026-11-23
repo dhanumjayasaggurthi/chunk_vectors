@@ -114,6 +114,7 @@ class PageElement:
     heading_level: int        = 0
     vector_png:    bytes     = field(default=b"", repr=False)
     approved_asset: dict     = field(default_factory=dict)
+    source_table:  dict | None = None  # opt-in unmodified table cell matrix
 
 
 @dataclass
@@ -300,10 +301,14 @@ class PDFProcessor:
         max_render_pixels: int | None = None,
         capture_rich_text: bool = False,
         approved_image_assets: dict | None = None,
+        capture_table_structure: bool = False,
+        max_table_source_json_bytes: int = 8_000_000,
     ):
         self.strict = strict
         self.capture_rich_text = capture_rich_text
         self.approved_image_assets = approved_image_assets or {}
+        self.capture_table_structure = capture_table_structure
+        self.max_table_source_json_bytes = max_table_source_json_bytes
         self._image_digest_cache: dict[int, tuple[str, int]] = {}
         self.max_render_pixels = max_render_pixels
         self.file_path = file_path
@@ -716,7 +721,8 @@ class PDFProcessor:
             ]
             assessed = [
                 (idx, table, raw, extractor._process_table(
-                    raw, page_number, idx, "", allow_short=True))
+                    raw, page_number, idx, "", allow_short=True,
+                    preserve_source=self.capture_table_structure))
                 for idx, table, raw in candidates
             ]
             valid_tables = [table for _, table, _, result in assessed
@@ -756,6 +762,12 @@ class PDFProcessor:
                     ))
                     continue
                 result.bbox = tuple(table.bbox)
+                if self.capture_table_structure:
+                    from table_extractor import build_source_table
+                    result.source_table = build_source_table(
+                        raw, table,
+                        max_json_bytes=self.max_table_source_json_bytes,
+                    )
                 staged_table_results.append(result)
             table_bboxes = [BBox(*result.bbox) for result in staged_table_results]
         else:
