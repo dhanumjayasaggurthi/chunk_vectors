@@ -27,7 +27,11 @@ connect_timeout_seconds=10
 
 A pool is created per **process**, not per fleet. Four native processes with max=2
 can use up to eight worker connections, plus parents and other services.
-Budget the entire fleet against PostgreSQL connection limits. Omitted or false
+Budget the entire fleet against PostgreSQL connection limits. The native
+worker holds one PostgreSQL advisory-lock lease for the entire document and
+needs another lease for checkpoint writes; **pool_max_connections >= 2** is
+required in process mode. Thread mode needs at least doc_workers + 1 pooled
+connections per process to avoid lock starvation. Omitted or false
 pool_enabled retains the existing unpooled behavior.
 
 ## Native PDF worker settings
