@@ -100,7 +100,7 @@ class FigureRecoveryTests(unittest.TestCase):
             path = self._fixture(folder)
             with fitz.open(path) as pdf:
                 with self.assertRaisesRegex(ValueError, "PAGE_IMAGE_COUNT_LIMIT"):
-                    find_figure_groups(pdf[0], FigureSettings(max_page_images=6))
+                    find_figure_groups(pdf[0], FigureSettings(max_page_images=6, max_fragments=6))
             with self.assertRaisesRegex(ValueError, "FIGURE_RENDER_PIXEL_BUDGET_EXCEEDED"):
                 prepare_page(
                     path, 1, folder / "blocked",
