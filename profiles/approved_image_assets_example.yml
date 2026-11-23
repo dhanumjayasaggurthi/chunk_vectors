@@ -1,0 +1,11 @@
+# Review template: NO IMAGE IS AUTO-APPROVED.
+# Approval uses SHA256 of original embedded PDF bytes, not rendered PNGs.
+# For production, reference an audited versioned manifest.
+version: 1
+assets:
+  - sha256: feeca0df2fdee6c7c24f7c099057a3e7fcd46be8cf1e7409a989842407046d8e
+    status: pending
+    kind: logo
+    text: "U.S. Food & Drug Administration (FDA) / HHS logo"
+    reviewed_by: ""
+    approval_reference: "manual-visual-review-pages-1-and-2"
