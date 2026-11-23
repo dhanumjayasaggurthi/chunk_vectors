@@ -30,6 +30,7 @@ class Unit:
     table_info: dict | None = None
     split_reason: str = ""
     overlap_copy: bool = False
+    page_joined: bool = False
 
 
 def _paragraph_units(page, el, headings, known_titles, source_end):
@@ -149,6 +150,42 @@ def _units(struct,policy):
                            tuple(headings),kind)
                 continue
             yield from _paragraph_units(page,el,headings,known_titles,source_end)
+
+
+def _coalesce_cross_page_paragraphs(units):
+    """Conservatively join an interrupted paragraph across adjacent pages.
+
+    Requires same section, adjacent pages, unfinished preceding sentence,
+    lowercase continuation, and no intervening table/graphic content. This
+    alters only derived RAG text, never the original page text or source runs.
+    """
+    previous=None
+    for current in units:
+        if previous is None:
+            previous=current
+            continue
+        compatible=(
+            previous.kind=="text" and current.kind=="text"
+            and previous.path==current.path
+            and previous.page_end+1==current.page_start
+            and bool(previous.text.strip())
+            and bool(current.text.strip())
+            and not re.search(r"[.!?;:。！？。؟।]\s*$",previous.text)
+            and bool(re.match(r"^[a-zà-öø-ÿ]",current.text.strip()))
+        )
+        if compatible:
+            joiner="" if previous.text.rstrip().endswith("-") else " "
+            previous=replace(
+                previous,
+                text=previous.text.rstrip()+joiner+current.text.lstrip(),
+                page_end=current.page_end,
+                page_joined=True,
+            )
+        else:
+            yield previous
+            previous=current
+    if previous is not None:
+        yield previous
 
 
 def _sentences(text):
@@ -286,6 +323,7 @@ def chunk_semantic_v2(struct,policy):
             "source_page_start":item.page_start,
             "source_page_end":item.page_end,
             "overlap_copied":any(x.overlap_copy for x in parts),
+            "cross_page_paragraph_joined":any(x.page_joined for x in parts),
         }
         reasons=sorted(set(x.split_reason for x in parts if x.split_reason))
         if reasons:
@@ -312,7 +350,10 @@ def chunk_semantic_v2(struct,policy):
         item._section_path=first.path
         chunks.append(item)
 
-    for unit in _units(struct,policy):
+    source_units=_units(struct,policy)
+    if policy.get("merge_cross_page_paragraphs",False):
+        source_units=_coalesce_cross_page_paragraphs(source_units)
+    for unit in source_units:
         if not unit.text:
             continue
         empty=replace(unit,text="")
