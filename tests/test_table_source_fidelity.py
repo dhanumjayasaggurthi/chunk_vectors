@@ -60,7 +60,7 @@ class TableSourceFidelityTests(unittest.TestCase):
             validate_source_table(broken)
         with self.assertRaisesRegex(ValueError,"budget"):
             validate_source_table(data,max_json_bytes=100)
-        rows=[SimpleNamespace(cells=[(0,0,1,1)])]
+        rows=[SimpleNamespace(cells=[(0,0,1,1)]) for _ in raw]
         with self.assertRaisesRegex(ValueError,"column"):
             build_source_table(raw,SimpleNamespace(rows=rows),
                                max_json_bytes=2_000_000)
