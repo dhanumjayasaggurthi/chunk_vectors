@@ -85,7 +85,7 @@ class VisualTaskLedgerTests(unittest.TestCase):
         )["writes"])
         with self.assertRaisesRegex(ValueError, "Unsafe SQL identifier"):
             LedgerSettings(schema="public;DROP", table="evil").validate()
-        with self.assertRaisesRegex(ValueError, "Invalid worker"):
+        with self.assertRaisesRegex(ValueError, "Invalid bounded worker identifier"):
             claim(cfg, worker_id="'; DROP TABLE", batch_size=1)
         with self.assertRaisesRegex(ValueError, "Invalid worker claim batch"):
             claim(cfg, worker_id="good", batch_size=999)
