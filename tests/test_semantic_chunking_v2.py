@@ -139,6 +139,42 @@ class SemanticChunkV2Tests(unittest.TestCase):
         for i in range(45):
             self.assertIn(f"Sentence {i:03d} describes",complete)
 
+    def test_adjacent_page_paragraph_join_is_opt_in_and_provenanced(self):
+        from configurable_chunking import chunk_with_profile
+        first="This report described a clinically meaningful"
+        second="outcome after the follow-up period."
+        doc=DocumentStructure(
+            file_path="x",file_name="x",doc_id="d"*64,page_count=2,
+            toc=[TocEntry(1,"Study Results",1)],
+            pages=[
+                PageContent(page_number=1,width=612,height=792,
+                    elements=[PageElement(ElementType.TEXT,BBox(10,10,400,750),
+                                          text=first)]),
+                PageContent(page_number=2,width=612,height=792,
+                    elements=[PageElement(ElementType.TEXT,BBox(10,50,400,700),
+                                          text=second)]),
+            ],
+        )
+        joined=chunk_with_profile(doc,config(
+            max_tokens=120,merge_cross_page_paragraphs=True,
+            table_row_mode="legacy",table_continuation="none",
+        ))
+        self.assertTrue(any(
+            "meaningful outcome" in c.chunk_text and
+            c.chunk_metadata["cross_page_paragraph_joined"]
+            for c in joined
+        ))
+        self.assertEqual(joined[0].page_start,1)
+        self.assertEqual(joined[0].page_end,2)
+        separate=chunk_with_profile(doc,config(
+            max_tokens=120,merge_cross_page_paragraphs=False,
+            table_row_mode="legacy",table_continuation="none",
+        ))
+        self.assertFalse(any(c.chunk_metadata["cross_page_paragraph_joined"]
+                             for c in separate))
+        self.assertEqual(doc.pages[0].elements[0].text,first)
+        self.assertEqual(doc.pages[1].elements[0].text,second)
+
     def test_long_indivisible_unicode_uses_lossless_character_fallback(self):
         from configurable_chunking import chunk_with_profile
         original="語"*800
