@@ -193,6 +193,11 @@ def load_extracted_document(profile: dict, document_key):
                     confidence=float(item.get("confidence",1.0)),
                     reading_order=int(item.get("reading_order",len(elements))),
                 )
+                if "source_table" in item:
+                    if item["type"] != ElementType.TABLE.value:
+                        raise ValueError("Source table attached to non-table element")
+                    from table_extractor import validate_source_table
+                    el.source_table=validate_source_table(item["source_table"])
                 if "approved_asset" in item:
                     import re as _re
                     approval=item["approved_asset"]
