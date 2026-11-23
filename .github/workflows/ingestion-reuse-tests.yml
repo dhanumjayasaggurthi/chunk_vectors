@@ -74,6 +74,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_semantic_chunking_v2.py' -v
       - name: Bounded PostgreSQL pool and session isolation
         run: python -m unittest discover -s tests -p 'test_db_pool.py' -v
+      - name: Spawn native PDF worker processes on both operating systems
+        run: python -m unittest discover -s tests -p 'test_native_process_workers.py' -v
       - name: Test one-pass PDF hotpath and metadata integrity
         run: python -m unittest discover -s tests -p 'test_ingestion_hotpath.py' -v
       - name: Test cloud-free OCR batch semantics
