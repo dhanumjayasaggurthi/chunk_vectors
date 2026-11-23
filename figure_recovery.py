@@ -11,11 +11,12 @@ import hashlib
 import json
 import math
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
-ALGORITHM_VERSION = "adjacent-horizontal-strips-v1"
+ALGORITHM_VERSION = "adjacent-horizontal-strips-v2-caption-aware"
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class FigureSettings:
     margin_horizontal_pt: float = 12.0
     margin_above_pt: float = 25.0
     margin_below_pt: float = 12.0
+    caption_search_pt: float = 40.0
     max_render_pixels: int = 25_000_000
     max_png_bytes: int = 32_000_000
 
@@ -54,6 +56,7 @@ class FigureSettings:
             ("margin_horizontal_pt", 0, 100),
             ("margin_above_pt", 0, 100),
             ("margin_below_pt", 0, 100),
+            ("caption_search_pt", 0, 150),
         ):
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -164,6 +167,38 @@ def _write_immutable(path: Path, data: bytes) -> None:
             raise RuntimeError(f"Existing evidence differs: {path.name}")
 
 
+_CAPTION_START = re.compile(r"^\s*(?:figure|fig\.?)\s*\d+[A-Za-z]?(?::|\.|\s)", re.I)
+
+
+def _caption_lines(page):
+    """Bounded native-text caption candidates; never invent caption text."""
+    lines = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            content = "".join(str(span.get("text") or "") for span in line.get("spans", []))
+            if not _CAPTION_START.match(content):
+                continue
+            bbox = line.get("bbox", ())
+            if len(bbox) != 4 or not all(math.isfinite(float(x)) for x in bbox):
+                continue
+            lines.append({"bbox": [float(x) for x in bbox],
+                          "text_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()})
+    return lines
+
+
+def _nearby_caption(lines, bbox, max_distance):
+    eligible = []
+    for line in lines:
+        b = line["bbox"]
+        distance = bbox[1] - b[3]
+        if (-4 <= distance <= max_distance
+            and min(bbox[2], b[2]) >= max(bbox[0], b[0])):
+            eligible.append((abs(distance), line))
+    return min(eligible, key=lambda pair: pair[0])[1] if eligible else None
+
+
 def prepare_page(
     pdf_path: Path, page_number: int, output_dir: Path,
     settings: FigureSettings | None = None, native_extraction_hash: str = "",
@@ -191,6 +226,7 @@ def prepare_page(
         groups = find_figure_groups(page, settings)
         if not groups:
             return []
+        caption_lines = _caption_lines(page) if settings.caption_search_pt else []
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -213,10 +249,12 @@ def prepare_page(
                 max(f["bbox"][2] for f in fragments),
                 max(f["bbox"][3] for f in fragments),
             ]
+            caption = _nearby_caption(caption_lines, bounds, settings.caption_search_pt)
             clip = fitz.Rect(
-                bounds[0] - settings.margin_horizontal_pt,
-                bounds[1] - settings.margin_above_pt,
-                bounds[2] + settings.margin_horizontal_pt,
+                min(bounds[0], caption["bbox"][0] if caption else bounds[0]) - settings.margin_horizontal_pt,
+                min(bounds[1] - settings.margin_above_pt,
+                    caption["bbox"][1] - 5 if caption else bounds[1]),
+                max(bounds[2], caption["bbox"][2] if caption else bounds[2]) + settings.margin_horizontal_pt,
                 bounds[3] + settings.margin_below_pt,
             ) & page.rect
             scale = settings.dpi / 72
@@ -258,6 +296,8 @@ def prepare_page(
                 "algorithm": ALGORITHM_VERSION,
                 "settings": asdict(settings),
                 "region_bbox": bounds,
+                "caption_bbox": caption["bbox"] if caption else None,
+                "caption_native_text_sha256": caption["text_sha256"] if caption else None,
                 "render_clip_bbox": list(clip),
                 "render_dpi": settings.dpi,
                 "source_fragments": fragments,
