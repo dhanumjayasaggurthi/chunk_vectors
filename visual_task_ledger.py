@@ -31,10 +31,15 @@ class LedgerSettings:
     max_claims: int = 5
     statement_timeout_ms: int = 15000
     lock_timeout_ms: int = 3000
+    review_table: str = ""
 
     def validate(self):
         _safe_identifier(self.schema)
         _safe_identifier(self.table)
+        if self.review_table:
+            _safe_identifier(self.review_table)
+            if len(self.review_table) > 50 or self.review_table == self.table:
+                raise ValueError("Invalid configured review table")
         if len(self.table) > 42:  # reserve room for PostgreSQL's 63-byte index names
             raise ValueError("Visual table identifier exceeds 42 characters")
         for field, low, high in (
@@ -53,6 +58,11 @@ class LedgerSettings:
     @property
     def relation(self):
         return f"{_safe_identifier(self.schema)}.{_safe_identifier(self.table)}"
+
+    @property
+    def review_relation(self):
+        return (_safe_identifier(self.schema)+"."+_safe_identifier(self.review_table)
+                if self.review_table else "")
 
     @property
     def queue_index(self):
@@ -369,6 +379,11 @@ def claim(settings: LedgerSettings, *, worker_id: str, batch_size: int,
     from db import get_conn
 
     token = str(uuid.uuid4())
+    # After reviewer fidelity acceptance, no further claim attempts should
+    # be consumed by another reviewer. This is not clinical interpretation.
+    review_filter = (f"AND NOT EXISTS (SELECT 1 FROM {settings.review_relation} r "
+                     f"WHERE r.visual_task_id=t.visual_task_id)"
+                     if settings.review_relation else "")
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -376,11 +391,12 @@ def claim(settings: LedgerSettings, *, worker_id: str, batch_size: int,
             cur.execute(f"""
                 WITH candidate AS (
                     SELECT visual_task_id
-                    FROM {settings.relation}
+                    FROM {settings.relation} t
                     WHERE (
                         status='REVIEW_REQUIRED'
                         OR (status='LEASED' AND lease_expires_at < now())
                     ) AND claim_attempts < %s
+                    {review_filter}
                     ORDER BY created_at, visual_task_id
                     FOR UPDATE SKIP LOCKED
                     LIMIT %s
