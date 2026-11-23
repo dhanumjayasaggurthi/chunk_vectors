@@ -18,6 +18,8 @@ on:
       - tests/test_ocr_quota.py
       - tests/test_page_stage.py
       - visual_task_ledger.py
+      - visual_page_recovery.py
+      - tests/test_visual_page_recovery.py
       - figure_recovery.py
       - tests/test_visual_task_ledger.py
       - page_stage.py
@@ -126,3 +128,5 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_translation_stage.py' -v
       - name: Verify isolated visual review ledger, idempotence, and SKIP LOCKED leases
         run: python -m unittest discover -s tests -p 'test_visual_task_ledger.py' -v
+      - name: Verify read-only single-missing-page visual recovery readiness
+        run: python -m unittest discover -s tests -p 'test_visual_page_recovery.py' -v
