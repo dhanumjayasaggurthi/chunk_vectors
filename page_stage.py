@@ -535,6 +535,9 @@ def _ocr_pages(pages, cfg, limiter, *, ocr_gate=None, chart_gate=None):
         batch_document_text_detection, _describe_chart_with_gpt4o,
     )
     groups,errors=_images_in_groups(pages,cfg)
+    if not groups and not errors and not any(page.needs_ocr for page in pages):
+        # High-throughput native path: no thread pool, raster or cloud work.
+        return {},0
     if groups and not cfg["ocr_enabled"]:
         for group in groups:
             for page,_ in group:
