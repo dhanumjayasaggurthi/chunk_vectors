@@ -17,6 +17,7 @@ extraction:
   page_batch_size: 32
   worker_backend: processes
   worker_recycle_documents: 200
+  profile_stage_timings: true
   # Max encoded raster bytes held per window; window shrinks automatically
   # when scanned/image-heavy pages are encountered.
   max_window_raster_bytes: 160000000
