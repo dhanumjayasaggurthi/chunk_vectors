@@ -113,6 +113,7 @@ class PageElement:
     semantic_role: str        = ""
     heading_level: int        = 0
     vector_png:    bytes     = field(default=b"", repr=False)
+    approved_asset: dict     = field(default_factory=dict)
 
 
 @dataclass
@@ -298,9 +299,12 @@ class PDFProcessor:
         strict: bool = False,
         max_render_pixels: int | None = None,
         capture_rich_text: bool = False,
+        approved_image_assets: dict | None = None,
     ):
         self.strict = strict
         self.capture_rich_text = capture_rich_text
+        self.approved_image_assets = approved_image_assets or {}
+        self._image_digest_cache: dict[int, tuple[str, int]] = {}
         self.max_render_pixels = max_render_pixels
         self.file_path = file_path
         self.doc_id    = doc_id
@@ -602,7 +606,27 @@ class PDFProcessor:
                 ib   = rects[0]
                 bbox = BBox(ib.x0, ib.y0, ib.x1, ib.y1)
 
-                # Skip tiny images (decorative bullets, logos < 50×50 pts)
+                # An explicitly reviewed original source image is matched
+                # BEFORE creating a costly 200-DPI OCR raster. Never approve
+                # images heuristically by size, page coordinates or logo name.
+                if self.approved_image_assets:
+                    from approved_images import approved_source_image
+                    approval = approved_source_image(
+                        page.parent, xref, img_info,
+                        self.approved_image_assets, self._image_digest_cache,
+                    )
+                    if approval:
+                        image_elements.append(PageElement(
+                            element_type=ElementType.IMAGE,
+                            bbox=bbox,
+                            text=approval["text"],
+                            approved_asset=approval,
+                        ))
+                        continue
+
+                # The pre-existing small-image policy remains unchanged for
+                # non-approved inputs. Unrecognized substantial images must
+                # still pass normal OCR/review quality gates.
                 if bbox.area < 2500:
                     continue
 
