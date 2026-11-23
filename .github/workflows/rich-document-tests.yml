@@ -14,6 +14,16 @@ on:
       - tests/test_rich_document.py
       - figure_recovery.py
       - tests/test_deferred_visual_native.py
+      - db.py
+      - db_pool.py
+      - config.py
+      - configurable_chunking.py
+      - semantic_chunking_v2.py
+      - table_continuity.py
+      - metadata_extractor.py
+      - tests/test_db_pool.py
+      - tests/test_semantic_chunking_v2.py
+      - profiles/regulatory_semantic_v2_example.yml
       - tests/test_figure_recovery.py
       - logger.py
       - tests/test_logger_encoding.py
@@ -46,7 +56,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "PyYAML>=6,<7" "psycopg2-binary>=2.9,<3"
+      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "PyYAML>=6,<7" "psycopg2-binary>=2.9,<3" "tiktoken>=0.7,<1"
       - name: CI-only local config
         run: |
           cat > config.ini <<'EOF'
@@ -62,9 +72,12 @@ jobs:
           gcp_key_path=not-used.json
           EOF
       - run: python -m py_compile rich_document.py translation_stage.py pdf_processor.py page_stage.py extracted_source.py processing_profile.py figure_recovery.py logger.py
+      - run: python -m py_compile db.py db_pool.py configurable_chunking.py semantic_chunking_v2.py table_continuity.py metadata_extractor.py
       - run: python -m unittest discover -s tests -p test_rich_document.py -v
       - run: python -m unittest discover -s tests -p test_figure_recovery.py -v
       - run: python -m unittest discover -s tests -p test_deferred_visual_native.py -v
+      - run: python -m unittest discover -s tests -p test_semantic_chunking_v2.py -v
+      - run: python -m unittest discover -s tests -p test_db_pool.py -v
       - run: python -m unittest discover -s tests -p test_logger_encoding.py -v
       - run: python -m unittest discover -s tests -p test_table_source_fidelity.py -v
       - run: python -m unittest discover -s tests -p test_approved_images.py -v
