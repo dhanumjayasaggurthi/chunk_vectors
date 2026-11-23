@@ -131,6 +131,7 @@ def validate_profile(profile: dict) -> None:
             "max_window_raster_bytes", "max_render_pixels",
             "chart_workers", "capture_rich_text",
             "publish_unreviewed_vector_regions", "approved_image_manifest",
+            "capture_table_structure", "max_table_source_json_bytes",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -225,6 +226,7 @@ def validate_profile(profile: dict) -> None:
             ):
                 raise ValueError("extraction." + required + " requires a safe table identifier")
         for field in ("enabled", "ocr_enabled", "capture_rich_text",
+                      "capture_table_structure",
                       "publish_unreviewed_vector_regions", "chart_descriptions_enabled",
                       "table_summaries_enabled"):
             if field in extract and type(extract[field]) is not bool:
@@ -244,6 +246,7 @@ def validate_profile(profile: dict) -> None:
             "max_quota_wait_seconds":(1,3600),
             "max_window_raster_bytes":(10_000_000,1_000_000_000),
             "max_render_pixels":(1_000_000,75_000_000),
+            "max_table_source_json_bytes":(100_000,100_000_000),
         }
         for field,(low,high) in limits.items():
             if field in extract and (
