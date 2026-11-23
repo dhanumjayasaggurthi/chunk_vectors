@@ -233,7 +233,9 @@ class TestPageStageIntegration(unittest.TestCase):
                              f"Approved acceptance range {i}: 1 to 15")
         doc.save(str(path))
         doc.close()
-        result=stage_one(str(path),self.profile,names(self.profile))
+        p=staging_profile()
+        p["extraction"]["capture_table_structure"]=True
+        result=stage_one(str(path),p,names(p))
         self.assertEqual(result["status"],"SUCCESS")
         conn=self.connection()
         with conn:
@@ -249,7 +251,18 @@ class TestPageStageIntegration(unittest.TestCase):
                 bbox=tables[0]["bbox"]
                 self.assertLess(abs(bbox[0]-50),2)
                 self.assertLess(abs(bbox[2]-560),2)
+                self.assertEqual(tables[0]["source_table"]["format"],
+                                 "pdfplumber_cells_v1")
+                self.assertEqual(tables[0]["source_table"]["row_count"],4)
+                self.assertEqual(len(tables[0]["source_table"]["source_cells"]),4)
+                self.assertEqual(tables[0]["source_table"]["max_columns"],2)
         conn.close()
+        from extracted_source import load_extracted_document
+        struct,_=load_extracted_document(p,result["doc_id"])
+        table_elements=[e for e in struct.pages[0].elements
+                        if e.element_type.value=="table"]
+        self.assertEqual(len(table_elements),1)
+        self.assertEqual(table_elements[0].source_table["row_count"],4)
 
     def test_checkpoint_failure_resume_and_geometry_rechunking(self):
         from pdf_processor import PDFProcessor, PageContent
