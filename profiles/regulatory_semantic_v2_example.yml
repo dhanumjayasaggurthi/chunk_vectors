@@ -15,6 +15,8 @@ extraction:
   schema: palm_paw
   table: regulatory_pages_pilot_v1
   page_batch_size: 32
+  worker_backend: processes
+  worker_recycle_documents: 200
   # Max encoded raster bytes held per window; window shrinks automatically
   # when scanned/image-heavy pages are encountered.
   max_window_raster_bytes: 160000000
