@@ -17,6 +17,9 @@ on:
       - tests/test_ocr_batch.py
       - tests/test_ocr_quota.py
       - tests/test_page_stage.py
+      - visual_task_ledger.py
+      - figure_recovery.py
+      - tests/test_visual_task_ledger.py
       - page_stage.py
       - ocr_quota.py
       - pdf_processor.py
@@ -121,3 +124,5 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_ocr_quota.py' -v
       - name: Verify durable translation leases and retry backoff
         run: python -m unittest discover -s tests -p 'test_translation_stage.py' -v
+      - name: Verify isolated visual review ledger, idempotence, and SKIP LOCKED leases
+        run: python -m unittest discover -s tests -p 'test_visual_task_ledger.py' -v
