@@ -75,6 +75,9 @@ def _units(struct):
 
 
 def chunk_with_profile(struct, policy: dict) -> list[Chunk]:
+    if policy.get("boundary_mode","v1") == "semantic_v2":
+        from semantic_chunking_v2 import chunk_semantic_v2
+        return chunk_semantic_v2(struct,policy)
     try:
         import tiktoken
     except ImportError as exc:
