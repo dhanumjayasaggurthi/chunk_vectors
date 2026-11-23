@@ -73,7 +73,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "chunking.overlap_tokens", "chunking.boundary_mode",
             "chunking.table_continuation", "chunking.table_row_mode",
             "chunking.max_table_pages", "chunking.table_edge_fraction",
-            "chunking.table_x_tolerance", "embedding.enabled", "embedding.batch_size",
+            "chunking.table_x_tolerance", "chunking.merge_cross_page_paragraphs", "embedding.enabled", "embedding.batch_size",
             "embedding.dimensions", "embedding.deployment", "embedding.model",
             "existing_chunks.schema", "existing_chunks.table",
             "existing_chunks.id_column", "existing_chunks.text_column",
@@ -108,7 +108,8 @@ def validate_profile(profile: dict) -> None:
         "chunking": {"strategy", "min_tokens", "max_tokens", "overlap_tokens",
                      "small_section_policy", "preserve_headers", "tokenizer",
                      "boundary_mode", "table_continuation", "table_row_mode",
-                     "max_table_pages", "table_edge_fraction", "table_x_tolerance"},
+                     "max_table_pages", "table_edge_fraction", "table_x_tolerance",
+                     "merge_cross_page_paragraphs"},
         "embedding": {"enabled", "reuse_existing", "batch_size",
                       "dimensions", "deployment", "model", "progress_every_batches",
                       "batch_tokens", "rpm", "tpm", "max_attempts",
@@ -178,6 +179,10 @@ def validate_profile(profile: dict) -> None:
         raise ValueError("chunking.table_edge_fraction must be 0.05..0.45")
     if type(x_tolerance) not in (float,int) or not 0.0<=x_tolerance<=0.2:
         raise ValueError("chunking.table_x_tolerance must be 0..0.2")
+    if type(chunking.get("merge_cross_page_paragraphs",False)) is not bool:
+        raise ValueError("chunking.merge_cross_page_paragraphs must be boolean")
+    if mode!="semantic_v2" and chunking.get("merge_cross_page_paragraphs",False):
+        raise ValueError("Cross-page paragraph joins require semantic_v2")
     if chunking.get("small_section_policy") not in {"merge_forward", "keep"}:
         raise ValueError("Unsupported small_section_policy")
     if type(chunking.get("preserve_headers")) is not bool:
