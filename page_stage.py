@@ -68,6 +68,8 @@ def settings(profile):
         "capture_rich_text":False,
         "publish_unreviewed_vector_regions":False,
         "approved_image_manifest":"",
+        "capture_table_structure":False,
+        "max_table_source_json_bytes":8_000_000,
     }
     result.update(opts)
     return result
@@ -89,6 +91,8 @@ def extraction_fingerprint(profile) -> str:
         "stage_format_version":4 if cfg["capture_rich_text"] else 3,
         "unclassified_vector_preview_version":1,
         "capture_rich_text":cfg["capture_rich_text"],
+        "capture_table_structure":cfg["capture_table_structure"],
+        "source_table_format_version":1 if cfg["capture_table_structure"] else 0,
         "ocr_enabled":cfg["ocr_enabled"],
         "ocr_bbox_detail":cfg["ocr_bbox_detail"],
         "ocr_confidence_min":cfg["ocr_confidence_min"],
@@ -290,6 +294,11 @@ def _page_row(page, struct, source, extraction_hash):
             "text":element.text, "confidence":round(float(element.confidence),5),
             "reading_order":element.reading_order,
         }
+        if getattr(element, "source_table", None) is not None:
+            from table_extractor import validate_source_table
+            if entry["type"]!="table":
+                raise ValueError("Source table attached to non-table element")
+            entry["source_table"]=validate_source_table(element.source_table)
         if getattr(element, "approved_asset", None):
             metadata=element.approved_asset
             if (not isinstance(metadata,dict)
@@ -691,6 +700,8 @@ def stage_one(
             max_render_pixels=cfg["max_render_pixels"],
             capture_rich_text=cfg["capture_rich_text"],
             approved_image_assets=approved_images,
+            capture_table_structure=cfg["capture_table_structure"],
+            max_table_source_json_bytes=cfg["max_table_source_json_bytes"],
         )
         # Header-only read is cheap; don't render completed pages during resume.
         with __import__("fitz").open(str(path)) as pdf:
