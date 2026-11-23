@@ -115,6 +115,7 @@ class PageElement:
     vector_png:    bytes     = field(default=b"", repr=False)
     approved_asset: dict     = field(default_factory=dict)
     source_table:  dict | None = None  # opt-in unmodified table cell matrix
+    visual_asset:  dict = field(default_factory=dict)  # source PDF refs, no fabricated OCR
 
 
 @dataclass
@@ -303,12 +304,16 @@ class PDFProcessor:
         approved_image_assets: dict | None = None,
         capture_table_structure: bool = False,
         max_table_source_json_bytes: int = 8_000_000,
+        preserve_uninterpreted_visuals: bool = False,
+        max_visual_regions_per_page: int = 256,
     ):
         self.strict = strict
         self.capture_rich_text = capture_rich_text
         self.approved_image_assets = approved_image_assets or {}
         self.capture_table_structure = capture_table_structure
         self.max_table_source_json_bytes = max_table_source_json_bytes
+        self.preserve_uninterpreted_visuals = preserve_uninterpreted_visuals
+        self.max_visual_regions_per_page = max_visual_regions_per_page
         self._image_digest_cache: dict[int, tuple[str, int]] = {}
         self.max_render_pixels = max_render_pixels
         self.file_path = file_path
@@ -589,7 +594,11 @@ class PDFProcessor:
         # ── 3. Image elements ────────────────────────────────────────────────
         image_elements: list[PageElement] = []
         try:
-            img_list = page.get_images(full=True)
+            if self.preserve_uninterpreted_visuals:
+                image_elements = self._preserve_visuals(page, page_number)
+                img_list = []  # No expensive rasterization before the OCR stage
+            else:
+                img_list = page.get_images(full=True)
         except Exception as e:
             if self.strict:
                 raise RuntimeError(f"Image inventory failed p{page_number}: {e}") from e
@@ -680,7 +689,8 @@ class PDFProcessor:
         # ── 4. Scanned page detection ────────────────────────────────────────
         #    If native text is almost zero but images exist → needs full OCR
         native_text_len = sum(len(e.text) for e in text_elements)
-        if native_text_len < SCANNED_PAGE_TEXT_THRESHOLD and image_elements:
+        if (not self.preserve_uninterpreted_visuals
+                and native_text_len < SCANNED_PAGE_TEXT_THRESHOLD and image_elements):
             pc.needs_ocr = True
             # Render entire page for OCR (not just individual images)
             pix = None
@@ -811,6 +821,83 @@ class PDFProcessor:
         return pc
 
     # ── Table region detection ────────────────────────────────────────────────
+
+    def _preserve_visuals(self, page, page_number: int) -> list[PageElement]:
+        """Retain source image references without rendering or OCR.
+
+        Adjacent, aligned strips of the same pixel density become ONE
+        figure candidate, retaining every original XREF and bbox. These
+        are *not* assumed to have been interpreted or transcribed.
+        Source PDF hash is captured by page_stage's document version.
+        """
+        import math
+        from figure_recovery import FigureSettings, _adjacent
+        limit = self.max_visual_regions_per_page
+        if type(limit) is not int or not 2 <= limit <= 1024:
+            raise ValueError("Invalid max_visual_regions_per_page")
+        raw = page.get_image_info(xrefs=True)
+        if len(raw) > limit:
+            raise RuntimeError(
+                f"VISUAL_REGION_LIMIT_EXCEEDED p{page_number}: "
+                f"{len(raw)} > {limit}; no source images silently dropped"
+            )
+        infos = []
+        for item in raw:
+            coords = item.get("bbox", ())
+            if len(coords) != 4 or not all(math.isfinite(float(x)) for x in coords):
+                raise ValueError(f"Invalid image bounding box on page {page_number}")
+            bbox = [float(x) for x in coords]
+            if bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
+                raise ValueError(f"Degenerate image bounding box on page {page_number}")
+            width = int(item.get("width") or 0)
+            height = int(item.get("height") or 0)
+            if width <= 0 or height <= 0:
+                raise ValueError(f"Invalid image dimensions on page {page_number}")
+            infos.append({
+                "xref": int(item.get("xref") or 0),  # zero: inline image; PDF still authoritative
+                "bbox": bbox,
+                "pixel_width": width,
+                "pixel_height": height,
+            })
+        infos.sort(key=lambda row: (row["bbox"][1], row["bbox"][0], row["xref"]))
+        grouping = FigureSettings(max_page_images=limit,
+                                  max_fragments=min(limit, 32)).validate()
+        groups = []
+        current = []
+        for item in infos:
+            if (current and len(current) < grouping.max_fragments
+                    and current[-1]["xref"] > 0 and item["xref"] > 0
+                    and _adjacent(current[-1], item, grouping)):
+                current.append(item)
+            else:
+                if current:
+                    groups.append(current)
+                current = [item]
+        if current:
+            groups.append(current)
+        result = []
+        for group in groups:
+            bounds = [
+                min(row["bbox"][0] for row in group),
+                min(row["bbox"][1] for row in group),
+                max(row["bbox"][2] for row in group),
+                max(row["bbox"][3] for row in group),
+            ]
+            result.append(PageElement(
+                element_type=ElementType.IMAGE,
+                bbox=BBox(*bounds),
+                visual_asset={
+                    "version": 1,
+                    "source": "original_pdf",
+                    "source_page": page_number,
+                    "status": "PENDING_OCR_OR_VISUAL_ENRICHMENT",
+                    "numeric_interpretation": "NOT_PERFORMED",
+                    "group_type": "contiguous_image_strips" if len(group) > 1 else "single_image",
+                    "fragment_count": len(group),
+                    "fragments": group,
+                },
+            ))
+        return result
 
     def _detect_table_regions(self, page, *, plumb_page=None) -> list[BBox]:
         """Find native table bounding boxes while reusing a caller-owned
