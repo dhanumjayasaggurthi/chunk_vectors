@@ -74,6 +74,9 @@ class FigureRecoveryTests(unittest.TestCase):
             self.assertEqual(evidence["interpretation_status"], "NOT_PERFORMED")
             self.assertEqual(evidence["fragment_count"], 7)
             self.assertEqual(evidence["native_extraction_hash"], "native-test-version")
+            self.assertIsNotNone(evidence["caption_bbox"])
+            self.assertLess(evidence["render_clip_bbox"][0], evidence["caption_bbox"][0])
+            self.assertLess(evidence["render_clip_bbox"][1], evidence["caption_bbox"][1])
             self.assertEqual(
                 evidence["source_pdf_sha256"],
                 hashlib.sha256(path.read_bytes()).hexdigest(),
