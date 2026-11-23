@@ -241,10 +241,16 @@ def prepare_page(
                 ],
             }
             figure_id = hashlib.sha256(_canonical_bytes(identity)).hexdigest()
+            visual_task_id = hashlib.sha256(_canonical_bytes({
+                "figure_id": figure_id,
+                "native_extraction_hash": native_extraction_hash,
+                "render_settings": asdict(settings),
+            })).hexdigest()
             png_sha = hashlib.sha256(png).hexdigest()
             data = {
                 "schema_version": 1,
                 "figure_id": figure_id,
+                "visual_task_id": visual_task_id,
                 "source_pdf_sha256": source_sha256,
                 "native_doc_id": doc_id,
                 "native_extraction_hash": native_extraction_hash,
@@ -257,17 +263,18 @@ def prepare_page(
                 "source_fragments": fragments,
                 "fragment_count": len(fragments),
                 "composite_sha256": png_sha,
-                "composite_file": figure_id + ".png",
+                "composite_file": visual_task_id + ".png",
                 "review_status": "VISUAL_REVIEW_REQUIRED",
                 "interpretation_status": "NOT_PERFORMED",
             }
             manifest = _canonical_bytes(data) + b"\n"
             image_path = output_dir / data["composite_file"]
-            manifest_path = output_dir / (figure_id + ".json")
+            manifest_path = output_dir / (visual_task_id + ".json")
             _write_immutable(image_path, png)
             _write_immutable(manifest_path, manifest)
             records.append({
                 "figure_id": figure_id,
+                "visual_task_id": visual_task_id,
                 "fragments": len(fragments),
                 "png": str(image_path.resolve()),
                 "manifest": str(manifest_path.resolve()),
