@@ -102,6 +102,8 @@ class ApprovedImageTests(unittest.TestCase):
                 self.assertEqual(logo.text,"Test agency logo approved text")
                 errors,count=_ocr_pages([page],{
                     "ocr_enabled":False,
+                    "ocr_workers":1,
+                    "chart_workers":1,
                     "ocr_max_batch_bytes":6_000_000,
                     "ocr_batch_images":8,
                     "chart_descriptions_enabled":False,
