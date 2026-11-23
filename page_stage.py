@@ -872,6 +872,13 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
     # Global per-process caps across ALL document workers. The DB quota
     # independently coordinates combined requests/images across servers.
     backend=cfg["worker_backend"]
+    from config import POSTGRES
+    if (POSTGRES.get("pool_enabled",False) and backend=="threads"
+            and POSTGRES["pool_max_connections"] < doc_workers+1):
+        raise ValueError(
+            "PostgreSQL pool_max_connections must exceed doc_workers "
+            "in thread mode; each document retains an advisory-lock lease"
+        )
     if backend=="processes":
         if (cfg["ocr_enabled"] or cfg["chart_descriptions_enabled"]
                 or cfg["table_summaries_enabled"]
