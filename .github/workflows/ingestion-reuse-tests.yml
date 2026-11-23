@@ -18,6 +18,13 @@ on:
       - tests/test_ocr_quota.py
       - tests/test_page_stage.py
       - tests/test_deferred_visual_native.py
+      - db.py
+      - db_pool.py
+      - semantic_chunking_v2.py
+      - table_continuity.py
+      - tests/test_db_pool.py
+      - tests/test_semantic_chunking_v2.py
+      - profiles/regulatory_semantic_v2_example.yml
       - figure_recovery.py
       - page_stage.py
       - ocr_quota.py
@@ -59,9 +66,13 @@ jobs:
           gcp_key_path=not-used.json
           EOF
       - name: Compile modified modules
-        run: python -m py_compile main.py extracted_source.py configurable_chunking.py metadata_extractor.py processing_profile.py reuse_materialize.py page_stage.py ocr_quota.py vision_ocr.py pdf_processor.py
+        run: python -m py_compile main.py extracted_source.py configurable_chunking.py metadata_extractor.py processing_profile.py reuse_materialize.py page_stage.py ocr_quota.py vision_ocr.py pdf_processor.py db.py db_pool.py semantic_chunking_v2.py table_continuity.py
       - name: Run intake reuse unit tests
         run: python -m unittest discover -s tests -p 'test_*materialize.py' -v
+      - name: Semantic-v2 paragraph, table-continuity and metadata integrity
+        run: python -m unittest discover -s tests -p 'test_semantic_chunking_v2.py' -v
+      - name: Bounded PostgreSQL pool and session isolation
+        run: python -m unittest discover -s tests -p 'test_db_pool.py' -v
       - name: Test one-pass PDF hotpath and metadata integrity
         run: python -m unittest discover -s tests -p 'test_ingestion_hotpath.py' -v
       - name: Test cloud-free OCR batch semantics
@@ -117,6 +128,10 @@ jobs:
           EOF
       - name: Run real PostgreSQL transactional and recovery tests
         run: python -m unittest discover -s tests -p 'test_reuse_materialize.py' -v
+      - name: Verify pooled backend reuse against disposable PostgreSQL
+        run: python -m unittest discover -s tests -p 'test_db_pool.py' -v
+      - name: Verify semantic-v2 table reconstruction with disposable data
+        run: python -m unittest discover -s tests -p 'test_semantic_chunking_v2.py' -v
       - name: Test bounded PDF staging, resume and full rechunk handoff
         run: python -m unittest discover -s tests -p 'test_page_stage.py' -v
       - name: Test cross-worker shared quota accounting and 429 cooldown
