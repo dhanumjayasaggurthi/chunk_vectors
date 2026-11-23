@@ -118,6 +118,45 @@ class PageElement:
     visual_asset:  dict = field(default_factory=dict)  # source PDF refs, no fabricated OCR
 
 
+def validate_visual_asset(asset: dict, *, page_number: int | None = None) -> dict:
+    """Validate source PDF visual references with no implied OCR or approval."""
+    import math
+    if not isinstance(asset, dict) or set(asset) != {
+        "version", "source", "source_page", "status",
+        "numeric_interpretation", "group_type", "fragment_count", "fragments",
+    }:
+        raise ValueError("Invalid preserved visual metadata")
+    if (type(asset["version"]) is not int or asset["version"] != 1
+            or asset["source"] != "original_pdf"
+            or type(asset["source_page"]) is not int or asset["source_page"] < 1
+            or (page_number is not None and asset["source_page"] != page_number)
+            or asset["status"] != "PENDING_OCR_OR_VISUAL_ENRICHMENT"
+            or asset["numeric_interpretation"] != "NOT_PERFORMED"):
+        raise ValueError("Invalid preserved visual provenance/status")
+    pieces = asset["fragments"]
+    if (not isinstance(pieces, list) or not 1 <= len(pieces) <= 1024
+            or type(asset["fragment_count"]) is not int
+            or asset["fragment_count"] != len(pieces)
+            or asset["group_type"] != (
+                "contiguous_image_strips" if len(pieces) > 1 else "single_image"
+            )):
+        raise ValueError("Invalid preserved image fragment group")
+    for part in pieces:
+        if not isinstance(part, dict) or set(part) != {
+            "xref", "bbox", "pixel_width", "pixel_height",
+        }:
+            raise ValueError("Invalid preserved image source reference")
+        bb=part["bbox"]
+        if (type(part["xref"]) is not int or part["xref"] < 0
+                or type(part["pixel_width"]) is not int or part["pixel_width"] < 1
+                or type(part["pixel_height"]) is not int or part["pixel_height"] < 1
+                or not isinstance(bb, list) or len(bb) != 4
+                or any(type(x) not in (float,int) or not math.isfinite(x) for x in bb)
+                or bb[0] >= bb[2] or bb[1] >= bb[3]):
+            raise ValueError("Invalid preserved image geometry/source")
+    return asset
+
+
 @dataclass
 class TocEntry:
     """One entry from the PDF Table of Contents."""
