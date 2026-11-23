@@ -132,6 +132,7 @@ def validate_profile(profile: dict) -> None:
             "chart_workers", "capture_rich_text",
             "publish_unreviewed_vector_regions", "approved_image_manifest",
             "capture_table_structure", "max_table_source_json_bytes",
+            "visual_processing", "max_visual_regions_per_page",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -247,6 +248,7 @@ def validate_profile(profile: dict) -> None:
             "max_window_raster_bytes":(10_000_000,1_000_000_000),
             "max_render_pixels":(1_000_000,75_000_000),
             "max_table_source_json_bytes":(100_000,100_000_000),
+            "max_visual_regions_per_page":(2,1024),
         }
         for field,(low,high) in limits.items():
             if field in extract and (
@@ -254,6 +256,11 @@ def validate_profile(profile: dict) -> None:
                 not low <= extract[field] <= high
             ):
                 raise ValueError(f"extraction.{field} must be {low}..{high}")
+        policy=extract.get("visual_processing","blocking")
+        if policy not in ("blocking","preserve_defer"):
+            raise ValueError("extraction.visual_processing must be blocking or preserve_defer")
+        if policy=="preserve_defer" and extract.get("ocr_enabled",True):
+            raise ValueError("preserve_defer is native-only; run OCR as a separate workload or use blocking inline OCR")
         if extract.get("ocr_bbox_detail","word") not in ("word","block"):
             raise ValueError("extraction.ocr_bbox_detail must be word or block")
         threshold = extract.get("ocr_confidence_min",0.6)
