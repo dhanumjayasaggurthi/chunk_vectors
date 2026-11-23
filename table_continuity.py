@@ -103,6 +103,12 @@ def link_tables(struct, policy):
             f"{struct.doc_id}::table::{first_page}::{group[0][1].reading_order}".encode()
         ).hexdigest()
         pages_in_group=[p.page_number for p,_ in group]
+        source_rows=sum(
+            len(element.source_table["source_cells"]) for _,element in group
+        )
+        # Subsequent repeated header rows are retained in original page cells
+        # but counted once in the logical table projection.
+        effective_rows=source_rows-(len(group)-1 if len(group)>1 else 0)
         for position,(page,element) in enumerate(group):
             info={
                 "table_id":group_id,
@@ -114,6 +120,9 @@ def link_tables(struct, policy):
                 "continuation_verified":len(group)>1,
                 "method":"repeated_header_and_page_edge" if len(group)>1 else "single_page",
                 "header_cells":list(_header(group[0][1])),
+                "source_row_count":source_rows,
+                "logical_row_count":effective_rows,
+                "column_count":element.source_table["max_columns"],
             }
             element.table_continuity=info
         result[group_id]=[el for _,el in group]
