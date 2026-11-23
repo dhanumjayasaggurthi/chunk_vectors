@@ -39,6 +39,7 @@ profile pointing to your validated source schema and tables:
 worker_backend: processes
 worker_recycle_documents: 200
 page_batch_size: 32
+profile_stage_timings: true
 ~~~
 
 This process backend requires visual_processing=preserve_defer and
@@ -46,7 +47,7 @@ ocr_enabled=false, chart_descriptions_enabled=false and
 table_summaries_enabled=false. Synchronous OCR remains on the existing thread
 path; a separate deferred OCR worker is not implemented in this increment.
 
-These three runtime settings do not change the native extraction semantic
+These runtime-only settings do not change the native extraction semantic
 fingerprint. Already published PDFs will SKIP on replay. Do not delete
 checkpoints or published pages merely to generate a fresh benchmark.
 
@@ -108,6 +109,13 @@ documents/pages/chunks.
    chunk IDs. This enables adjacency-aware retrieval with one chunk API.
 7. Existing PDF source-image references remain pending OCR/visual enrichment
    until an independent processor completes that work.
+
+If profile_stage_timings is true, each successful document result also shows
+pdf_parse, ocr, table_postprocessing, checkpoint_sql, publish_sql and
+source_verification elapsed seconds, plus the initial source hash time.
+Note that PDF table detection itself runs inside pdf_parse, not solely in
+table_postprocessing. These counters enable bottleneck attribution without
+extra database tables.
 
 ## Tests and rollout
 
