@@ -139,7 +139,7 @@ def validate_profile(profile: dict) -> None:
             "publish_unreviewed_vector_regions", "approved_image_manifest",
             "capture_table_structure", "max_table_source_json_bytes",
             "visual_processing", "max_visual_regions_per_page",
-            "worker_backend", "worker_recycle_documents",
+            "worker_backend", "worker_recycle_documents", "profile_stage_timings",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -289,6 +289,8 @@ def validate_profile(profile: dict) -> None:
                 not low <= extract[field] <= high
             ):
                 raise ValueError(f"extraction.{field} must be {low}..{high}")
+        if type(extract.get("profile_stage_timings",False)) is not bool:
+            raise ValueError("extraction.profile_stage_timings must be boolean")
         worker_backend=extract.get("worker_backend","threads")
         if worker_backend not in ("threads","processes"):
             raise ValueError("extraction.worker_backend must be threads or processes")
