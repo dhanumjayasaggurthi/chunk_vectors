@@ -696,7 +696,7 @@ def inject_table_text_into_elements(
                     f"Table geometry mismatch: max axis offset={distance:.2f}"
                 )
             el.text=table.best_text
-            if table.source_table is not None:
+            if getattr(table, "source_table", None) is not None:
                 el.source_table=validate_source_table(table.source_table)
             del remaining[index]
     else:
