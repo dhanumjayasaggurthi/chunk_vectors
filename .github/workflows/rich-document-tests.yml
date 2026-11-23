@@ -16,6 +16,8 @@ on:
       - tests/test_online_regulatory_benchmark.py
       - tests/test_translation_stage.py
       - tests/test_public_corpus_aggregation.py
+      - approved_images.py
+      - tests/test_approved_images.py
       - tests/online_public_regulatory_benchmark.py
       - .github/workflows/rich-document-tests.yml
   workflow_dispatch:
@@ -54,6 +56,7 @@ jobs:
           EOF
       - run: python -m py_compile rich_document.py translation_stage.py pdf_processor.py page_stage.py extracted_source.py processing_profile.py
       - run: python -m unittest discover -s tests -p test_rich_document.py -v
+      - run: python -m unittest discover -s tests -p test_approved_images.py -v
       - run: python -m unittest discover -s tests -p test_translation_stage.py -v
       - run: python -m unittest discover -s tests -p test_public_corpus_aggregation.py -v
       - run: python -m unittest discover -s tests -p test_online_regulatory_benchmark.py -v
