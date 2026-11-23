@@ -214,6 +214,16 @@ class DeferredVisualNativePostgresTests(unittest.TestCase):
                         ]
                         self.assertEqual(len(visual),1)
                         self.assertEqual(visual[0]["fragment_count"],7)
+                        from extracted_source import load_extracted_document
+                        struct,_=load_extracted_document(p,doc_id)
+                        round_trip=[
+                            el.visual_asset for page in struct.pages
+                            for el in page.elements if el.visual_asset
+                        ]
+                        self.assertEqual(len(round_trip),2)
+                        self.assertEqual(round_trip[0]["fragment_count"],7)
+                        self.assertEqual(round_trip[1]["status"],
+                                         "PENDING_OCR_OR_VISUAL_ENRICHMENT")
                         cur.execute("""
                             SELECT COUNT(*) FROM intake_ci.ci_deferred_visual_stage_work
                             WHERE doc_id=%s
