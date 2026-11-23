@@ -130,7 +130,7 @@ def validate_profile(profile: dict) -> None:
             "max_quota_wait_seconds", "ocr_enabled",
             "max_window_raster_bytes", "max_render_pixels",
             "chart_workers", "capture_rich_text",
-            "publish_unreviewed_vector_regions",
+            "publish_unreviewed_vector_regions", "approved_image_manifest",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -229,6 +229,11 @@ def validate_profile(profile: dict) -> None:
                       "table_summaries_enabled"):
             if field in extract and type(extract[field]) is not bool:
                 raise ValueError("extraction." + field + " must be boolean")
+        if "approved_image_manifest" in extract:
+            path=extract["approved_image_manifest"]
+            if (not isinstance(path,str) or len(path)>512
+                    or (path and not path.lower().endswith((".yaml",".yml",".json")))):
+                raise ValueError("Invalid extraction.approved_image_manifest")
         limits = {
             "page_batch_size":(1,128), "ocr_batch_images":(1,16),
             "ocr_workers":(1,32), "chart_workers":(1,16),
