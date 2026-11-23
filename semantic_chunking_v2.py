@@ -171,7 +171,7 @@ def _coalesce_cross_page_paragraphs(units):
             and bool(previous.text.strip())
             and bool(current.text.strip())
             and not re.search(r"[.!?;:。！？。؟।]\s*$",previous.text)
-            and bool(re.match(r"^[a-zà-öø-ÿ]",current.text.strip()))
+            and current.text.strip()[0].islower()
         )
         if compatible:
             joiner="" if previous.text.rstrip().endswith("-") else " "
