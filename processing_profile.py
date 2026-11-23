@@ -70,7 +70,10 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
         key, separator, value = item.partition("=")
         if not separator or key not in {
             "chunking.strategy", "chunking.min_tokens", "chunking.max_tokens",
-            "chunking.overlap_tokens", "embedding.enabled", "embedding.batch_size",
+            "chunking.overlap_tokens", "chunking.boundary_mode",
+            "chunking.table_continuation", "chunking.table_row_mode",
+            "chunking.max_table_pages", "chunking.table_edge_fraction",
+            "chunking.table_x_tolerance", "embedding.enabled", "embedding.batch_size",
             "embedding.dimensions", "embedding.deployment", "embedding.model",
             "existing_chunks.schema", "existing_chunks.table",
             "existing_chunks.id_column", "existing_chunks.text_column",
@@ -103,7 +106,9 @@ def validate_profile(profile: dict) -> None:
         raise ValueError("Only version 1 profiles are supported")
     allowed_nested = {
         "chunking": {"strategy", "min_tokens", "max_tokens", "overlap_tokens",
-                     "small_section_policy", "preserve_headers", "tokenizer"},
+                     "small_section_policy", "preserve_headers", "tokenizer",
+                     "boundary_mode", "table_continuation", "table_row_mode",
+                     "max_table_pages", "table_edge_fraction", "table_x_tolerance"},
         "embedding": {"enabled", "reuse_existing", "batch_size",
                       "dimensions", "deployment", "model", "progress_every_batches",
                       "batch_tokens", "rpm", "tpm", "max_attempts",
@@ -150,6 +155,28 @@ def validate_profile(profile: dict) -> None:
                                  ("min_tokens", "max_tokens", "overlap_tokens"))
     if not 16 <= maximum <= 6000 or minimum > maximum or overlap >= maximum // 2:
         raise ValueError("Invalid chunk size or overlap limits")
+    mode=chunking.get("boundary_mode","v1")
+    if mode not in {"v1","semantic_v2"}:
+        raise ValueError("chunking.boundary_mode must be v1 or semantic_v2")
+    continuation=chunking.get("table_continuation","none")
+    row_mode=chunking.get("table_row_mode","legacy")
+    if continuation not in {"none","conservative"}:
+        raise ValueError("chunking.table_continuation must be none or conservative")
+    if row_mode not in {"legacy","rows"}:
+        raise ValueError("chunking.table_row_mode must be legacy or rows")
+    if (mode=="semantic_v2" and chunking["strategy"]!="toc_then_semantic"
+            or mode!="semantic_v2" and (continuation!="none" or row_mode!="legacy")
+            or continuation!="none" and row_mode!="rows"):
+        raise ValueError("semantic-v2 table row mode and continuity require toc_then_semantic")
+    max_table_pages=chunking.get("max_table_pages",8)
+    edge=chunking.get("table_edge_fraction",0.25)
+    x_tolerance=chunking.get("table_x_tolerance",0.05)
+    if type(max_table_pages) is not int or not 1<=max_table_pages<=64:
+        raise ValueError("chunking.max_table_pages must be 1..64")
+    if type(edge) not in (float,int) or not 0.05<=edge<=0.45:
+        raise ValueError("chunking.table_edge_fraction must be 0.05..0.45")
+    if type(x_tolerance) not in (float,int) or not 0.0<=x_tolerance<=0.2:
+        raise ValueError("chunking.table_x_tolerance must be 0..0.2")
     if chunking.get("small_section_policy") not in {"merge_forward", "keep"}:
         raise ValueError("Unsupported small_section_policy")
     if type(chunking.get("preserve_headers")) is not bool:
