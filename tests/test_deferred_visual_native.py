@@ -165,6 +165,7 @@ class DeferredVisualNativePostgresTests(unittest.TestCase):
                 page_batch_size=1,visual_processing="preserve_defer",
                 ocr_enabled=False,chart_descriptions_enabled=False,
                 max_visual_regions_per_page=256,
+                profile_stage_timings=True,
             )
             p["extracted_content"].update(
                 schema="intake_ci",table="ci_deferred_visual_stage",
@@ -193,6 +194,11 @@ class DeferredVisualNativePostgresTests(unittest.TestCase):
                 self.assertEqual(first["visual_assets_deferred_this_run"],2)
                 self.assertFalse(first["visual_enrichment_complete"])
                 self.assertEqual(first["ocr_images"],0)
+                timings=first["stage_timings_seconds"]
+                self.assertGreaterEqual(timings["pdf_parse"],0)
+                self.assertGreaterEqual(timings["checkpoint_sql"],0)
+                self.assertGreaterEqual(timings["publish_sql"],0)
+                self.assertGreaterEqual(first["source_hash_initial_seconds"],0)
                 second=stage_one(str(pdf),p,names(p))
                 self.assertEqual(second["status"],"SKIPPED")
                 doc_id=first["doc_id"]
