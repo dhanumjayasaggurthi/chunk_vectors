@@ -103,6 +103,11 @@ def _units(struct,policy):
         for el in elements:
             kind=getattr(el.element_type,"value",str(el.element_type))
             source=getattr(el,"source_table",None)
+            if kind=="table" and policy.get("table_row_mode","legacy")=="rows" and not source:
+                raise ValueError(
+                    "table_row_mode=rows requires lossless source_table for each table; "
+                    f"page {page.page_number} has no source cell grid"
+                )
             if kind=="table" and source and policy.get("table_row_mode","legacy")=="rows":
                 info=getattr(el,"table_continuity",None) or {}
                 table_id=info.get("table_id") or hashlib.sha256(
@@ -295,7 +300,14 @@ def chunk_semantic_v2(struct,policy):
                 "table_continuation_verified":table_info.get("continuation_verified",False),
                 "table_columns":table_info.get("column_count"),
                 "table_source_rows":table_info.get("source_row_count"),
+                "table_logical_rows":table_info.get("logical_row_count"),
                 "table_summary_status":"STRUCTURAL_ONLY",
+                "table_structure_summary":(
+                    str(table_info.get("column_count","unknown"))+
+                    " columns; "+str(table_info.get("logical_row_count","unknown"))+
+                    " projected rows; original fragments on pages "+
+                    ",".join(map(str,table_info.get("source_pages",[first.page_start])))
+                ),
             })
         item._section_path=first.path
         chunks.append(item)
