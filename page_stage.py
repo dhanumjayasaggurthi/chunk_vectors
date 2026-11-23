@@ -478,6 +478,18 @@ def _images_in_groups(pages, cfg):
         for element in page.elements:
             if element.element_type not in (ElementType.IMAGE,ElementType.CHART):
                 continue
+            if getattr(element, "visual_asset", None):
+                # Native-only publication is an explicit, provenance-backed
+                # state. OCR and chart interpretation are pending, not faked.
+                asset=element.visual_asset
+                if (cfg["visual_processing"]!="preserve_defer"
+                        or element.image_bytes or element.text
+                        or asset.get("source")!="original_pdf"
+                        or asset.get("status")!="PENDING_OCR_OR_VISUAL_ENRICHMENT"):
+                    errors[page.page_number]=ValueError(
+                        "Invalid deferred visual reference or quality policy"
+                    )
+                continue
             if getattr(element, "approved_asset", None):
                 if element.text and not element.image_bytes:
                     # Exact, manually approved source-image digest, not a
