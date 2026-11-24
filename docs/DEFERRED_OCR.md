@@ -78,6 +78,28 @@ Read-only discovery **confirmed exactly 323 source-linked candidates** for the 7
 - Fix in deferred_ocr.py closes read leases before yielded document and page batches. Regression covers 70 pages/140 assets, a forced two-lease cap, idempotent 128-row insert batches, and source-scoped status. **PASS**: [Windows/Linux/PostgreSQL CI 45341046132](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45341046132) explicitly ran the two-lease regression successfully; [rich-document CI 45341046181](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45341046181) also passed. Original 778-page enqueue retry pending.
 - Next: copy corrected deferred_ocr.py from feature branch and rerun only enqueue for the already-verified doc ID, then status. Expected candidates=323 and PENDING=323, with no GCP calls.
 
+## Latest original-document milestone — 2026-11-24
+
+The corrected OCR enqueue was successfully retested in the user's original PostgreSQL validation schema. `documents=1`, `candidates=323`, `inserted=323`, `writes=true`; source-scoped `status` reports `PENDING=323` and `writes=false`. This resolves the earlier 30-second PostgreSQL pool exhaustion **without increasing max=2**. The OCR table already exists and no repeat init/enqueue is necessary. There have been **no cloud OCR calls**.
+
+**Next pilot command (only after verifying actual GCP project quotas, credentials and permitted transfer of regulatory pages to Vision):**
+
+~~~powershell
+$Python = ".\.venv-validation\Scripts\python.exe"
+$Profile = ".\profiles\cv_corpus_deferred_ocr_v1.yml"
+$DocId = "2721ac39536ef7b439091e3018506b426bda3616c5a76e4271fd29e0b8abfb86"
+$Timer = [System.Diagnostics.Stopwatch]::StartNew()
+& $Python deferred_ocr.py run --profile $Profile --doc-id $DocId --max-jobs 8 --workers 2 --apply
+$ExitCode = $LASTEXITCODE
+$Timer.Stop()
+Write-Host "OCR pilot elapsed seconds:" ([math]::Round($Timer.Elapsed.TotalSeconds,2))
+Write-Host "OCR pilot exit code:" $ExitCode
+& $Python deferred_ocr.py status --profile $Profile --doc-id $DocId
+if ($LASTEXITCODE -ne 0) { throw "OCR status query failed" }
+~~~
+
+Expect at most eight attempts, with text-ready / visual-pending / retry-wait / terminal-error outcomes determined by the real OCR results. OCR text is **not** an approved reconstruction of chart/table meaning. Do not automatically enqueue more assets or run all 323 until the first results and quotas are evaluated.
+
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
