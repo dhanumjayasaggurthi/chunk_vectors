@@ -299,8 +299,11 @@ def _page_row(page, struct, source, extraction_hash):
     if not page.is_blank and not text.strip():
         # An image-only page may be indexed later by OCR. Retain its
         # original source references; never invent a textual transcription.
-        if not any(getattr(el,"visual_asset",None) for el in page.elements):
-            raise ValueError("Nonblank page has no recoverable text")
+        if not any(
+            getattr(el,"visual_asset",None) or getattr(el,"unresolved_region",None)
+            for el in page.elements
+        ):
+            raise ValueError("Nonblank page has no recoverable text or source visual evidence")
     geometry=[]
     for element in page.elements:
         box=element.bbox
