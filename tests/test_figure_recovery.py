@@ -295,6 +295,33 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_profile_parallel_replay_and_runtime_identity(self):
+        import fitz
+        from visual_evidence import capture, verify, load_visual_profile
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = self._fixture(folder)
+            profile = folder / "profile.json"
+            settings = dict(dpi=150, workers=2, batch_pages=1, max_in_flight=2)
+            profile.write_text(json.dumps({"version":1,"visual_evidence":settings}))
+            kw = dict(policy_id="test", authorized_page_derivatives=True)
+            parallel = capture(source, folder/"out", 1, 3,
+                               settings=load_visual_profile(profile), **kw)
+            self.assertEqual(parallel["rendered_pages"],3)
+            serial = capture(source,folder/"out",1,3,
+                             settings={**settings,"workers":1,"batch_pages":3},**kw)
+            self.assertEqual(serial["capture_id"],parallel["capture_id"])
+            self.assertEqual(serial["rendered_pages"],0)
+            self.assertEqual(serial["skipped_verified_pages"],3)
+            source.unlink()
+            self.assertEqual(verify(folder/"out",parallel["capture_id"],1,3,
+                                    settings=settings)["verified_pages"],3)
+            for bad in ({"workers":0},{"workers":3,"max_in_flight":2},
+                        {"max_pixels":True},{"unknown":1}):
+                profile.write_text(json.dumps({"version":1,"visual_evidence":bad}))
+                with self.assertRaises(ValueError):
+                    load_visual_profile(profile)
+
     def test_resume_skips_verified_pages_without_rendering_and_repairs_orphan(self):
         import fitz
         from unittest.mock import patch

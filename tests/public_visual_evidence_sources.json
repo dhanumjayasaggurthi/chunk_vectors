@@ -1,0 +1,34 @@
+{
+  "visual_evidence": {
+    "dpi": 300,
+    "workers": 2,
+    "batch_pages": 4,
+    "max_in_flight": 4,
+    "max_pixels": 40000000,
+    "max_png_bytes": 100000000
+  },
+  "download_retries": 2,
+  "connect_timeout": 15,
+  "read_timeout": 60,
+  "max_download_bytes": 104857600,
+  "sources": [
+    [
+      "nist_sem",
+      "https://nvlpubs.nist.gov/nistpubs/jres/125/jres.125.014.pdf",
+      1,
+      0
+    ],
+    [
+      "nist_ir8524",
+      "https://nvlpubs.nist.gov/nistpubs/ir/2024/NIST.IR.8524.pdf",
+      25,
+      40
+    ],
+    [
+      "ema_balversa",
+      "https://www.ema.europa.eu/en/documents/assessment-report/balversa-epar-public-assessment-report_en.pdf",
+      110,
+      118
+    ]
+  ]
+}

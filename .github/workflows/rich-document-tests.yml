@@ -15,6 +15,8 @@ on:
       - figure_recovery.py
       - visual_evidence.py
       - tests/public_visual_evidence_benchmark.py
+      - tests/public_visual_evidence_sources.json
+      - profiles/visual_evidence_example.json
       - source_evidence_archive.py
       - tests/test_source_evidence_archive.py
       - tests/test_deferred_visual_native.py
@@ -110,7 +112,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m pip install "PyMuPDF>=1.24,<2" "requests>=2.32,<3"
-      - run: python tests/public_visual_evidence_benchmark.py public_visual_report.json
+      - run: python tests/public_visual_evidence_benchmark.py tests/public_visual_evidence_sources.json public_visual_report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
