@@ -132,6 +132,24 @@ def prepare_document(struct, profile):
     fields = profile["embedding"].get("input_fields", ["chunk_text"])
     max_tokens = profile["embedding"].get("input_max_tokens", 6000)
     tokenizer = policy.get("tokenizer", "cl100k_base")
+    # Materialized chunk IDs include the processing-profile fingerprint.
+    # Chunker neighbor IDs are source-local and would NOT resolve to rows
+    # in the output table. Remap links before writing metadata.
+    published_ids=[
+        hashlib.sha256(
+            (profile["_fingerprint"] + "\x00" + item.doc_id + "\x00" +
+             str(item.chunk_index)).encode("utf-8")
+        ).hexdigest()
+        for item in chunks
+    ]
+    if policy.get("boundary_mode","v1")=="semantic_v2":
+        for index,item in enumerate(chunks):
+            item.chunk_metadata["previous_chunk_id"]=(
+                published_ids[index-1] if index else None
+            )
+            item.chunk_metadata["next_chunk_id"]=(
+                published_ids[index+1] if index+1<len(chunks) else None
+            )
     result = []
     for chunk in chunks:
         chunk.document_metadata = dict(doc_meta)
@@ -143,10 +161,7 @@ def prepare_document(struct, profile):
             chunk, fields, source_fields,
             max_tokens=max_tokens, tokenizer=tokenizer,
         )
-        identity = hashlib.sha256(
-            (profile["_fingerprint"] + "\x00" + chunk.doc_id + "\x00" +
-             str(chunk.chunk_index)).encode("utf-8")
-        ).hexdigest()
+        identity = published_ids[chunk.chunk_index]
         result.append((
             identity, chunk.doc_id, profile["_fingerprint"], chunk.chunk_index,
             chunk.file_path, chunk.file_name, chunk.chunk_text, vector_input,
