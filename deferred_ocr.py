@@ -358,7 +358,7 @@ def claim(profile,limit,max_attempts,lease_seconds):
                   )
                   AND j.attempts<%s
                   ORDER BY j.next_attempt_at,j.page_number,j.asset_id
-                  FOR UPDATE OF j SKIP LOCKED LIMIT %s
+                  LIMIT %s FOR UPDATE OF j SKIP LOCKED
                 )
                 UPDATE {n['ocr']} AS j
                 SET status='RUNNING', attempts=j.attempts+1,
