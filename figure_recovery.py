@@ -327,7 +327,7 @@ def prepare_page(
 # Read-only inventory for figure-grounded retrieval. It deliberately does
 # not interpret graph lines or silently classify multi-panel figures as OCR.
 _FIGURE_ID = re.compile(
-    r"^\s*(?:figure|fig\.?)\s*(\d{1,4}[A-Za-z]?)\s*(?::|\.|\s|[-–])", re.I,
+    r"^\s*(?:figure|fig\.?)\s*(\d{1,4}[A-Za-z]?)\s*(?::|\.|[-–])", re.I,
 )
 
 
@@ -382,13 +382,46 @@ def _figure_caption_candidates(page):
     return candidates
 
 
-def _visuals_near_caption(page, caption, *, max_distance=450):
-    """Hint at source graphics, NEVER assert an exact figure bounding box.
+def _is_page_spanning_image(bb,page_rect):
+    """Avoid assigning PDF full-page backgrounds to every figure caption.
 
-    Figures may be raster images, PDF paths, or both. Vector chart paths
-    have no XREF and were invisible to the original image-only inventory.
-    Returning coarse candidate counts does not claim chart interpretation.
+    Keep every such image as page-level evidence; excluding its *association*
+    is not deleting the image or asserting that it is decorative.
     """
+    if len(bb)!=4 or not all(math.isfinite(float(n)) for n in bb):
+        raise ValueError("Malformed original embedded-image bounding box")
+    x0,y0,x1,y1=[float(n) for n in bb]
+    if x1<=x0 or y1<=y0:
+        raise ValueError("Degenerate source image bounding box")
+    width=min(x1,float(page_rect.x1))-max(x0,float(page_rect.x0))
+    height=min(y1,float(page_rect.y1))-max(y0,float(page_rect.y0))
+    coverage=max(0.,width)*max(0.,height)/max(1.,float(page_rect.width*page_rect.height))
+    return coverage>=0.70
+
+
+def _page_visual_evidence(page):
+    """Read each original page's image/vector inventory once, never OCR it."""
+    images=page.get_image_info(xrefs=True)
+    if len(images)>1024:
+        raise ValueError("PAGE_IMAGE_COUNT_LIMIT: source inventory incomplete")
+    drawings=page.get_drawings()
+    if len(drawings)>50000:
+        raise ValueError("PAGE_DRAWING_COUNT_LIMIT: source inventory incomplete")
+    local=[]
+    spanning=[]
+    for image in images:
+        bb=image.get("bbox",())
+        original={"xref":int(image.get("xref") or 0),
+                  "bbox":[float(v) for v in bb]}
+        if _is_page_spanning_image(bb,page.rect):
+            spanning.append(original)
+        else:
+            local.append(original)
+    return local,spanning,drawings
+
+
+def _visuals_near_caption(page, caption, *, page_evidence=None,max_distance=450):
+    """Unverified spatial hints only; never claim exact figure association."""
     cap=caption["caption_bbox"]
     x0,x1=cap[0],cap[2]
 
@@ -396,46 +429,27 @@ def _visuals_near_caption(page, caption, *, max_distance=450):
         if len(bb)!=4 or not all(math.isfinite(float(n)) for n in bb):
             return False
         left,top,right,bottom=[float(n) for n in bb]
-        # Vector plot primitives are often exactly horizontal or vertical
-        # zero-thickness paths; rejecting those loses the chart grid/axes.
+        # Horizontal/vertical vector plot lines have zero thickness.
         if left>right or top>bottom or (left==right and top==bottom):
             return False
-        # Coarse caption-column affinity: use source geometry, not labels.
-        overlap=max(0.0,min(x1,right)-max(x0,left))
+        overlap=max(0.,min(x1,right)-max(x0,left))
         if left==right and x0<=left<=x1:
-            overlap=1.0
+            overlap=1.
         if overlap<=0:
             return False
-        gap=max(0.0,top-cap[3],cap[1]-bottom)
-        return gap<=max_distance
+        return max(0.,top-cap[3],cap[1]-bottom)<=max_distance
 
-    images=[]
-    image_info=page.get_image_info(xrefs=True)
-    if len(image_info)>1024:
-        raise ValueError("PAGE_IMAGE_COUNT_LIMIT: figure inventory would be incomplete")
-    for im in image_info:
-        bb=im.get("bbox",())
-        if candidate(bb):
-            images.append({
-                "xref":int(im.get("xref") or 0),
-                "bbox":[float(v) for v in bb],
-            })
-
-    draw_count=0
-    drawings=page.get_drawings()
-    if len(drawings)>50000:
-        raise ValueError("PAGE_DRAWING_COUNT_LIMIT: figure inventory would be incomplete")
-    for draw in drawings:
-        rect=draw.get("rect")
-        if rect is None:
-            continue
-        if candidate(tuple(rect)):
-            draw_count+=1
+    local,spanning,drawings=page_evidence or _page_visual_evidence(page)
+    images=[image for image in local if candidate(image["bbox"])]
+    vectors=sum(1 for draw in drawings if draw.get("rect") is not None
+                and candidate(tuple(draw["rect"])))
     return {
         "nearby_embedded_images":images,
-        "nearby_vector_drawing_paths":draw_count,
+        "page_spanning_images":spanning,
+        "nearby_vector_drawing_paths":vectors,
         "association_status":"GEOMETRY_NEAR_CAPTION_UNVERIFIED",
     }
+
 
 
 def inventory_page(pdf,page_number,*,source_hash,include_caption=False):
@@ -451,9 +465,10 @@ def inventory_page(pdf,page_number,*,source_hash,include_caption=False):
             or any(v not in "0123456789abcdef" for v in source_hash)):
         raise ValueError("Inventory requires a full original source PDF SHA-256")
     page=pdf[page_number-1]
+    page_evidence=_page_visual_evidence(page)
     out=[]
     for caption in _figure_caption_candidates(page):
-        evidence=_visuals_near_caption(page,caption)
+        evidence=_visuals_near_caption(page,caption,page_evidence=page_evidence)
         raster=len(evidence["nearby_embedded_images"])
         vectors=evidence["nearby_vector_drawing_paths"]
         if raster and vectors:
@@ -475,6 +490,7 @@ def inventory_page(pdf,page_number,*,source_hash,include_caption=False):
                 _canonical_bytes(identity)).hexdigest(),
             "source_pdf_sha256":source_hash,
             "source_page":page_number,
+            "printed_page_label":page.get_label(),
             "figure_number":caption["figure_number"],
             "caption_bbox":caption["caption_bbox"],
             "caption_sha256":caption["caption_sha256"],
@@ -498,6 +514,8 @@ def main(argv=None):
                         help="Last page for bounded inventory (at most 50 pages)")
     parser.add_argument("--include-caption",action="store_true",
                         help="Print source caption text in local output (off by default)")
+    parser.add_argument("--compact",action="store_true",
+                        help="Short figure coverage report: no source coordinates or OCR text")
     parser.add_argument("--profile", help="Native stage profile; used only to tie visual evidence to its fingerprint")
     parser.add_argument("--output-dir", default="benchmark_artifacts/visual_figures")
     parser.add_argument("--min-fragments", type=int, default=2)
@@ -552,16 +570,46 @@ def main(argv=None):
                 findings.extend(inventory_page(
                     pdf,number,source_hash=source_hash,
                     include_caption=args.include_caption))
-        answer={
-            "source_file_sha256":source_hash,
-            "first_page":args.page,
-            "last_page":last,
-            "figure_candidates":len(findings),
-            "candidates":findings,
-            "writes":False,
-            "cloud_calls":False,
-            "quality_policy":"SOURCE_ONLY_UNINTERPRETED",
-        }
+        if args.compact:
+            from collections import Counter
+            kind_counts=dict(sorted(Counter(
+                row["visual_kind"] for row in findings
+            ).items()))
+            answer={
+                "source_file_sha256":source_hash,
+                "first_page":args.page,
+                "last_page":last,
+                "figure_candidates":len(findings),
+                "by_visual_kind":kind_counts,
+                "figures":[{
+                    "pdf_page":row["source_page"],
+                    "printed_page_label":row["printed_page_label"],
+                    "figure_number":row["figure_number"],
+                    "visual_kind":row["visual_kind"],
+                    "nearby_images":len(row["nearby_embedded_images"]),
+                    "page_spanning_images_unassigned":
+                        len(row["page_spanning_images"]),
+                    "nearby_vector_paths":
+                        row["nearby_vector_drawing_paths"],
+                    "association_status":row["association_status"],
+                    **({"caption_native_text":row["caption_native_text"]}
+                       if args.include_caption else {}),
+                } for row in findings],
+                "writes":False,
+                "cloud_calls":False,
+                "quality_policy":"SOURCE_ONLY_UNINTERPRETED",
+            }
+        else:
+            answer={
+                "source_file_sha256":source_hash,
+                "first_page":args.page,
+                "last_page":last,
+                "figure_candidates":len(findings),
+                "candidates":findings,
+                "writes":False,
+                "cloud_calls":False,
+                "quality_policy":"SOURCE_ONLY_UNINTERPRETED",
+            }
     elif args.command == "inspect":
         import fitz
         if args.page is None:
