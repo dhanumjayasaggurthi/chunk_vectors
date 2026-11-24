@@ -4,6 +4,8 @@ pymupdf
 pdfplumber
 pillow
 google-cloud-vision
+google-cloud-translate
+google-auth
 psycopg2-binary
 pgvector
 openai
