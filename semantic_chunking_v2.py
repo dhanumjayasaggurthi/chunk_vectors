@@ -66,7 +66,8 @@ def _paragraph_units(page, el, headings, known_titles, source_end,
                 text_lines.append(stripped)
         if text_lines:
             yield Unit(" ".join(text_lines),page.page_number,
-                       source_end,tuple(headings),"text")
+                       source_end,tuple(headings),"text",
+                       near_top=top,near_bottom=bottom)
 
 
 def _markdown_row(row,columns):
