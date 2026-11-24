@@ -108,7 +108,7 @@ class DeferredOcrUnitTests(unittest.TestCase):
                         "inherit_document_fields":True},
             "embedding":{"enabled":False,"reuse_existing":True,
                          "batch_size":16},
-            "output":{},"extracted_content":{},
+            "output":{},"existing_chunks":{},"extracted_content":{},
             "deferred_ocr":{"workers":2,"batch_images":4},
         }
         validate_profile(full)
