@@ -10,7 +10,7 @@ from pathlib import Path
 _ALLOWED_METHODS = {"label", "regex", "constant"}
 # Internal semantic algorithm revision, not a tunable operational setting.
 # Bump whenever chunk boundaries/IDs/continuity or materialized semantics change.
-_SEMANTIC_V2_IMPLEMENTATION_VERSION = 2
+_SEMANTIC_V2_IMPLEMENTATION_VERSION = 3
 _DEFAULTS = {
     "version": 1,
     "chunking": {
@@ -77,7 +77,9 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "chunking.table_continuation", "chunking.table_row_mode",
             "chunking.max_table_pages", "chunking.table_edge_fraction",
             "chunking.table_x_tolerance", "chunking.merge_cross_page_paragraphs",
-            "chunking.page_join_edge_fraction", "embedding.enabled", "embedding.batch_size",
+            "chunking.page_join_edge_fraction",
+            "chunking.small_chunk_max_pages", "chunking.small_chunk_max_tables",
+            "embedding.enabled", "embedding.batch_size",
             "embedding.dimensions", "embedding.deployment", "embedding.model",
             "existing_chunks.schema", "existing_chunks.table",
             "existing_chunks.id_column", "existing_chunks.text_column",
@@ -122,7 +124,8 @@ def validate_profile(profile: dict) -> None:
                      "small_section_policy", "preserve_headers", "tokenizer",
                      "boundary_mode", "table_continuation", "table_row_mode",
                      "max_table_pages", "table_edge_fraction", "table_x_tolerance",
-                     "merge_cross_page_paragraphs", "page_join_edge_fraction"},
+                     "merge_cross_page_paragraphs", "page_join_edge_fraction",
+                     "small_chunk_max_pages", "small_chunk_max_tables"},
         "embedding": {"enabled", "reuse_existing", "batch_size",
                       "dimensions", "deployment", "model", "progress_every_batches",
                       "batch_tokens", "rpm", "tpm", "max_attempts",
@@ -200,6 +203,10 @@ def validate_profile(profile: dict) -> None:
         raise ValueError("chunking.merge_cross_page_paragraphs must be boolean")
     if mode!="semantic_v2" and chunking.get("merge_cross_page_paragraphs",False):
         raise ValueError("Cross-page paragraph joins require semantic_v2")
+    for field,upper in (("small_chunk_max_pages",8),("small_chunk_max_tables",12)):
+        value=chunking.get(field,2 if field=="small_chunk_max_pages" else 3)
+        if type(value) is not int or not 1<=value<=upper:
+            raise ValueError(f"chunking.{field} must be 1..{upper}")
     if chunking.get("small_section_policy") not in {"merge_forward", "keep"}:
         raise ValueError("Unsupported small_section_policy")
     if type(chunking.get("preserve_headers")) is not bool:
