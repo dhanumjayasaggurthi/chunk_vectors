@@ -154,6 +154,7 @@ class DeferredOcrUnitTests(unittest.TestCase):
             ]
             completed=[]
             with (patch("deferred_ocr._file_path",return_value=path),
+                  patch("deferred_ocr.renew_leases"),
                   patch("deferred_ocr.complete",
                         side_effect=lambda p,j,**kw:completed.append((j[0],kw))),
                   patch("vision_ocr.batch_document_text_detection",
@@ -176,6 +177,7 @@ class DeferredOcrUnitTests(unittest.TestCase):
                  [45,50,200,190],1,"lease")
             records=[]
             with (patch("deferred_ocr._file_path",return_value=path),
+                  patch("deferred_ocr.renew_leases"),
                   patch("deferred_ocr.complete",
                         side_effect=lambda p,j,**kw:records.append(kw)),
                   patch("vision_ocr.batch_document_text_detection",
@@ -195,6 +197,7 @@ class DeferredOcrUnitTests(unittest.TestCase):
                  [45,50,200,190],1,"lease")
             statuses=[]
             with (patch("deferred_ocr._file_path",return_value=path),
+                  patch("deferred_ocr.renew_leases"),
                   patch("deferred_ocr.complete",
                         side_effect=lambda p,j,**kw:statuses.append(kw["status"])),
                   patch("vision_ocr.batch_document_text_detection",
@@ -273,6 +276,7 @@ class DeferredOcrPostgresTests(unittest.TestCase):
             ocr.enqueue(self.p,doc_id="d"*64,apply=True)["inserted"],0)
         job=ocr.claim(self.p,1,max_attempts=3,lease_seconds=3600)
         self.assertEqual(len(job),1)
+        ocr.renew_leases(self.p,job,3600)
         ocr.complete(self.p,job[0],status="TEXT_READY",
                      text="20 mg",regions=[],confidence=0.99,language="en")
         self.assertEqual(ocr.status(self.p)["statuses"]["TEXT_READY"],1)
