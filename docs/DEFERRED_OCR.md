@@ -1,6 +1,6 @@
 # Deferred OCR stage — design, controls and usage
 
-Read [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) first. This stage is implemented and **cloud-free CI passed**, including [Windows/Linux plus disposable PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875585) and [rich-document tests](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875427). **Original-document read-only discovery PASSED on 2026-11-24:** 778-page PBRER, 1 document and **323 visual candidates**, inserted=0, writes=false. No GCP OCR calls have been made. Proceed to isolated queue initialization/enqueue, then tiny source-scoped pilot.
+Read [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) first. This stage is implemented and **cloud-free CI passed**, including [Windows/Linux plus disposable PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875585) and [rich-document tests](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875427). **Original-document read-only discovery PASSED on 2026-11-24:** 778-page PBRER, 1 document and **323 visual candidates**, inserted=0, writes=false. No GCP OCR calls have been made. Proceed to isolated queue initialization/enqueue, then tiny source-scoped pilot. Final implementation evidence: [multi-platform ingestion/DB CI PASS](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45339898781), [rich-document CI PASS](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45339898776).
 
 ## End-to-end contract
 
