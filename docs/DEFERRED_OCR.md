@@ -1,6 +1,6 @@
 # Deferred OCR stage — design, controls and usage
 
-Read [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) first. This stage is implemented and **cloud-free CI passed**, including [Windows/Linux plus disposable PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875585) and [rich-document tests](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875427). No actual GCP OCR calls or original 778-page OCR discovery have been executed. Perform a read-only discovery before authorizing cloud requests.
+Read [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) first. This stage is implemented and **cloud-free CI passed**, including [Windows/Linux plus disposable PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875585) and [rich-document tests](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875427). **Original-document read-only discovery PASSED on 2026-11-24:** 778-page PBRER, 1 document and **323 visual candidates**, inserted=0, writes=false. No GCP OCR calls have been made. Proceed to isolated queue initialization/enqueue, then tiny source-scoped pilot.
 
 ## End-to-end contract
 
@@ -55,10 +55,10 @@ $DocId = "2721ac39536ef7b439091e3018506b426bda3616c5a76e4271fd29e0b8abfb86"
 & $Python deferred_ocr.py status --profile $Profile
 
 # This explicitly sends actual source images to your configured GCP Vision:
-& $Python deferred_ocr.py run --profile $Profile --max-jobs 32 --apply
+& $Python deferred_ocr.py run --profile $Profile --doc-id $DocId --max-jobs 8 --workers 2 --apply
 ~~~
 
-The read-only discover result should report the total pending visual candidates, expected to be comparable to the 323 original deferred visual assets on the 778-page pilot. The exact count must be checked rather than assumed. The run command has a per-invocation max_jobs safety bound. Multiple workers share the PostgreSQL quota, backpressure and idempotent asset IDs.
+Read-only discovery **confirmed exactly 323 source-linked candidates** for the 778-page PBRER, with 0 PostgreSQL inserts and 0 GCP calls. `run --apply` now requires `--doc-id` (explicit single-PDF scope) or `--all-docs` (explicit fleet-wide scope), preventing accidental OCR of unrelated queued documents. The small pilot command above is intentionally limited to 8 jobs / 2 workers. Multiple workers share PostgreSQL quota enforcement and idempotent source IDs.
 
 ## Operational & quality policy
 
@@ -73,8 +73,8 @@ The read-only discover result should report the total pending visual candidates,
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
-2. Read-only discovery on original 778-page PDF; reconcile image groups vs unresolved vector regions.
-3. Cloud pilot on a **very small, explicitly authorized** number of assets; confirm quota/project, confidence/word polygons, latency, retries and cost. Do not run all 323 before validating observed quality.
+2. **DONE 2026-11-24**: read-only discovery of original 778-page PBRER verified 323 candidates, 0 inserts, 0 cloud calls. Next: initialize and enqueue only that document's candidates into the isolated OCR table, then review queue counts.
+3. Cloud pilot on a **very small, explicitly authorized** document-scoped 8-asset/2-worker batch; confirm real GCP project caps, confidence/word polygons, latency, retries and cost. Do not run all 323 before validating observed quality.
 4. Implement optional source-versioned OCR overlay into retrieval chunk generation (while preserving original pages), then independent grounded visual/table summaries.
 5. Prove fleet OCR throughput, peak RSS, per-document retries and completed-source/annotation coverage against 3.2M/15 days.
 
