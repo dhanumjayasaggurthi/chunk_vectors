@@ -233,5 +233,65 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 
+    def test_full_page_background_is_not_misassigned_to_every_figure(self):
+        """The original journal PDF has full-page images plus figure panels."""
+        import fitz
+        from PIL import Image,ImageDraw
+        from figure_recovery import inventory_page,main
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"ten-page-article.pdf"
+            full=Image.new("RGB",(400,600),"white")
+            panel=Image.new("RGB",(120,80),"white")
+            ImageDraw.Draw(panel).line((0,40,120,40),fill="black",width=2)
+            bg_bytes=io.BytesIO()
+            panel_bytes=io.BytesIO()
+            full.save(bg_bytes,format="PNG")
+            panel.save(panel_bytes,format="PNG")
+            with fitz.open() as pdf:
+                for n in range(10):
+                    p=pdf.new_page(width=612,height=792)
+                    if n!=2:
+                        continue
+                    p.insert_image(p.rect,stream=bg_bytes.getvalue())
+                    p.insert_image(fitz.Rect(70,100,220,200),
+                                   stream=panel_bytes.getvalue())
+                    p.insert_text((60,285),"Figure 1: Real native caption")
+                    p.insert_text((60,330),"Figure 1 shows trends in this study")
+                    p.insert_text((60,360),"Figure 2. Second native caption")
+                pdf.set_page_labels([{
+                    "startpage":0,"prefix":"","style":"D","firstpagenum":1340,
+                }])
+                pdf.save(path)
+            sha=hashlib.sha256(path.read_bytes()).hexdigest()
+            with fitz.open(path) as pdf:
+                records=inventory_page(pdf,3,source_hash=sha)
+            self.assertEqual(len(records),2)
+            self.assertEqual([r["figure_number"] for r in records],["1","2"])
+            self.assertEqual(records[0]["printed_page_label"],"1342")
+            self.assertEqual(records[0]["visual_kind"],"embedded_raster_candidate")
+            self.assertEqual(len(records[0]["nearby_embedded_images"]),1)
+            self.assertEqual(len(records[0]["page_spanning_images"]),1)
+            self.assertFalse(records[0]["writes"])
+            self.assertEqual(records[1]["source_pdf_sha256"],sha)
+            output=io.StringIO()
+            with redirect_stdout(output):
+                main(["inventory","--file",str(path),"--page","1",
+                      "--end-page","10","--compact"])
+            summary=json.loads(output.getvalue())
+            self.assertEqual(summary["figure_candidates"],2)
+            self.assertEqual(summary["by_visual_kind"],{
+                "embedded_raster_candidate":2,
+            })
+            self.assertEqual(summary["figures"][0]["printed_page_label"],"1342")
+            self.assertEqual(summary["figures"][0]["nearby_images"],1)
+            self.assertEqual(
+                summary["figures"][0]["page_spanning_images_unassigned"],1)
+            self.assertNotIn("caption_native_text",summary["figures"][0])
+            self.assertFalse(summary["writes"])
+            self.assertFalse(summary["cloud_calls"])
+
+
+
 if __name__ == "__main__":
     unittest.main()
