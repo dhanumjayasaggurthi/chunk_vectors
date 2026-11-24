@@ -755,6 +755,7 @@ def stage_one(
             preserve_uninterpreted_visuals=cfg["visual_processing"]=="preserve_defer",
             max_visual_regions_per_page=cfg["max_visual_regions_per_page"],
             empty_table_policy=cfg["empty_table_policy"],
+            profile_page_timings=cfg["profile_stage_timings"],
         )
         # Header-only read is cheap; don't render completed pages during resume.
         with __import__("fitz").open(str(path)) as pdf:
@@ -831,6 +832,13 @@ def stage_one(
             or source_hash(str(path))!=source):
             raise RuntimeError("Source PDF changed during extraction; no publication")
         timings["source_verification"]+=time.monotonic()-verification_started
+        if cfg["profile_stage_timings"]:
+            timings["pdf_table_detection"]=proc.profiled_table_detection_seconds
+            timings["pdf_table_cell_extraction"]=proc.profiled_table_extraction_seconds
+            timings["pdf_other_parse"]=max(
+                0.0, timings["pdf_parse"]-
+                timings["pdf_table_detection"]-timings["pdf_table_cell_extraction"]
+            )
         if errors_total:
             return {
                 "doc_id":doc_id,"status":"INCOMPLETE","pages":page_count,
