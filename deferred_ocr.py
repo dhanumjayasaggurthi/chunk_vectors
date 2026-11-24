@@ -254,7 +254,7 @@ def init(profile,apply=False):
             """)
             cur.execute(f"""
                 CREATE INDEX IF NOT EXISTS {_safe_identifier(n['ocr_table_name']+'_claim_idx')}
-                ON {n['ocr']}(status,next_attempt_at,lease_until,page_number)
+                ON {n['ocr']}(ocr_hash,status,next_attempt_at,lease_until,page_number)
             """)
         conn.commit()
     except Exception:
@@ -319,12 +319,15 @@ def _insert_assets(n,group):
         conn.close()
 
 
-def claim(profile,limit,max_attempts,lease_seconds):
+def claim(profile,limit,max_attempts,lease_seconds,*,doc_id=None):
     """Global SKIP LOCKED claim; no DB connection held during OCR RPCs."""
     from db import get_conn
     n=tables(profile)
     token=str(uuid.uuid4())
     ocr_hash=ocr_fingerprint(settings(profile))
+    if doc_id is not None and (not isinstance(doc_id,str) or len(doc_id)!=64
+                               or any(c not in "0123456789abcdef" for c in doc_id)):
+        raise ValueError("Invalid document ID for scoped OCR claim")
     conn=get_conn()
     try:
         with conn.cursor() as cur:
@@ -336,7 +339,8 @@ def claim(profile,limit,max_attempts,lease_seconds):
                     lease_until=NULL,error_code='OCR_ATTEMPT_LIMIT',
                     error_message='Retry allowance exhausted after expired lease',
                     updated_at=now()
-                WHERE j.ocr_hash=%s AND j.attempts >= %s
+                WHERE j.ocr_hash=%s AND (%s IS NULL OR j.doc_id=%s)
+                  AND j.attempts >= %s
                   AND (j.status IN ('PENDING','RETRY_WAIT')
                        OR (j.status='RUNNING' AND j.lease_until<now()))
                   AND EXISTS (
@@ -344,14 +348,15 @@ def claim(profile,limit,max_attempts,lease_seconds):
                     AND d.source_hash=j.source_hash
                     AND d.extraction_hash=j.extraction_hash
                   )
-            """,(ocr_hash,max_attempts,))
+            """,(ocr_hash,doc_id,doc_id,max_attempts))
             cur.execute(f"""
                 WITH picked AS (
                   SELECT j.asset_id FROM {n['ocr']} AS j
                   JOIN {n['docs']} AS d ON d.doc_id=j.doc_id
                     AND d.source_hash=j.source_hash
                     AND d.extraction_hash=j.extraction_hash
-                  WHERE j.ocr_hash=%s AND (
+                  WHERE j.ocr_hash=%s
+                    AND (%s IS NULL OR j.doc_id=%s) AND (
                     (j.status IN ('PENDING','RETRY_WAIT')
                        AND j.next_attempt_at<=now())
                     OR (j.status='RUNNING' AND j.lease_until<now())
@@ -370,7 +375,7 @@ def claim(profile,limit,max_attempts,lease_seconds):
                 RETURNING j.asset_id,j.doc_id,j.source_hash,
                   j.extraction_hash,j.page_number,j.kind,
                   j.bbox,j.attempts,j.lease_token
-            """,(ocr_hash,max_attempts,limit,token,lease_seconds))
+            """,(ocr_hash,doc_id,doc_id,max_attempts,limit,token,lease_seconds))
             rows=cur.fetchall()
         conn.commit()
         return rows
@@ -649,7 +654,7 @@ def run_group(profile,group,cfg,limiter,verifier):
     return counts
 
 
-def run(profile,max_jobs=100,workers=None):
+def run(profile,max_jobs=100,workers=None,*,doc_id=None):
     from ocr_quota import (PostgresOcrLimiter,detect_project_id,init_quota)
     cfg=settings(profile)
     workers=cfg["workers"] if workers is None else workers
@@ -666,7 +671,8 @@ def run(profile,max_jobs=100,workers=None):
         while sum(counters.values())<max_jobs:
             quota=min(max_jobs-sum(counters.values()),
                       workers*cfg["batch_images"])
-            jobs=claim(profile,quota,cfg["max_attempts"],cfg["lease_seconds"])
+            jobs=claim(profile,quota,cfg["max_attempts"],cfg["lease_seconds"],
+                       doc_id=doc_id)
             if not jobs:
                 break
             future=[
@@ -679,7 +685,7 @@ def run(profile,max_jobs=100,workers=None):
             "cloud_calls_possible":True}
 
 
-def status(profile):
+def status(profile,*,doc_id=None):
     from db import get_conn
     n=tables(profile)
     ocr_hash=ocr_fingerprint(settings(profile))
@@ -693,8 +699,9 @@ def status(profile):
                     AND d.source_hash=j.source_hash
                     AND d.extraction_hash=j.extraction_hash
                 WHERE j.ocr_hash=%s
+                  AND (%s IS NULL OR j.doc_id=%s)
                 GROUP BY j.status ORDER BY j.status
-            """,(ocr_hash,))
+            """,(ocr_hash,doc_id,doc_id))
             rows=cur.fetchall()
         return {"statuses":dict(rows),"writes":False}
     finally:
@@ -708,6 +715,8 @@ def main(argv=None):
                                             "enqueue","run","status"))
     parser.add_argument("--profile",required=True)
     parser.add_argument("--doc-id")
+    parser.add_argument("--all-docs",action="store_true",
+                        help="Explicitly allow OCR execution across all queued documents")
     parser.add_argument("--max-docs",type=int,default=1)
     parser.add_argument("--max-jobs",type=int,default=100)
     parser.add_argument("--workers",type=int)
@@ -728,11 +737,14 @@ def main(argv=None):
         answer=enqueue(profile,doc_id=args.doc_id,max_docs=args.max_docs,
                        apply=args.command=="enqueue" and args.apply)
     elif args.command=="status":
-        answer=status(profile)
+        answer=status(profile,doc_id=args.doc_id)
     else:
         if not args.apply:
             parser.error("OCR run requires --apply; no implicit cloud calls")
-        answer=run(profile,max_jobs=args.max_jobs,workers=args.workers)
+        if bool(args.doc_id)==bool(args.all_docs):
+            parser.error("OCR run requires exactly one of --doc-id or --all-docs")
+        answer=run(profile,max_jobs=args.max_jobs,workers=args.workers,
+                   doc_id=args.doc_id)
     print(json.dumps(answer,indent=2,ensure_ascii=False))
     return int(answer.get("statuses",{}).get("FAILED_TERMINAL",0)>0)
 
