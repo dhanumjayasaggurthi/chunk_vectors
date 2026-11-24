@@ -111,6 +111,23 @@ Original PBRER source-scoped run: **processed=8, RETRY_WAIT=8, duration=1.91 s, 
 Original pilot error from stored PostgreSQL records: eight RETRY_WAIT assets with ModuleNotFoundError / No module named 'google', attempts=1 each. This is local missing Python SDK, before proof of any successful Vision API call. The source-scoped queue has 315 PENDING and eight RETRY_WAIT. Do not reset or retry jobs yet.
 
 The only available credential source is gcpkeys.json. Only Google Cloud Vision OCR and Cloud Translation may be considered, subject to actual project API enablement, IAM, quotas and data-governance authorization. No Document AI, Vertex AI, Azure or other provider assumptions. Install google-cloud-vision, google-cloud-translate, google-auth into .venv-validation. Verify package imports and the exact key path, then optionally test both APIs using a small synthetic sample; redact credentials/tokens and avoid private source content. A tiny live API call may incur charges.
+## GCP capability probe PASSED; safe retry-only pilot (2026-11-24)
+
+Using gcpkeys.json in the user's active validation environment, project **rehdocreader** returned Vision OCR AVAILABLE with exact text 'VISION TEST 123' and Cloud Translation AVAILABLE with 'Bonjour le monde' for a synthetic French translation sample. Google Document AI, Vertex AI, Azure and other keys/services are not available and must not be used. Cloud project quotas and permission to process regulatory document content are separate from the successful synthetic API probe.
+
+Original eight-PBRER OCR attempts remain RETRY_WAIT=8, with 315 unattempted PENDING. New flag **--retry-only** requires --doc-id and filters PostgreSQL claims to eligible RETRY_WAIT jobs only, so the recovery pilot cannot accidentally consume eight additional PENDING source assets. A retry-only run returns a nonzero exit if any job remains retryable or terminal, even if DB status updates succeeded. After copying the new deferred_ocr.py from the feature branch and confirming CI, use:
+
+~~~powershell
+$Python = '.\.venv-validation\Scripts\python.exe'
+$Profile = '.\profiles\cv_corpus_deferred_ocr_v1.yml'
+$DocId = '2721ac39536ef7b439091e3018506b426bda3616c5a76e4271fd29e0b8abfb86'
+& $Python deferred_ocr.py run --profile $Profile --doc-id $DocId --retry-only --max-jobs 8 --workers 2 --apply
+$PilotExitCode = $LASTEXITCODE
+& $Python deferred_ocr.py status --profile $Profile --doc-id $DocId
+Write-Host 'OCR pilot exit code:' $PilotExitCode
+~~~
+
+**This is a billable Vision API call against original regulatory content.** It must not run before the user verifies allowed data processing and configured project quota limits. Do not re-enqueue, clear statuses or rerun native extraction. If processed=0, check retry eligibility; never force queue state. Send the result and status counts for measured performance/accuracy.
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
