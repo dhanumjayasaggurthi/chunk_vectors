@@ -106,6 +106,11 @@ Original PBRER source-scoped run: **processed=8, RETRY_WAIT=8, duration=1.91 s, 
 
 **Do not rerun the job or reset statuses.** Use a read-only query on the existing OCR table by document ID and OCR hash for grouped error_code, error_message, attempts and next_attempt_at. Avoid disclosing PDF text or credentials. Once the cause is identified and fixed, resume only a small bounded retry batch. OCR throughput and 15-day fleet OCR capacity are still unmeasured.
 
+## 2026-11-24 — OCR error diagnosis and allowed GCP capabilities
+
+Original pilot error from stored PostgreSQL records: eight RETRY_WAIT assets with ModuleNotFoundError / No module named 'google', attempts=1 each. This is local missing Python SDK, before proof of any successful Vision API call. The source-scoped queue has 315 PENDING and eight RETRY_WAIT. Do not reset or retry jobs yet.
+
+The only available credential source is gcpkeys.json. Only Google Cloud Vision OCR and Cloud Translation may be considered, subject to actual project API enablement, IAM, quotas and data-governance authorization. No Document AI, Vertex AI, Azure or other provider assumptions. Install google-cloud-vision, google-cloud-translate, google-auth into .venv-validation. Verify package imports and the exact key path, then optionally test both APIs using a small synthetic sample; redact credentials/tokens and avoid private source content. A tiny live API call may incur charges.
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
