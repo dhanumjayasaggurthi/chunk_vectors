@@ -149,6 +149,14 @@ Write-Host 'OCR exit code:' $ExitCode
 ~~~
 
 Do not pass --retry-only for this fresh-batch test: it would correctly find no previously failed eligible assets. Do not repeat enqueue/init. Expect 283 PENDING if 32 new assets are claimed and completed (regardless of TEXT_READY versus VISUAL_PENDING), absent concurrent workers. Record actual retry/status/error counts, confidence distributions and elapsed time before scaling or presenting throughput estimates. Do not print source OCR text to shared logs.
+## Step 65 — Original 32-asset Vision batch completed successfully (user-verified 2026-11-24)
+
+Original PBRER run: --max-jobs 32, --workers 4, --apply, elapsed **4.58 sec**, **processed 32** = TEXT_READY 21 + VISUAL_PENDING 11; no retry failures, exit 0. This is **6.99 OCR assets/sec** on a tiny warm-up batch, not demonstrated sustained throughput or a clinical transcription quality score. Cumulative 778-page OCR status: **PENDING 283; TEXT_READY 27; VISUAL_PENDING 13; RETRY_WAIT 0**, exactly 323 original candidates. Do not re-init or re-enqueue.
+
+**Read-only QA before scaling:** aggregate output OCR word-region counts, word confidence, languages, status/error by source kind and error_code, with source-version filtering. Do not print OCR text, credentials or individual clinical values. The 13 VISUAL_PENDING source regions must remain pending until a grounded separate visual-enrichment strategy is available (Google Vision and Google Translation only; no Document AI/Vertex AI/Azure). OCR text is not automatically a truthful reconstruction of clinical graphs or multi-page tables.
+
+Next performance step after QA: a controlled **64–128 fresh PENDING jobs / 4 workers** against the same document, with measured wall-time, transient failures, project-wide quota limits and observed source readability; do not extrapolate 3.2M/15d capacity from the 4.58-sec pilot alone.
+
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
