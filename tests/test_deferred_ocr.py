@@ -274,18 +274,18 @@ class DeferredOcrPostgresTests(unittest.TestCase):
         self.assertEqual(queued["inserted"],2)
         self.assertEqual(
             ocr.enqueue(self.p,doc_id="d"*64,apply=True)["inserted"],0)
-        job=ocr.claim(self.p,1,max_attempts=3,lease_seconds=3600)
+        job=ocr.claim(self.p,1,max_attempts=3,lease_seconds=3600,doc_id="d"*64)
         self.assertEqual(len(job),1)
         ocr.renew_leases(self.p,job,3600)
         ocr.complete(self.p,job[0],status="TEXT_READY",
                      text="20 mg",regions=[],confidence=0.99,language="en")
-        self.assertEqual(ocr.status(self.p)["statuses"]["TEXT_READY"],1)
-        second=ocr.claim(self.p,2,3,3600)
+        self.assertEqual(ocr.status(self.p,doc_id="d"*64)["statuses"]["TEXT_READY"],1)
+        second=ocr.claim(self.p,2,3,3600,doc_id="d"*64)
         self.assertEqual(len(second),1)
         ocr.complete(self.p,second[0],status="VISUAL_PENDING",
                      error_code="NO_OCR_TEXT")
-        self.assertEqual(ocr.claim(self.p,2,3,3600),[])
-        self.assertEqual(ocr.status(self.p)["statuses"]["VISUAL_PENDING"],1)
+        self.assertEqual(ocr.claim(self.p,2,3,3600,doc_id="d"*64),[])
+        self.assertEqual(ocr.status(self.p,doc_id="d"*64)["statuses"]["VISUAL_PENDING"],1)
 
 
     def test_claim_is_scoped_to_explicit_document_and_status(self):
