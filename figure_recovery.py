@@ -324,11 +324,171 @@ def prepare_page(
     return records
 
 
+# Read-only inventory for figure-grounded retrieval. It deliberately does
+# not interpret graph lines or silently classify multi-panel figures as OCR.
+_FIGURE_ID = re.compile(
+    r"^\s*(?:figure|fig\.?)\s*(\d{1,4}[A-Za-z]?)\s*(?::|\.|\s|[-–])", re.I,
+)
+
+
+def _figure_caption_candidates(page):
+    """Extract exact native caption lines and bounds (no inferred description).
+
+    Only consecutive lines inside the same PDF text block are joined. This
+    avoids dragging adjacent columns, discussion paragraphs, and subsequent
+    figures into a supposed single authoritative caption.
+    """
+    candidates=[]
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type")!=0:
+            continue
+        lines=block.get("lines", [])
+        for index,line in enumerate(lines):
+            spans=line.get("spans", [])
+            value="".join(str(span.get("text") or "") for span in spans).strip()
+            match=_FIGURE_ID.match(value)
+            if not match:
+                continue
+            box=line.get("bbox", ())
+            if len(box)!=4 or not all(math.isfinite(float(n)) for n in box):
+                continue
+            pieces=[value]
+            last=float(box[3])
+            rect=[float(n) for n in box]
+            for follow in lines[index+1:index+5]:
+                text="".join(str(span.get("text") or "")
+                             for span in follow.get("spans", [])).strip()
+                bb=follow.get("bbox", ())
+                if not text or _FIGURE_ID.match(text) or len(bb)!=4:
+                    break
+                if (not all(math.isfinite(float(n)) for n in bb)
+                        or float(bb[1])-last>12
+                        or abs(float(bb[0])-rect[0])>25):
+                    break
+                pieces.append(text)
+                rect=[min(rect[0],float(bb[0])),min(rect[1],float(bb[1])),
+                      max(rect[2],float(bb[2])),max(rect[3],float(bb[3]))]
+                last=float(bb[3])
+            caption=" ".join(pieces)
+            candidates.append({
+                "figure_number": match.group(1),
+                "caption_text": caption,
+                "caption_sha256": hashlib.sha256(
+                    caption.encode("utf-8")).hexdigest(),
+                "caption_bbox": rect,
+            })
+    if len(candidates)>64:
+        raise ValueError("FIGURE_CAPTION_LIMIT: more than 64 candidate captions on page")
+    return candidates
+
+
+def _visuals_near_caption(page, caption, *, max_distance=450):
+    """Hint at source graphics, NEVER assert an exact figure bounding box.
+
+    Figures may be raster images, PDF paths, or both. Vector chart paths
+    have no XREF and were invisible to the original image-only inventory.
+    Returning coarse candidate counts does not claim chart interpretation.
+    """
+    cap=caption["caption_bbox"]
+    x0,x1=cap[0],cap[2]
+
+    def candidate(bb):
+        if len(bb)!=4 or not all(math.isfinite(float(n)) for n in bb):
+            return False
+        left,top,right,bottom=[float(n) for n in bb]
+        if left>=right or top>=bottom:
+            return False
+        # Coarse caption-column affinity: use source geometry, not labels.
+        overlap=max(0.0,min(x1,right)-max(x0,left))
+        if overlap<=0:
+            return False
+        gap=max(0.0,top-cap[3],cap[1]-bottom)
+        return gap<=max_distance
+
+    images=[]
+    image_info=page.get_image_info(xrefs=True)
+    if len(image_info)>1024:
+        raise ValueError("PAGE_IMAGE_COUNT_LIMIT: figure inventory would be incomplete")
+    for im in image_info:
+        bb=im.get("bbox",())
+        if candidate(bb):
+            images.append({
+                "xref":int(im.get("xref") or 0),
+                "bbox":[float(v) for v in bb],
+            })
+
+    draw_count=0
+    drawings=page.get_drawings()
+    if len(drawings)>50000:
+        raise ValueError("PAGE_DRAWING_COUNT_LIMIT: figure inventory would be incomplete")
+    for draw in drawings:
+        rect=draw.get("rect")
+        if rect is None:
+            continue
+        if candidate(tuple(rect)):
+            draw_count+=1
+    return {
+        "nearby_embedded_images":images,
+        "nearby_vector_drawing_paths":draw_count,
+        "association_status":"GEOMETRY_NEAR_CAPTION_UNVERIFIED",
+    }
+
+
+def inventory_page(pdf,page_number,*,include_caption=False):
+    """Read-only figure candidate evidence with source-stable identities.
+
+    A caption without any image/path evidence is still emitted as a
+    caption-only source record. No numeric graph extraction, rendering,
+    cloud calls, PostgreSQL writes, or semantic chunk rewrites happen here.
+    """
+    if type(page_number) is not int or not 1<=page_number<=pdf.page_count:
+        raise ValueError("Invalid source PDF page")
+    page=pdf[page_number-1]
+    out=[]
+    for caption in _figure_caption_candidates(page):
+        evidence=_visuals_near_caption(page,caption)
+        raster=len(evidence["nearby_embedded_images"])
+        vectors=evidence["nearby_vector_drawing_paths"]
+        if raster and vectors:
+            kind="mixed_raster_vector_candidate"
+        elif raster:
+            kind="embedded_raster_candidate"
+        elif vectors>=5:
+            kind="vector_drawing_candidate"
+        else:
+            kind="caption_only_or_unlinked"
+        identity={
+            "source_page":page_number,
+            "caption_sha256":caption["caption_sha256"],
+            "caption_bbox":caption["caption_bbox"],
+        }
+        record={
+            "figure_candidate_id":hashlib.sha256(
+                _canonical_bytes(identity)).hexdigest(),
+            "source_page":page_number,
+            "figure_number":caption["figure_number"],
+            "caption_bbox":caption["caption_bbox"],
+            "caption_sha256":caption["caption_sha256"],
+            "visual_kind":kind,
+            **evidence,
+            "interpretation_status":"NOT_PERFORMED",
+            "writes":False,
+        }
+        if include_caption:
+            record["caption_native_text"]=caption["caption_text"]
+        out.append(record)
+    return out
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("inspect", "prepare"))
+    parser.add_argument("command", choices=("inspect", "prepare", "inventory"))
     parser.add_argument("--file", required=True)
-    parser.add_argument("--page", type=int, required=True)
+    parser.add_argument("--page", type=int)
+    parser.add_argument("--end-page", type=int,
+                        help="Last page for bounded inventory (at most 50 pages)")
+    parser.add_argument("--include-caption",action="store_true",
+                        help="Print source caption text in local output (off by default)")
     parser.add_argument("--profile", help="Native stage profile; used only to tie visual evidence to its fingerprint")
     parser.add_argument("--output-dir", default="benchmark_artifacts/visual_figures")
     parser.add_argument("--min-fragments", type=int, default=2)
@@ -361,8 +521,34 @@ def main(argv=None):
         profile = load_profile(args.profile)
         extraction_hash = extraction_fingerprint(profile)
 
-    if args.command == "inspect":
+    if args.command == "inventory":
         import fitz
+        if args.page is None:
+            parser.error("--page is required for a bounded figure inventory")
+        last=args.end_page or args.page
+        if last<args.page or last-args.page>=50:
+            parser.error("Inventory range must span 1..50 consecutive pages")
+        with fitz.open(args.file) as pdf:
+            if pdf.is_encrypted or not 1<=args.page<=last<=pdf.page_count:
+                raise ValueError("Encrypted PDF or invalid inventory page range")
+            findings=[]
+            for number in range(args.page,last+1):
+                findings.extend(inventory_page(
+                    pdf,number,include_caption=args.include_caption))
+        answer={
+            "source_file_sha256":_hash_file(Path(args.file)),
+            "first_page":args.page,
+            "last_page":last,
+            "figure_candidates":len(findings),
+            "candidates":findings,
+            "writes":False,
+            "cloud_calls":False,
+            "quality_policy":"SOURCE_ONLY_UNINTERPRETED",
+        }
+    elif args.command == "inspect":
+        import fitz
+        if args.page is None:
+            parser.error("--page required for inspect")
         with fitz.open(args.file) as pdf:
             if pdf.is_encrypted or not 1 <= args.page <= pdf.page_count:
                 raise ValueError("Encrypted PDF or invalid page")
@@ -376,6 +562,8 @@ def main(argv=None):
                 "quality_policy": "REVIEW_REQUIRED",
             }
     else:
+        if args.page is None:
+            parser.error("--page required for prepare")
         results = prepare_page(
             Path(args.file), args.page, Path(args.output_dir),
             settings=settings, native_extraction_hash=extraction_hash,
