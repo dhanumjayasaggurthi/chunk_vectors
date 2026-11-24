@@ -100,6 +100,19 @@ class SemanticChunkV2Tests(unittest.TestCase):
                  if "table_id" in c.chunk_metadata}
             self.assertGreater(len(ids),1)
 
+    def test_no_header_separator_prevents_cross_page_false_positive(self):
+        from configurable_chunking import chunk_with_profile
+        doc=document_with_continued_table()
+        for page in doc.pages:
+            table=page.elements[1]
+            table.text=table.text.replace("|------------|----------------|", "")
+        chunks=chunk_with_profile(doc,config(max_tokens=94))
+        tables={
+            c.chunk_metadata["table_id"]
+            for c in chunks if c.chunk_metadata.get("table_id")
+        }
+        self.assertEqual(len(tables),4)
+
     def test_sentence_boundaries_and_neighbor_links(self):
         from configurable_chunking import chunk_with_profile
         long_text=" ".join(
