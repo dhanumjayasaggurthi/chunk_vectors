@@ -163,7 +163,7 @@ class EmptyTableDeferredTests(unittest.TestCase):
             ))
         with self.assertRaisesRegex(ValueError,"VISUAL_REGION_LIMIT_EXCEEDED"):
             preserve([[None]],limit=2,used=2)
-        with self.assertRaisesRegex(ValueError,"source_page"):
+        with self.assertRaisesRegex(ValueError,"provenance"):
             validate_unresolved_region(result.unresolved_region,page_number=2)
 
     def test_profile_semantic_versioning_and_safety_validation(self):
