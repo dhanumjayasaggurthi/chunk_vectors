@@ -81,7 +81,7 @@ Note: changing semantic chunk rules changes its profile fingerprint, and the pre
 
 **Original 778-page comparison after copying updated branch**: do not overwrite original cv_corpus_semantic_v2.yml. Create a versioned local candidate profile with small_section_policy=merge_forward and limits 2 pages/3 tables, preserving current source table and embedding.enabled=false; run one existing read-only preview. Compare new chunk count and p50/below-120 against 5,601/66/4,321, verify zero structural_errors, zero over-budget, exactly 2,195 logical source-table IDs (unless a genuine preexisting issue is separately fixed) and six cross-page groups. No new page extraction or DB writes.
 
-**CI**: [Windows/Linux Python + PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45335880576) PASS for commit 6e5e1a46 (targeted source preservation + grouping + profile validation). Rich-document CI link to be recorded after final result. This verifies synthetic behavior only; real-document packed counts not yet measured.
+**CI**: [Windows/Linux Python 3.11/3.13 + disposable PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45335880576) **PASS** and [rich-document CI + 100 synthetic mixed PDFs](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45335880482) **PASS**, implementation commit [6e5e1a46](https://github.com/dhanumjayasaggurthi/chunk_vectors/commit/6e5e1a46f13ca6efef6c6c4c6eca725b891e2d54). Synthetic CI only: real-document packed counts not yet measured.
 
 ## CI and correctness gates
 
