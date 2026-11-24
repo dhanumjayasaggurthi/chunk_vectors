@@ -75,6 +75,7 @@ def settings(profile):
         "worker_backend":"threads",
         "worker_recycle_documents":0,
         "profile_stage_timings":False,
+        "empty_table_policy":"fail",
     }
     result.update(opts)
     return result
@@ -109,6 +110,9 @@ def extraction_fingerprint(profile) -> str:
         "table_format":TABLE_FORMAT,
     }
     # Deferred visual preservation changes page content; version it independently.
+    if cfg["empty_table_policy"]!="fail":
+        semantic["empty_table_policy"]=cfg["empty_table_policy"]
+        semantic["unresolved_source_region_format"]=1
     if cfg["visual_processing"] != "blocking":
         semantic["visual_processing"]=cfg["visual_processing"]
         semantic["visual_source_reference_format"]=1
@@ -312,6 +316,13 @@ def _page_row(page, struct, source, extraction_hash):
             from pdf_processor import validate_visual_asset
             entry["visual_asset"]=validate_visual_asset(
                 element.visual_asset, page_number=page.page_number,
+            )
+        if getattr(element, "unresolved_region", None):
+            from pdf_processor import validate_unresolved_region
+            if entry["type"]!="vector_region" or element.vector_png:
+                raise ValueError("Invalid unresolved table/graphic region")
+            entry["unresolved_region"]=validate_unresolved_region(
+                element.unresolved_region,page_number=page.page_number
             )
         if getattr(element, "source_table", None) is not None:
             from table_extractor import validate_source_table
@@ -740,6 +751,7 @@ def stage_one(
             max_table_source_json_bytes=cfg["max_table_source_json_bytes"],
             preserve_uninterpreted_visuals=cfg["visual_processing"]=="preserve_defer",
             max_visual_regions_per_page=cfg["max_visual_regions_per_page"],
+            empty_table_policy=cfg["empty_table_policy"],
         )
         # Header-only read is cheap; don't render completed pages during resume.
         with __import__("fitz").open(str(path)) as pdf:
@@ -790,7 +802,10 @@ def stage_one(
             timings["checkpoint_sql"]+=time.monotonic()-phase_started
             visuals_deferred+=sum(
                 1 for page in active if page.page_number not in invalid
-                for element in page.elements if getattr(element,"visual_asset",None)
+                for element in page.elements if (
+                    getattr(element,"visual_asset",None)
+                    or getattr(element,"unresolved_region",None)
+                )
             )
             # No page data or raster buffers are retained across windows.
             pages_processed+=len(rows)
