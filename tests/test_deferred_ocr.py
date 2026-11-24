@@ -288,5 +288,37 @@ class DeferredOcrPostgresTests(unittest.TestCase):
         self.assertEqual(ocr.status(self.p)["statuses"]["VISUAL_PENDING"],1)
 
 
+    def test_claim_is_scoped_to_explicit_document_and_status(self):
+        """Never charge another document's OCR quota during a single-PDF pilot."""
+        from db import get_conn
+        doc_id="f"*64
+        conn=get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"""INSERT INTO {self.n['docs']}
+                    (doc_id,source_hash,extraction_hash,page_count)
+                    VALUES (%s,%s,%s,1)""",(doc_id,"a"*64,"b"*64))
+                cur.execute(f"""INSERT INTO {self.n['published']}
+                    (doc_id,page_number,source_hash,extraction_hash,file_path,elements)
+                    VALUES (%s,1,%s,%s,%s,%s::jsonb)""",
+                    (doc_id,"a"*64,"b"*64,"/tmp/safe-original.pdf",
+                     json.dumps([{"type":"image","bbox":[45,50,200,190],
+                                  "visual_asset":image_ref()}])))
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(ocr.enqueue(self.p,doc_id=doc_id,apply=True)["inserted"],1)
+        self.assertEqual(ocr.claim(self.p,2,3,3600,doc_id="0"*64),[])
+        claimed=ocr.claim(self.p,2,3,3600,doc_id=doc_id)
+        self.assertEqual(len(claimed),1)
+        self.assertTrue(all(j[1]==doc_id for j in claimed))
+        self.assertEqual(ocr.status(self.p,doc_id=doc_id)["statuses"]["RUNNING"],1)
+        for job in claimed:
+            ocr.complete(self.p,job,status="VISUAL_PENDING",error_code="NO_OCR_TEXT")
+        self.assertEqual(ocr.status(self.p,doc_id=doc_id)["statuses"]["VISUAL_PENDING"],1)
+        self.assertEqual(ocr.claim(self.p,2,3,3600,doc_id=doc_id),[])
+
+
+
 if __name__=="__main__":
     unittest.main()
