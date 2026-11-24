@@ -107,6 +107,7 @@ $Python = ".\.venv-validation\Scripts\python.exe"
 - 2026-11-24, implementation commit [a0233637](https://github.com/dhanumjayasaggurthi/chunk_vectors/commit/a02336373f5a7d227ad0c7489832639b64be6865): [ingestion CI 45332875178](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45332875178) **PASS** (Windows/Linux Python 3.11/3.13, disposable PostgreSQL, integrated quality preview, semantic paragraph/table linking, native stage).
 - [Rich document CI 45332875209](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45332875209) **PASS**, including 100 synthetic mixed-content PDF smoke.
 - **These are CI/synthetic tests**, not evidence of 3.2M-file fleet throughput, private PDF retest of the new chunk-boundary heuristic, or production deferred OCR.
+- Final tested implementation [2bfa4ace](https://github.com/dhanumjayasaggurthi/chunk_vectors/commit/2bfa4aceb6a6eedad1c9a5041344231562675f9f): [full ingestion CI 45333264633](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45333264633) **PASS**, including disposable PostgreSQL, source-cited 4-page table projection, versioned output chunk-link integrity and cross-platform tests; [rich document CI 45333264612](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45333264612) **PASS**, including 100-document synthetic smoke.
 - Latest feature-branch document changes do not modify extraction or chunk logic beyond the tested implementation; always re-check HEAD/CI before merge.
 
 ## How to resume from this file
