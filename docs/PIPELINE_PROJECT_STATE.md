@@ -64,6 +64,8 @@ embedding:
 
 Native profile uses visual_processing=preserve_defer, empty_table_policy=preserve_defer, capture_rich_text=true, capture_table_structure=true, worker_backend=processes, page_batch_size=32, profile_stage_timings=true, ocr_enabled=false and embeddings disabled. Keep local actual schema/table names and other metadata settings.
 
+Semantic-v2 implementation identity is also versioned internally (revision 2), **even when YAML is unchanged**; this prevents stale rows being SKIPPED after boundary/neighbor logic changes. Legacy profile fingerprints are preserved. Verify versioned output target before any materialization; never silently mix old/new chunk content.
+
 Note: changing semantic chunk rules changes its profile fingerprint, and the preview chunk count may change. **Do not overwrite a previously versioned output without explicit isolation.**
 
 ## CI and correctness gates
