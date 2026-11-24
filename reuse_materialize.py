@@ -159,6 +159,83 @@ def prepare_document(struct, profile):
     return result
 
 
+def quality_summary(rows, policy):
+    """Bounded, read-only quality indicators for an already prepared document.
+
+    This is not a fidelity certification: original page geometry/cells stay
+    authoritative. It catches unexpected oversized chunks, broken neighbor
+    links and avoidable tiny-chunk prevalence before optional embeddings.
+    """
+    import collections
+    import tiktoken
+    if not rows:
+        raise ValueError("No prepared chunks")
+    encoding=tiktoken.get_encoding(policy.get("tokenizer","cl100k_base"))
+    limit=policy["max_tokens"]
+    floor=policy["min_tokens"]
+    lengths=[]
+    table_ids=set()
+    multi_page_tables=set()
+    exceptional=collections.Counter()
+    short_reasons=collections.Counter()
+    issues=[]
+    ids=[row[0] for row in rows]
+    token_count=lambda value:len(encoding.encode(value,disallowed_special=()))
+    for index,row in enumerate(rows):
+        chunk_id,doc_id,profile_hash,position=row[:4]
+        text=row[6]
+        start,end=row[8:10]
+        meta=json.loads(row[13])
+        size=token_count(text)
+        lengths.append(size)
+        if position!=index:
+            issues.append(f"noncontiguous chunk_index {index}")
+        if (not isinstance(start,int) or not isinstance(end,int)
+                or start<1 or end<start):
+            issues.append(f"invalid source pages chunk {index}")
+        if not text.strip() or size>limit:
+            issues.append(f"invalid token budget chunk {index}")
+        prev=ids[index-1] if index else None
+        nxt=ids[index+1] if index+1<len(ids) else None
+        if meta.get("previous_chunk_id")!=prev or meta.get("next_chunk_id")!=nxt:
+            issues.append(f"broken neighbor links chunk {index}")
+        if not meta.get("section_id"):
+            issues.append(f"missing section_id chunk {index}")
+        if tid:=meta.get("table_id"):
+            table_ids.add(tid)
+            if meta.get("table_continuation_verified"):
+                multi_page_tables.add(tid)
+        for reason in meta.get("exceptional_splits",[]):
+            exceptional[reason]+=1
+        if size<floor:
+            if meta.get("table_id"):
+                short_reasons["table_boundary"]+=1
+            elif meta.get("previous_chunk_id") is None or meta.get("next_chunk_id") is None:
+                short_reasons["document_boundary"]+=1
+            else:
+                short_reasons["section_or_structure_boundary"]+=1
+    ordered=sorted(lengths)
+    def percentile(p):
+        return ordered[max(0,(len(ordered)*p+99)//100-1)]
+    return {
+        "chunk_count":len(rows),
+        "token_budget":limit,
+        "min_tokens_soft_target":floor,
+        "token_p50":percentile(50),
+        "token_p90":percentile(90),
+        "token_p95":percentile(95),
+        "token_max":ordered[-1],
+        "chunks_below_min_tokens":sum(x<floor for x in lengths),
+        "chunks_above_budget":sum(x>limit for x in lengths),
+        "short_chunk_categories":dict(short_reasons),
+        "exceptional_split_categories":dict(exceptional),
+        "logical_tables":len(table_ids),
+        "linked_multi_page_tables":len(multi_page_tables),
+        "structural_errors":len(issues),
+        "structural_error_examples":issues[:10],
+    }
+
+
 def init_output(profile, *, apply=False):
     """Only an explicit --apply writes DDL; existing tables are never migrated."""
     names = identifiers(profile)
@@ -421,11 +498,16 @@ def main(argv=None):
         from extracted_source import load_extracted_document
         struct,source_hash=load_extracted_document(profile,args.doc_id)
         rows=prepare_document(struct,profile)
+        summary=quality_summary(rows,profile["chunking"])
         info={"document_id":str(args.doc_id),"source_hash":source_hash,
               "prepared_chunks":len(rows),
               "first_chunk_input_characters":len(rows[0][7]),
-              "first_chunk_metadata_fields":list(json.loads(rows[0][12])),
+              "first_chunk_document_metadata_fields":list(json.loads(rows[0][12])),
+              "first_chunk_structural_metadata_fields":list(json.loads(rows[0][13])),
+              "quality":summary,
               "note":"Preview only; no document text or private data printed"}
+        if summary["structural_errors"]:
+            raise ValueError("Chunk preview structural integrity failed")
     else:
         info=run(profile,max_docs=args.max_docs,workers=args.doc_workers)
     print(json.dumps(info,indent=2))
