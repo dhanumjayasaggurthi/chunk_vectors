@@ -539,8 +539,14 @@ def main(argv=None):
             parser.error("Inventory range must span 1..50 consecutive pages")
         source_hash=_hash_file(Path(args.file))
         with fitz.open(args.file) as pdf:
-            if pdf.is_encrypted or not 1<=args.page<=last<=pdf.page_count:
-                raise ValueError("Encrypted PDF or invalid inventory page range")
+            if pdf.is_encrypted:
+                raise ValueError("PDF is encrypted: figure inventory requires an unlocked source")
+            if not 1<=args.page<=last<=pdf.page_count:
+                raise ValueError(
+                    f"Inventory requested physical pages {args.page}-{last} "
+                    f"but this PDF has {pdf.page_count} physical pages; "
+                    "printed page labels are not physical page indices"
+                )
             findings=[]
             for number in range(args.page,last+1):
                 findings.extend(inventory_page(
@@ -561,8 +567,13 @@ def main(argv=None):
         if args.page is None:
             parser.error("--page required for inspect")
         with fitz.open(args.file) as pdf:
-            if pdf.is_encrypted or not 1 <= args.page <= pdf.page_count:
-                raise ValueError("Encrypted PDF or invalid page")
+            if pdf.is_encrypted:
+                raise ValueError("PDF is encrypted: unlock source before inspection")
+            if not 1 <= args.page <= pdf.page_count:
+                raise ValueError(
+                    f"Requested physical page {args.page} but PDF has "
+                    f"{pdf.page_count} physical pages"
+                )
             groups = find_figure_groups(pdf[args.page - 1], settings)
             answer = {
                 "page": args.page,
