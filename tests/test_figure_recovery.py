@@ -126,5 +126,98 @@ class FigureRecoveryTests(unittest.TestCase):
         self.assertEqual(before, extraction_fingerprint(profile))
 
 
+    def test_read_only_inventory_preserves_vector_plot_caption_and_source_identity(self):
+        """Caption-first PBRER-style figure is not an embedded PDF image."""
+        import fitz
+        from figure_recovery import inventory_page
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"vector-figure.pdf"
+            with fitz.open() as doc:
+                page=doc.new_page(width=612,height=792)
+                page.insert_text((60,70),
+                                 "Figure 1: Worldwide reporting rates and intervals")
+                page.insert_text((60,84),"of spontaneous reports in five periods")
+                for x in range(130,450,45):
+                    page.draw_line(fitz.Point(x,160),fitz.Point(x,420))
+                    page.draw_line(fitz.Point(x-8,220),fitz.Point(x+8,220))
+                for y in range(160,421,50):
+                    page.draw_line(fitz.Point(130,y),fitz.Point(445,y))
+                page.draw_polyline([
+                    fitz.Point(150,300),fitz.Point(220,270),
+                    fitz.Point(300,320),fitz.Point(390,310),
+                ])
+                page.insert_text((60,480),"The native safety narrative remains")
+                doc.save(path)
+            original=path.read_bytes()
+            source=hashlib.sha256(original).hexdigest()
+            with fitz.open(path) as doc:
+                self.assertEqual(doc[0].get_image_info(xrefs=True),[])
+                candidates=inventory_page(doc,1,source_hash=source)
+                self.assertEqual(len(candidates),1)
+                fig=candidates[0]
+                self.assertEqual(fig["figure_number"],"1")
+                self.assertEqual(fig["source_pdf_sha256"],source)
+                self.assertEqual(fig["visual_kind"],"vector_drawing_candidate")
+                self.assertGreater(fig["nearby_vector_drawing_paths"],5)
+                self.assertEqual(fig["nearby_embedded_images"],[])
+                self.assertEqual(fig["interpretation_status"],"NOT_PERFORMED")
+                self.assertEqual(fig["association_status"],
+                                 "GEOMETRY_NEAR_CAPTION_UNVERIFIED")
+                self.assertNotIn("caption_native_text",fig)
+                shown=inventory_page(doc,1,source_hash=source,
+                                     include_caption=True)
+                self.assertIn("Worldwide reporting rates",
+                              shown[0]["caption_native_text"])
+                self.assertEqual(fig["figure_candidate_id"],
+                                 shown[0]["figure_candidate_id"])
+                with self.assertRaisesRegex(ValueError,"source PDF SHA-256"):
+                    inventory_page(doc,1,source_hash="x")
+            self.assertEqual(path.read_bytes(),original)
+
+    def test_read_only_inventory_multi_panel_microscopy_with_caption_below(self):
+        """Multiple raster panels are preserved as source image references."""
+        import fitz
+        from PIL import Image,ImageDraw
+        from figure_recovery import inventory_page,main
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"microscopy.pdf"
+            panel=Image.new("RGB",(140,120),"white")
+            ImageDraw.Draw(panel).ellipse((20,20,115,100),outline="black",width=5)
+            out=io.BytesIO()
+            panel.save(out,format="PNG")
+            with fitz.open() as doc:
+                page=doc.new_page(width=612,height=792)
+                page.insert_image(fitz.Rect(70,150,210,270),
+                                  stream=out.getvalue())
+                page.insert_image(fitz.Rect(240,150,380,270),
+                                  stream=out.getvalue())
+                page.insert_text((75,295),
+                                 "Fig. 7. Scanning electron micrographs of vials")
+                page.insert_text((70,460),"Source discussion paragraphs stay native.")
+                doc.save(path)
+            data=path.read_bytes()
+            source=hashlib.sha256(data).hexdigest()
+            with fitz.open(path) as pdf:
+                records=inventory_page(pdf,1,source_hash=source)
+            self.assertEqual(len(records),1)
+            self.assertEqual(records[0]["figure_number"],"7")
+            self.assertIn(records[0]["visual_kind"],(
+                "embedded_raster_candidate","mixed_raster_vector_candidate"))
+            self.assertEqual(len(records[0]["nearby_embedded_images"]),2)
+            self.assertEqual(records[0]["writes"],False)
+            output=io.StringIO()
+            with redirect_stdout(output):
+                main(["inventory","--file",str(path),"--page","1"])
+            cli=json.loads(output.getvalue())
+            self.assertFalse(cli["writes"])
+            self.assertFalse(cli["cloud_calls"])
+            self.assertEqual(cli["figure_candidates"],1)
+            self.assertEqual(cli["source_file_sha256"],source)
+            self.assertNotIn("caption_native_text",cli["candidates"][0])
+            self.assertEqual(path.read_bytes(),data)
+
+
+
 if __name__ == "__main__":
     unittest.main()
