@@ -320,6 +320,63 @@ class DeferredOcrPostgresTests(unittest.TestCase):
 
 
 
+    def test_retry_only_claim_does_not_consume_pending_ocr_assets(self):
+        """An eight-asset recovery pilot must not claim eight new PDFs/assets."""
+        from db import get_conn
+        doc_id="e"*64
+        source="a"*64
+        version="b"*64
+        conn=get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"""INSERT INTO {self.n['docs']}
+                    (doc_id,source_hash,extraction_hash,page_count)
+                    VALUES (%s,%s,%s,2)""",(doc_id,source,version))
+                for page_number in (1,2):
+                    elements=[{
+                        "type":"image", "bbox":[45,50,200,190],
+                        "visual_asset":image_ref(page_number),
+                    }]
+                    cur.execute(f"""INSERT INTO {self.n['published']}
+                        (doc_id,page_number,source_hash,extraction_hash,file_path,elements)
+                        VALUES (%s,%s,%s,%s,%s,%s::jsonb)""",
+                        (doc_id,page_number,source,version,
+                         "/tmp/no-source-pdf-open-for-claim.pdf",
+                         json.dumps(elements)))
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(
+            ocr.enqueue(self.p,doc_id=doc_id,apply=True)["inserted"],2)
+        conn=get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"""UPDATE {self.n['ocr']}
+                    SET status='RETRY_WAIT', attempts=1,
+                        error_code='ModuleNotFoundError',
+                        next_attempt_at=now()-interval '5 seconds'
+                    WHERE doc_id=%s AND page_number=1""",(doc_id,))
+                self.assertEqual(cur.rowcount,1)
+            conn.commit()
+        finally:
+            conn.close()
+        jobs=ocr.claim(self.p,8,3,3600,doc_id=doc_id,retry_only=True)
+        self.assertEqual(len(jobs),1)
+        self.assertEqual(jobs[0][4],1)
+        self.assertEqual(jobs[0][7],2)
+        self.assertEqual(
+            ocr.status(self.p,doc_id=doc_id)["statuses"],
+            {"RUNNING":1,"PENDING":1})
+        ocr.complete(self.p,jobs[0],status="TEXT_READY",
+                     text="Readable",regions=[],confidence=.97,language="en")
+        self.assertEqual(
+            ocr.status(self.p,doc_id=doc_id)["statuses"],
+            {"TEXT_READY":1,"PENDING":1})
+        self.assertEqual(
+            ocr.claim(self.p,8,3,3600,doc_id=doc_id,retry_only=True),[])
+        with self.assertRaisesRegex(ValueError,"explicit document"):
+            ocr.claim(self.p,8,3,3600,retry_only=True)
+
     def test_z_large_enqueue_releases_reads_before_insert_under_pool_cap_2(self):
         """Reproduce the user's 30-second pool exhaustion with 70 pages/140 assets.
 
