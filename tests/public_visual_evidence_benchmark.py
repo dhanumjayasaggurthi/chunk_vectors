@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster, read_vectors, _json_bytes, OpenPageCapture, _source_state
+from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster, read_vectors, read_figures, _json_bytes, OpenPageCapture, _source_state
 
 
 def check(spec, config):
@@ -113,7 +113,7 @@ def check(spec, config):
         selective_result = None
         if config.get("selective_validation"):
             mode = {**kw["settings"], **config["selective_validation"],
-                    "selection_mode": "native_text_or_render"}
+                    "selection_mode": "native_text_or_render", "capture_figures":False}
             selected = capture(source, root/"selected", first, last, **{**kw,"settings":mode})
             sid = selected["capture_id"]
             native = fallback = 0
@@ -224,7 +224,44 @@ def check(spec, config):
                         digest=None
                         assert not inv["paths"]
                     vector_refs.append((vid,i,inv["status"],digest,len(original)))
+        figure_refs=[]
+        figure_ids=set()
+        figure_fallback_pages=0
+        if config["visual_evidence"].get("capture_figures"):
+            from figure_recovery import inventory_page
+            with fitz.open(source) as doc:
+                for i in range(first,last+1):
+                    _,mp=_paths(retained,cid,i)
+                    row=json.loads(mp.read_text(encoding="utf-8"))
+                    inv=row["figure_inventory"]
+                    if inv["status"]!="CAPTION_CANDIDATES_UNVERIFIED":
+                        figure_fallback_pages+=1
+                        continue
+                    expected=inventory_page(doc,i,source_hash=source_hash,include_caption=True,
+                                            region_hints=True,
+                                            max_distance=config["visual_evidence"]["figure_max_distance_pt"],
+                                            padding=config["visual_evidence"]["figure_padding_pt"])
+                    assert _json_bytes(inv["candidates"])==_json_bytes(expected)
+                    for candidate in expected:
+                        figure_ids.add(candidate["figure_number"])
+                    if expected:
+                        figure_refs.append((i,row["figure_inventory_sha256"]))
+            expected_ids=set(config.get("figure_caption_anchors",{}).get(name,[]))
+            assert expected_ids<=figure_ids, f"Missing configured public figure anchors: {expected_ids-figure_ids}"
         source.unlink()
+        figure_count=figure_hints=figure_crops=0
+        for i,digest in figure_refs:
+            inv,meta=read_figures(retained,cid,i,settings=config["visual_evidence"])
+            assert meta["figure_inventory_sha256"]==digest and not meta["association_verified"]
+            figure_count+=inv["candidate_count"]
+            for candidate in inv["candidates"]:
+                box=candidate["region_hint_bbox"]
+                if box is not None:
+                    figure_hints+=1
+                    if figure_crops<config["region_validation_pages"]:
+                        data,provenance=read_region(retained,cid,i,box,settings=config["visual_evidence"])
+                        assert data and not provenance["original_required"]
+                        figure_crops+=1
         for vid,i,status,digest,path_count in vector_refs:
             inv,meta=read_vectors(root/"vectors",vid,i,settings=vector_settings)
             assert inv["status"]==status and not meta["original_required"]
@@ -281,6 +318,9 @@ def check(spec, config):
             "post_source_vector_matches":sum(digest is not None for _,_,_,digest,_ in vector_refs),
             "vector_fallback_pages":sum(digest is None for _,_,_,digest,_ in vector_refs),
             "vector_reference_paths":sum(count for _,_,_,_,count in vector_refs),
+            "figure_candidates":figure_count,"figure_hint_regions":figure_hints,
+            "post_source_figure_crop_reads":figure_crops,"figure_detector_fallback_pages":figure_fallback_pages,
+            "figure_anchor_ids":sorted(figure_ids),
         }
 
 

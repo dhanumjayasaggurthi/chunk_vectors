@@ -11,7 +11,11 @@ The real corrected 10-page inventory now returns 15 distinct numbered caption ca
 
 `visual_evidence.py` is a bounded PDF derivative pilot. It captures RGB PNG and source-linked manifest per physical page with explicit permission (`--authorized-page-derivatives`, `--policy-id`), 150–400 DPI, 50 pages/call, pixel and byte bounds; original files are never copied. `verify` reads only retained derivatives by capture ID; missing or corrupt pages fail. It does not replace native text/table extraction or native-resolution raster/vector retention. It does not write PostgreSQL, invoke any LLM, assert durable storage or authorize purge. Synthetic source-removal, tamper, rotation and policy tests are included in figure recovery tests. A verified local pilot does not establish fleet readiness.
 
-## Integrated native evidence capture (opt-in, CI pending)
+## Retained figure-caption candidates (opt-in, CI pending)
+
+Set capture_figures=true with all_pages; configure figure_max_distance_pt, figure_padding_pt and max_figure_json_bytes in the visual settings. Existing numbered native caption detector stores source text, caption hash, page geometry and nearby raster/vector hints in the same evidence manifest. read_figures returns unverified candidates after source removal; read_region can retrieve a candidate crop if available. Competing captions, spanning images or overlapping proposals require full-page context; never represent a geometric proposal as a verified figure boundary. English native caption grammar only at present; scanned/unlabelled/multilingual figures require further work. Rendered evidence remains mandatory for this mode. No new tables or cloud calls. Latest acceptance pending.
+
+## Integrated native evidence capture (opt-in, public and PostgreSQL CI passed at 16abe45)
 
 Use the existing extraction profile, retaining its approved schema/table settings. Example only:
 
@@ -35,7 +39,7 @@ extraction:
       capture_vectors: false
 ~~~
 
-Set the root/policy and exact installed renderer to approved actual values (example version is not a current-version claim). Single visual worker is intentional: existing document workers provide parallelism, avoiding nested pools. Evidence semantics are independently versioned, not part of native extraction fingerprint. New native extraction uses the same PDF handle; already published native docs verify/backfill without rewriting native rows. Local evidence report does not certify production durability or purge readiness. For retained OCR, use the same semantic visual settings and renderer. No extra DB table or transaction types; original copies forbidden. Public and PostgreSQL acceptance pending for integration.
+Set the root/policy and exact installed renderer to approved actual values (example version is not a current-version claim). Single visual worker is intentional: existing document workers provide parallelism, avoiding nested pools. Evidence semantics are independently versioned, not part of native extraction fingerprint. New native extraction uses the same PDF handle; already published native docs verify/backfill without rewriting native rows. Local evidence report does not certify production durability or purge readiness. For retained OCR, use the same semantic visual settings and renderer. No extra DB table or transaction types; original copies forbidden. Public 393-page and PostgreSQL integration acceptance passed at 16abe45; full production durability/SLA remains unverified.
 
 ## Deferred OCR from retained evidence (opt-in, CI pending)
 

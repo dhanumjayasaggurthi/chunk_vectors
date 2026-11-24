@@ -5,7 +5,11 @@
     "batch_pages": 4,
     "max_in_flight": 4,
     "max_pixels": 40000000,
-    "max_png_bytes": 100000000
+    "max_png_bytes": 100000000,
+    "capture_figures": true,
+    "figure_max_distance_pt": 180,
+    "figure_padding_pt": 24,
+    "max_figure_json_bytes": 2000000
   },
   "download_retries": 2,
   "connect_timeout": 15,
@@ -78,5 +82,12 @@
       "max_vector_items": 100000,
       "max_vector_json_bytes": 8000000
     }
+  },
+  "figure_caption_anchors": {
+    "ema_balversa": [
+      "18",
+      "19",
+      "20"
+    ]
   }
 }

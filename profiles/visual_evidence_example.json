@@ -17,6 +17,10 @@
     "capture_vectors": false,
     "max_vector_paths": 20000,
     "max_vector_items": 100000,
-    "max_vector_json_bytes": 8000000
+    "max_vector_json_bytes": 8000000,
+    "capture_figures": false,
+    "figure_max_distance_pt": 180,
+    "figure_padding_pt": 24,
+    "max_figure_json_bytes": 2000000
   }
 }

@@ -295,6 +295,51 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_retained_figure_candidates_ambiguous_and_source_independent(self):
+        import fitz
+        from visual_evidence import capture,read_figures,read_region,verify,_paths
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp)
+            source=folder/"figures.pdf"
+            with fitz.open() as doc:
+                p=doc.new_page(width=300,height=400)
+                p.draw_rect((40,60,130,150))
+                p.draw_rect((150,60,240,150))
+                p.insert_text((40,180),"Figure 1: Two panels")
+                p.insert_text((40,240),"Figure 1 shows the result")
+                p.set_rotation(90)
+                p=doc.new_page(width=300,height=400)
+                p.draw_rect((40,80,240,200))
+                p.insert_text((40,60),"Figure 2: Upper caption")
+                p.insert_text((40,230),"Figure 3: Lower caption")
+                doc.save(source)
+            settings=dict(dpi=150,capture_figures=True,workers=1)
+            root=folder/"retained"
+            result=capture(source,root,1,2,settings=settings,policy_id="test",
+                           authorized_page_derivatives=True)
+            cid=result["capture_id"]
+            self.assertEqual(capture(source,root,1,2,settings=settings,policy_id="test",
+                                      authorized_page_derivatives=True)["skipped_verified_pages"],2)
+            source.unlink()
+            inv,meta=read_figures(root,cid,1,settings=settings)
+            self.assertEqual(inv["candidate_count"],1)
+            first=inv["candidates"][0]
+            self.assertEqual(first["figure_number"],"1")
+            self.assertEqual(first["caption_native_text"],"Figure 1: Two panels")
+            self.assertEqual(first["region_hint_status"],"UNVERIFIED_REGION_HINT")
+            self.assertFalse(meta["association_verified"])
+            data,_=read_region(root,cid,1,first["region_hint_bbox"],settings=settings)
+            self.assertTrue(data.startswith(b"\x89PNG"))
+            inv,_=read_figures(root,cid,2,settings=settings)
+            self.assertEqual(inv["candidate_count"],2)
+            self.assertTrue(all(c["region_hint_bbox"] is None for c in inv["candidates"]))
+            _,manifest=_paths(root,cid,1)
+            row=json.loads(manifest.read_text(encoding="utf-8"))
+            row["figure_inventory"]["candidates"][0]["caption_native_text"]="fabricated"
+            manifest.write_text(json.dumps(row),encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,"Figure inventory checksum"):
+                verify(root,cid,1,2,settings=settings)
+
     def test_vector_paths_retention_limits_and_post_source_access(self):
         import fitz
         from visual_evidence import capture, read_vectors, verify, _paths, _json_bytes

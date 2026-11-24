@@ -338,8 +338,9 @@ def _figure_caption_candidates(page):
     avoids dragging adjacent columns, discussion paragraphs, and subsequent
     figures into a supposed single authoritative caption.
     """
+    import fitz
     candidates=[]
-    for block in page.get_text("dict").get("blocks", []):
+    for block in page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES).get("blocks", []):
         if block.get("type")!=0:
             continue
         lines=block.get("lines", [])
@@ -404,7 +405,7 @@ def _page_visual_evidence(page):
     images=page.get_image_info(xrefs=True)
     if len(images)>1024:
         raise ValueError("PAGE_IMAGE_COUNT_LIMIT: source inventory incomplete")
-    drawings=page.get_drawings()
+    drawings=page.get_cdrawings()
     if len(drawings)>50000:
         raise ValueError("PAGE_DRAWING_COUNT_LIMIT: source inventory incomplete")
     local=[]
@@ -413,14 +414,14 @@ def _page_visual_evidence(page):
         bb=image.get("bbox",())
         original={"xref":int(image.get("xref") or 0),
                   "bbox":[float(v) for v in bb]}
-        if _is_page_spanning_image(bb,page.rect):
+        if _is_page_spanning_image(bb,page.rect * page.derotation_matrix):
             spanning.append(original)
         else:
             local.append(original)
     return local,spanning,drawings
 
 
-def _visuals_near_caption(page, caption, *, page_evidence=None,max_distance=450):
+def _visuals_near_caption(page, caption, *, page_evidence=None,max_distance=450, include_bounds=False):
     """Unverified spatial hints only; never claim exact figure association."""
     cap=caption["caption_bbox"]
     x0,x1=cap[0],cap[2]
@@ -441,18 +442,25 @@ def _visuals_near_caption(page, caption, *, page_evidence=None,max_distance=450)
 
     local,spanning,drawings=page_evidence or _page_visual_evidence(page)
     images=[image for image in local if candidate(image["bbox"])]
-    vectors=sum(1 for draw in drawings if draw.get("rect") is not None
-                and candidate(tuple(draw["rect"])))
-    return {
+    vector_boxes=[tuple(draw["rect"]) for draw in drawings if draw.get("rect") is not None
+                  and candidate(tuple(draw["rect"]))]
+    vectors=len(vector_boxes)
+    result={
         "nearby_embedded_images":images,
         "page_spanning_images":spanning,
         "nearby_vector_drawing_paths":vectors,
         "association_status":"GEOMETRY_NEAR_CAPTION_UNVERIFIED",
     }
+    if include_bounds:
+        boxes=[entry["bbox"] for entry in images]+vector_boxes
+        result["nearby_visual_bbox"] = ([min(bb[0] for bb in boxes),min(bb[1] for bb in boxes),
+                                         max(bb[2] for bb in boxes),max(bb[3] for bb in boxes)] if boxes else None)
+    return result
 
 
 
-def inventory_page(pdf,page_number,*,source_hash,include_caption=False):
+def inventory_page(pdf,page_number,*,source_hash,include_caption=False,region_hints=False,
+                   max_distance=450,padding=24):
     """Read-only figure candidate evidence with source-stable identities.
 
     A caption without any image/path evidence is still emitted as a
@@ -465,10 +473,14 @@ def inventory_page(pdf,page_number,*,source_hash,include_caption=False):
             or any(v not in "0123456789abcdef" for v in source_hash)):
         raise ValueError("Inventory requires a full original source PDF SHA-256")
     page=pdf[page_number-1]
+    captions=_figure_caption_candidates(page)
+    if not captions:
+        return []
     page_evidence=_page_visual_evidence(page)
     out=[]
-    for caption in _figure_caption_candidates(page):
-        evidence=_visuals_near_caption(page,caption,page_evidence=page_evidence)
+    for caption in captions:
+        evidence=_visuals_near_caption(page,caption,page_evidence=page_evidence,
+                                       max_distance=max_distance,include_bounds=region_hints)
         raster=len(evidence["nearby_embedded_images"])
         vectors=evidence["nearby_vector_drawing_paths"]
         if raster and vectors:
@@ -502,7 +514,43 @@ def inventory_page(pdf,page_number,*,source_hash,include_caption=False):
         if include_caption:
             record["caption_native_text"]=caption["caption_text"]
         out.append(record)
+    if region_hints:
+        _add_region_hints(page,out,padding)
     return out
+
+
+def _add_region_hints(page, records, padding):
+    """Geometry proposals only. Never suppress the authoritative page fallback."""
+    import fitz
+    bounds=page.rect * page.derotation_matrix
+    for record in records:
+        visual=record["nearby_visual_bbox"]
+        record["region_hint_bbox"]=None
+        record["region_hint_status"]="FULL_PAGE_CONTEXT_REQUIRED"
+        if visual is None or record["page_spanning_images"]:
+            continue
+        cap=record["caption_bbox"]
+        region=fitz.Rect(min(cap[0],visual[0])-padding,min(cap[1],visual[1])-padding,
+                         max(cap[2],visual[2])+padding,max(cap[3],visual[3])+padding) & bounds
+        if region.is_empty or not region.contains(fitz.Rect(cap)):
+            continue
+        if any(other is not record and region.intersects(fitz.Rect(other["caption_bbox"]))
+               for other in records):
+            continue
+        record["region_hint_bbox"]=list(region)
+        record["region_hint_status"]="UNVERIFIED_REGION_HINT"
+    # Shared geometry is not sufficient to assign a panel to one caption.
+    conflicts=set()
+    for i,record in enumerate(records):
+        if record["region_hint_bbox"] is None:
+            continue
+        for j in range(i):
+            other=records[j]["region_hint_bbox"]
+            if other is not None and fitz.Rect(other).intersects(fitz.Rect(record["region_hint_bbox"])):
+                conflicts.update((i,j))
+    for i in conflicts:
+        records[i]["region_hint_bbox"]=None
+        records[i]["region_hint_status"]="FULL_PAGE_CONTEXT_REQUIRED"
 
 
 def main(argv=None):

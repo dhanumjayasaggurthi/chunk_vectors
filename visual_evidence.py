@@ -299,6 +299,75 @@ def read_vectors(root, capture_id, number, *, settings=None):
     }
 
 
+def _figure_inventory(pdf, number, identity, settings):
+    from figure_recovery import inventory_page
+    try:
+        candidates=inventory_page(pdf,number,source_hash=identity["source_pdf_sha256"],
+                                  include_caption=True,region_hints=True,
+                                  max_distance=settings["figure_max_distance_pt"],
+                                  padding=settings["figure_padding_pt"])
+    except (RuntimeError,ValueError) as exc:
+        # Do not turn a detector failure into a claim that there are no figures.
+        return {"status":"DETECTOR_ERROR_RENDER_FALLBACK","candidates":[],
+                "candidate_count":None,"error_type":type(exc).__name__}
+    if len(_json_bytes(candidates))>settings["max_figure_json_bytes"]:
+        return {"status":"BYTE_LIMIT_RENDER_FALLBACK","candidates":[],
+                "candidate_count":len(candidates)}
+    return {"status":"CAPTION_CANDIDATES_UNVERIFIED","candidates":candidates,
+            "candidate_count":len(candidates)}
+
+
+def _verify_figures(record):
+    inv=record.get("figure_inventory")
+    identity=record["identity"]
+    if not identity.get("figure_capture"):
+        if inv is not None:
+            raise ValueError("Unexpected figure inventory")
+        return
+    if not isinstance(inv,dict) or _sha(_json_bytes(inv))!=record.get("figure_inventory_sha256"):
+        raise ValueError("Figure inventory checksum mismatch")
+    candidates=inv["candidates"]
+    if not isinstance(candidates,list):
+        raise ValueError("Invalid figure inventory")
+    if inv["status"]=="CAPTION_CANDIDATES_UNVERIFIED":
+        if (len(candidates)!=inv["candidate_count"]
+                or len(_json_bytes(candidates))>identity["max_figure_json_bytes"]):
+            raise ValueError("Figure inventory count/size mismatch")
+    elif inv["status"] not in ("DETECTOR_ERROR_RENDER_FALLBACK","BYTE_LIMIT_RENDER_FALLBACK") or candidates:
+        raise ValueError("Invalid figure fallback")
+    for candidate in candidates:
+        caption=candidate["caption_native_text"]
+        if (candidate["source_pdf_sha256"]!=identity["source_pdf_sha256"]
+                or candidate["source_page"]!=record["source_page"]
+                or candidate["printed_page_label"]!=record["printed_page_label"]
+                or candidate["caption_sha256"]!=_sha(caption.encode("utf-8"))
+                or candidate["association_status"]!="GEOMETRY_NEAR_CAPTION_UNVERIFIED"
+                or candidate["interpretation_status"]!="NOT_PERFORMED"):
+            raise ValueError("Figure candidate provenance mismatch")
+        box=candidate["region_hint_bbox"]
+        if (box is None and candidate["region_hint_status"]!="FULL_PAGE_CONTEXT_REQUIRED"
+                or box is not None and candidate["region_hint_status"]!="UNVERIFIED_REGION_HINT"):
+            raise ValueError("Invalid figure region hint status")
+
+
+def read_figures(root,capture_id,number,*,settings=None):
+    """Return checked native caption candidates, never verified figure boundaries."""
+    settings=_settings({} if settings is None else settings)
+    _full_range(number,number)
+    record=_verify_page(root,capture_id,number,max_pixels=settings["max_pixels"],
+                        max_png_bytes=settings["max_png_bytes"])
+    if "figure_inventory" not in record:
+        raise ValueError("NO_RETAINED_FIGURE_INVENTORY")
+    return record["figure_inventory"], {
+        "capture_id":capture_id,"source_pdf_sha256":record["identity"]["source_pdf_sha256"],
+        "source_page":number,"parent_image_sha256":record["image_sha256"],
+        "figure_inventory_sha256":record["figure_inventory_sha256"],
+        "coordinate_space":"unrotated_pymupdf_points",
+        "original_required":False,"writes":False,
+        "association_verified":False,"full_page_context_available":True,
+    }
+
+
 def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_bytes=MAX_PNG_BYTES):
     png, manifest = _paths(root, capture_id, number)
     record = json.loads(manifest.read_text(encoding="utf-8"))
@@ -323,6 +392,7 @@ def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_byt
             raise ValueError("Native-only evidence checksum/structure mismatch")
         _verify_rasters(root, capture_id, record)
         _verify_vectors(record)
+        _verify_figures(record)
         return record
     if record.get("image_file") != png.name or record.get("representation") not in (None, "rendered_page"):
         raise ValueError("Invalid rendered evidence manifest")
@@ -340,6 +410,7 @@ def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_byt
         raise ValueError("Page evidence image geometry mismatch")
     _verify_rasters(root, capture_id, record)
     _verify_vectors(record)
+    _verify_figures(record)
     return record
 
 
@@ -473,6 +544,8 @@ _DEFAULT_SETTINGS = {
     "max_raster_pixels": MAX_PIXELS, "max_raster_bytes": MAX_PNG_BYTES,
     "capture_vectors": False, "max_vector_paths": 20000,
     "max_vector_items": 100000, "max_vector_json_bytes": 8000000,
+    "capture_figures": False, "figure_max_distance_pt": 180,
+    "figure_padding_pt": 24, "max_figure_json_bytes": 2000000,
 }
 _LIMITS = {
     "dpi": (150, 400), "workers": (1, 32), "batch_pages": (1, MAX_PAGES),
@@ -483,6 +556,8 @@ _LIMITS = {
     "max_raster_pixels": (1, MAX_PIXELS), "max_raster_bytes": (1024, MAX_PNG_BYTES),
     "max_vector_paths": (1, 50000), "max_vector_items": (1, 500000),
     "max_vector_json_bytes": (1024, 16000000),
+    "figure_max_distance_pt": (1, 2000), "figure_padding_pt": (0, 200),
+    "max_figure_json_bytes": (1024, 8000000),
 }
 
 
@@ -498,8 +573,10 @@ def _settings(value):
         raise ValueError("capture_rasters must be boolean")
     if type(result["capture_vectors"]) is not bool:
         raise ValueError("capture_vectors must be boolean")
-    if (result["capture_rasters"] or result["capture_vectors"]) and result["selection_mode"] != "all_pages":
-        raise ValueError("Raster/vector pilot requires all_pages to retain compositing fallback")
+    if type(result["capture_figures"]) is not bool:
+        raise ValueError("capture_figures must be boolean")
+    if any(result[k] for k in ("capture_rasters","capture_vectors","capture_figures")) and result["selection_mode"] != "all_pages":
+        raise ValueError("Raster/vector/figure pilot requires all_pages to retain compositing fallback")
     if result["selection_mode"] not in ("all_pages", "native_text_or_render"):
         raise ValueError("Unsupported visual evidence selection_mode")
     if result["max_in_flight"] < result["workers"]:
@@ -643,6 +720,9 @@ def _capture_open_page(source, root, pdf, number, identity, state, source_count,
         vectors = _vector_inventory(page, settings)
         record.update(vector_inventory=vectors,
                       vector_inventory_sha256=_sha(_json_bytes(vectors)))
+    if settings["capture_figures"]:
+        figures=_figure_inventory(pdf,number,identity,settings)
+        record.update(figure_inventory=figures,figure_inventory_sha256=_sha(_json_bytes(figures)))
     if _source_state(source) != state:
         raise RuntimeError("Source changed during page rendering")
     _write_once(png, data)
@@ -728,6 +808,11 @@ def capture_identity(source_hash, settings, policy_id, renderer):
                         max_vector_paths=settings["max_vector_paths"],
                         max_vector_items=settings["max_vector_items"],
                         max_vector_json_bytes=settings["max_vector_json_bytes"])
+    if settings["capture_figures"]:
+        identity.update(figure_capture="native_caption_geometry_hints_v1",
+                        figure_max_distance_pt=settings["figure_max_distance_pt"],
+                        figure_padding_pt=settings["figure_padding_pt"],
+                        max_figure_json_bytes=settings["max_figure_json_bytes"])
     return identity
 
 
