@@ -200,6 +200,14 @@ def load_extracted_document(profile: dict, document_key):
                     el.visual_asset = validate_visual_asset(
                         item["visual_asset"], page_number=pg,
                     )
+                if "unresolved_region" in item:
+                    from pdf_processor import validate_unresolved_region
+                    if (item["type"]!=ElementType.VECTOR_REGION.value
+                            or item.get("text") or "vector_preview" in item):
+                        raise ValueError("Invalid unresolved table/graphic element")
+                    el.unresolved_region=validate_unresolved_region(
+                        item["unresolved_region"],page_number=pg,
+                    )
                 if "source_table" in item:
                     if item["type"] != ElementType.TABLE.value:
                         raise ValueError("Source table attached to non-table element")
