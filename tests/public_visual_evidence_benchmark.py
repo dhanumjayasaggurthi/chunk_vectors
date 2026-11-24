@@ -11,11 +11,12 @@ import json
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from visual_evidence import capture, verify, _paths, digest_file
+from visual_evidence import capture, verify, _paths, digest_file, read_region
 
 
 def check(spec, config):
@@ -129,7 +130,38 @@ def check(spec, config):
                 "replay_seconds":selected_replay["elapsed_seconds"],
                 "requires_native_reconciliation":bool(native),
             }
+        # Store only a bounded number of independent reference pixel buffers,
+        # then exercise region access after removing the temporary source PDF.
+        region_references = []
+        region_count = config.get("region_validation_pages", 0)
+        with fitz.open(source) as doc:
+            # Spread across physical page range; no assumed caption geometry.
+            for i in sorted({first + (last-first)*j//max(1,region_count-1)
+                             for j in range(region_count)}):
+                page = doc[i-1]
+                unrotated = page.rect * page.derotation_matrix
+                box = fitz.Rect(unrotated.x0+unrotated.width*.25,
+                                unrotated.y0+unrotated.height*.25,
+                                unrotated.x0+unrotated.width*.75,
+                                unrotated.y0+unrotated.height*.75)
+                scale=fitz.Matrix(config["visual_evidence"]["dpi"]/72,
+                                  config["visual_evidence"]["dpi"]/72)
+                area=(box*page.rotation_matrix*scale).irect
+                origin=(page.rect*scale).irect
+                pix=page.get_pixmap(dpi=config["visual_evidence"]["dpi"],
+                                    colorspace=fitz.csRGB,alpha=False,annots=True)
+                x0,y0,x1,y1=area.x0-origin.x0,area.y0-origin.y0,area.x1-origin.x0,area.y1-origin.y0
+                expected=b"".join(pix.samples_mv[y*pix.stride+x0*3:y*pix.stride+x1*3]
+                                  for y in range(y0,y1))
+                import hashlib
+                region_references.append((i,list(box),x1-x0,y1-y0,hashlib.sha256(expected).hexdigest()))
         source.unlink()
+        for i,box,w,h,digest in region_references:
+            output,meta=read_region(retained,cid,i,box,settings=config["visual_evidence"])
+            pix=fitz.Pixmap(output)
+            assert (pix.width,pix.height)==(w,h), f"Region dimensions mismatch {i}"
+            assert hashlib.sha256(pix.samples).hexdigest()==digest, f"Region pixel mismatch {i}"
+            assert not meta["original_required"] and not meta["writes"]
         if selective_result is not None:
             post = verify(root/"selected",sid,first,last,settings=mode)
             assert post["verified_pages"] == n
@@ -141,9 +173,9 @@ def check(spec, config):
         with png.open("ab") as stream:
             stream.write(b"tamper")
         try:
-            verify(retained, cid, first, last)
+            verify(retained, cid, first, last, settings=config['visual_evidence'])
         except ValueError as error:
-            assert "checksum/size" in str(error)
+            assert "checksum/size" in str(error), str(error)
         else:
             raise AssertionError("Tampered evidence was accepted")
         return {
@@ -159,6 +191,7 @@ def check(spec, config):
             "resume_rendered_pages": resumed["rendered_pages"],
             "verified_after_source_removal": restored["verified_pages"],
             "tamper_rejected": True, "selective":selective_result,
+            "post_source_region_pixel_matches":len(region_references),
         }
 
 
@@ -239,7 +272,7 @@ def main():
             results.append(result)
             print(json.dumps(result), flush=True)
         except Exception as exc:
-            failure = {"source":spec[0],"error":repr(exc)}
+            failure = {"source":spec[0],"error":repr(exc),"traceback":traceback.format_exc()}
             failures.append(failure)
             print(json.dumps(failure), flush=True)
     stress = None
@@ -248,7 +281,7 @@ def main():
             stress = check_long(config["long_document_stress"])
             print(json.dumps(stress), flush=True)
         except Exception as exc:
-            failures.append({"source": "synthetic_long_document", "error": repr(exc)})
+            failures.append({"source": "synthetic_long_document", "error": repr(exc), "traceback": traceback.format_exc()})
             print(json.dumps(failures[-1]), flush=True)
     report = {"results":results,"long_document_stress":stress,"failures":failures,"passed":len(results)==len(config['sources']) and not failures,
               "scope":"rendered-page integrity and replay only; not figure/OCR/LLM quality"}

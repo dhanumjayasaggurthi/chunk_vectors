@@ -295,6 +295,57 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_retained_region_exact_pixels_rotation_and_source_removal(self):
+        import fitz
+        import hashlib
+        from visual_evidence import capture, read_region, _paths
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = folder / "rotation.pdf"
+            with fitz.open() as doc:
+                for angle in (0,90,180,270):
+                    page = doc.new_page(width=240,height=160)
+                    page.draw_rect(fitz.Rect(30,40,100,90), fill=(1,0,0))
+                    page.insert_text((35,60),"Panel A")
+                    page.set_rotation(angle)
+                doc.save(source)
+            settings = dict(dpi=150, workers=1)
+            root = folder/"retained"
+            result = capture(source,root,1,4,settings=settings,policy_id="test",
+                             authorized_page_derivatives=True)
+            cid = result["capture_id"]
+            # Compare returned crop to source-rendered page pixels independently.
+            box = fitz.Rect(30,40,100,90)
+            references = []
+            with fitz.open(source) as doc:
+                for page in doc:
+                    pix=page.get_pixmap(dpi=150,colorspace=fitz.csRGB,alpha=False)
+                    area=(box*page.rotation_matrix*fitz.Matrix(150/72,150/72)).irect
+                    rows=[pix.samples_mv[y*pix.stride+area.x0*3:y*pix.stride+area.x1*3]
+                          for y in range(area.y0,area.y1)]
+                    references.append((area.width,area.height,b"".join(rows)))
+            source.unlink()
+            for number,(w,h,expected) in enumerate(references,1):
+                data,meta=read_region(root,cid,number,list(box),settings=settings)
+                actual=fitz.Pixmap(data)
+                self.assertEqual((actual.width,actual.height),(w,h))
+                self.assertEqual(actual.samples,expected)
+                self.assertEqual(meta["region_sha256"],hashlib.sha256(data).hexdigest())
+                self.assertFalse(meta["writes"])
+                full,fullmeta=read_region(root,cid,number,settings=settings)
+                png,_=_paths(root,cid,number)
+                self.assertEqual(full,png.read_bytes())
+                self.assertEqual(fullmeta["region_sha256"],fullmeta["parent_image_sha256"])
+            with self.assertRaisesRegex(ValueError,"outside"):
+                read_region(root,cid,1,[0,0,999,999],settings=settings)
+            with self.assertRaises(ValueError):
+                read_region(root,cid,1,[0,0,float("nan"),1],settings=settings)
+            png,_=_paths(root,cid,1)
+            with png.open("ab") as stream:
+                stream.write(b"bad")
+            with self.assertRaisesRegex(ValueError,"checksum"):
+                read_region(root,cid,1,list(box),settings=settings)
+
     def test_selective_native_payload_and_complex_render_fallback(self):
         import fitz
         from visual_evidence import capture, verify, _paths

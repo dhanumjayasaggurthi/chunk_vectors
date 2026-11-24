@@ -59,5 +59,6 @@
   "selective_validation": {
     "min_native_chars": 100,
     "max_native_json_bytes": 8000000
-  }
+  },
+  "region_validation_pages": 5
 }

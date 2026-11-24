@@ -137,6 +137,83 @@ def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_byt
     return record
 
 
+
+def read_region(root, capture_id, number, bbox=None, *, settings=None):
+    """Return (PNG bytes, provenance) for a verified retained page or region.
+
+    bbox is an optional unrotated PyMuPDF page rectangle in points, NOT raw PDF
+    bottom-left coordinates. No resampling, source access or persistent writes.
+    The caller supplies a region; this is not automatic figure segmentation.
+    """
+    import fitz
+    import math
+    settings = _settings({} if settings is None else settings)
+    _full_range(number, number)
+    record = _verify_page(root, capture_id, number,
+                          max_pixels=settings["max_pixels"],
+                          max_png_bytes=settings["max_png_bytes"])
+    if record.get("representation") == "native_text_only_candidate":
+        raise ValueError("NO_RETAINED_PIXELS: native-only page")
+    png, _ = _paths(root, capture_id, number)
+    # Verify the exact byte buffer that is returned/decoded; no trust in a
+    # previous path lookup if the filesystem changes between reads.
+    with png.open("rb") as stream:
+        data = stream.read(settings["max_png_bytes"] + 1)
+    if len(data) != record["image_bytes"] or _sha(data) != record["image_sha256"]:
+        raise ValueError("Page evidence image checksum/size mismatch")
+    dpi = record["identity"]["dpi"]
+    width, height = record["pixel_width"], record["pixel_height"]
+    requested = None
+    if bbox is None:
+        pixel_box = [0, 0, width, height]
+        output = data
+    else:
+        if (not isinstance(bbox, (list, tuple)) or len(bbox) != 4
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in bbox)):
+            raise ValueError("Expected four finite page coordinates")
+        requested = list(bbox)
+        box = fitz.Rect(bbox)
+        if box.is_empty or box.is_infinite:
+            raise ValueError("Invalid region rectangle")
+        rotation = fitz.Matrix(*record["rotation_matrix"])
+        page_rect = fitz.Rect(record["page_rect"])
+        rotated = box * rotation
+        if not page_rect.contains(rotated):
+            raise ValueError("Region outside retained page; refusing to truncate")
+        scale = fitz.Matrix(dpi / 72, dpi / 72)
+        origin = (page_rect * scale).irect
+        area = (rotated * scale).irect
+        x0, y0, x1, y1 = (area.x0-origin.x0, area.y0-origin.y0,
+                          area.x1-origin.x0, area.y1-origin.y0)
+        if not (0 <= x0 < x1 <= width and 0 <= y0 < y1 <= height):
+            raise ValueError("Region outside retained pixel bounds")
+        pixel_box = [x0, y0, x1, y1]
+        w, h = x1-x0, y1-y0
+        if w*h > settings["max_pixels"]:
+            raise ValueError("Region pixel limit exceeded")
+        pix = fitz.Pixmap(data)
+        if pix.n != 3 or pix.alpha:
+            raise ValueError("Expected retained RGB image")
+        samples = pix.samples_mv
+        stride = pix.stride
+        cropped = b"".join(samples[y*stride+x0*3:y*stride+x1*3]
+                           for y in range(y0,y1))
+        result = fitz.Pixmap(fitz.csRGB, w, h, cropped, False)
+        result.set_dpi(dpi, dpi)
+        output = result.tobytes("png")
+    if len(output) > settings["max_png_bytes"]:
+        raise ValueError("Region PNG byte limit exceeded")
+    return output, {
+        "capture_id": capture_id, "source_pdf_sha256": record["identity"]["source_pdf_sha256"],
+        "source_page": number, "printed_page_label": record["printed_page_label"],
+        "parent_image_sha256": record["image_sha256"], "region_sha256": _sha(output),
+        "requested_bbox_pt": requested, "pixel_bbox": pixel_box, "dpi": dpi,
+        "coordinate_space": "unrotated_pymupdf_points",
+        "quality_policy": "SOURCE_ONLY_UNINTERPRETED",
+        "original_required": False, "writes": False,
+    }
+
+
 def _report(capture_id, first, last, source_count, total, started):
     return {
         "capture_id": capture_id, "source_pages": source_count,
