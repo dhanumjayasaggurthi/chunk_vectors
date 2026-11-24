@@ -396,10 +396,14 @@ def _visuals_near_caption(page, caption, *, max_distance=450):
         if len(bb)!=4 or not all(math.isfinite(float(n)) for n in bb):
             return False
         left,top,right,bottom=[float(n) for n in bb]
-        if left>=right or top>=bottom:
+        # Vector plot primitives are often exactly horizontal or vertical
+        # zero-thickness paths; rejecting those loses the chart grid/axes.
+        if left>right or top>bottom or (left==right and top==bottom):
             return False
         # Coarse caption-column affinity: use source geometry, not labels.
         overlap=max(0.0,min(x1,right)-max(x0,left))
+        if left==right and x0<=left<=x1:
+            overlap=1.0
         if overlap<=0:
             return False
         gap=max(0.0,top-cap[3],cap[1]-bottom)
