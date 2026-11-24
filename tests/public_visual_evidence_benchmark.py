@@ -262,6 +262,26 @@ def check(spec, config):
                         data,provenance=read_region(retained,cid,i,box,settings=config["visual_evidence"])
                         assert data and not provenance["original_required"]
                         figure_crops+=1
+        enrichment_pages=0
+        enrichment_config=config.get("enrichment_validation")
+        if enrichment_config:
+            from visual_enrichment import prepare_page,messages,validate_response
+            # Test captioned AND uncaptioned pages where available. Use retained
+            # evidence only. A mock response is contract testing, not AI quality.
+            sample=sorted({first, *[i for i,_ in figure_refs[:enrichment_config["max_caption_pages"]]]})
+            for i in sample:
+                pkt=prepare_page(retained,cid,i,visual_settings=config["visual_evidence"],
+                                 config=enrichment_config["settings"])
+                assert len(messages(pkt,enrichment_config["settings"])[1]["content"])==2
+                candidates=pkt["context"]["candidates"]
+                target=candidates[0]["id"] if candidates else "page"
+                quote=candidates[0]["caption"][:20] if candidates else ""
+                mock=json.dumps({"observations":[{"target":target,
+                    "observation":"Visual evidence requires review","caption_quote":quote,
+                    "uncertainty":"limited"}],"limitations":["Mock response only"]})
+                result=validate_response(mock,pkt,enrichment_config["settings"])
+                assert result["requires_review"] and not result["source_facts_verified"]
+                enrichment_pages+=1
         for vid,i,status,digest,path_count in vector_refs:
             inv,meta=read_vectors(root/"vectors",vid,i,settings=vector_settings)
             assert inv["status"]==status and not meta["original_required"]
@@ -321,6 +341,7 @@ def check(spec, config):
             "figure_candidates":figure_count,"figure_hint_regions":figure_hints,
             "post_source_figure_crop_reads":figure_crops,"figure_detector_fallback_pages":figure_fallback_pages,
             "figure_anchor_ids":sorted(figure_ids),
+            "mock_enrichment_contract_pages":enrichment_pages,
         }
 
 

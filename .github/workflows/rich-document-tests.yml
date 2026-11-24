@@ -14,6 +14,10 @@ on:
       - tests/test_rich_document.py
       - figure_recovery.py
       - visual_evidence.py
+      - visual_enrichment.py
+      - azure_client.py
+      - tests/test_visual_enrichment.py
+      - profiles/visual_enrichment_example.json
       - tests/public_visual_evidence_benchmark.py
       - tests/public_visual_evidence_sources.json
       - profiles/visual_evidence_example.json
@@ -67,7 +71,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "PyYAML>=6,<7" "psycopg2-binary>=2.9,<3" "tiktoken>=0.7,<1"
+      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "PyYAML>=6,<7" "psycopg2-binary>=2.9,<3" "tiktoken>=0.7,<1" "requests>=2.32,<3"
       - name: CI-only local config
         run: |
           cat > config.ini <<'EOF'
@@ -86,6 +90,7 @@ jobs:
       - run: python -m py_compile db.py db_pool.py configurable_chunking.py semantic_chunking_v2.py table_continuity.py metadata_extractor.py
       - run: python -m unittest discover -s tests -p test_rich_document.py -v
       - run: python -m unittest discover -s tests -p test_figure_recovery.py -v
+      - run: python -m unittest discover -s tests -p test_visual_enrichment.py -v
       - run: python -m unittest discover -s tests -p test_source_evidence_archive.py -v
       - run: python -m unittest discover -s tests -p test_deferred_visual_native.py -v
       - run: python -m unittest discover -s tests -p test_empty_table_deferred.py -v
@@ -114,7 +119,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "PyYAML>=6,<7" "psycopg2-binary>=2.9,<3" "tiktoken>=0.7,<1"
+      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "PyYAML>=6,<7" "psycopg2-binary>=2.9,<3" "tiktoken>=0.7,<1" "requests>=2.32,<3"
       - name: CI-only local config
         shell: bash
         run: |
@@ -131,6 +136,7 @@ jobs:
           gcp_key_path=not-used.json
           EOF
       - run: python -m unittest discover -s tests -p test_figure_recovery.py -v
+      - run: python -m unittest discover -s tests -p test_visual_enrichment.py -v
 
   public-visual-evidence:
     runs-on: ubuntu-latest

@@ -1,0 +1,17 @@
+{
+  "section": "AZURE_OPENAI_CHAT",
+  "model": "example-vision-model",
+  "deployment": "example-vision-deployment",
+  "deployment_revision": "example-immutable-model-revision",
+  "prompt": "Describe visible scientific or regulatory content qualitatively. Preserve uncertainty.",
+  "image_detail": "high",
+  "token_parameter": "max_tokens",
+  "temperature": 0,
+  "max_output_tokens": 1200,
+  "max_image_bytes": 20000000,
+  "max_context_bytes": 100000,
+  "max_response_bytes": 50000,
+  "max_observations": 32,
+  "timeout_seconds": 120,
+  "authorized_provider": false
+}
