@@ -13,6 +13,8 @@ on:
       - processing_profile.py
       - tests/test_rich_document.py
       - figure_recovery.py
+      - source_evidence_archive.py
+      - tests/test_source_evidence_archive.py
       - tests/test_deferred_visual_native.py
       - tests/test_empty_table_deferred.py
       - deferred_ocr.py
@@ -76,10 +78,11 @@ jobs:
           [GCP]
           gcp_key_path=not-used.json
           EOF
-      - run: python -m py_compile rich_document.py translation_stage.py pdf_processor.py page_stage.py extracted_source.py processing_profile.py figure_recovery.py logger.py
+      - run: python -m py_compile rich_document.py translation_stage.py pdf_processor.py page_stage.py extracted_source.py processing_profile.py figure_recovery.py source_evidence_archive.py logger.py
       - run: python -m py_compile db.py db_pool.py configurable_chunking.py semantic_chunking_v2.py table_continuity.py metadata_extractor.py
       - run: python -m unittest discover -s tests -p test_rich_document.py -v
       - run: python -m unittest discover -s tests -p test_figure_recovery.py -v
+      - run: python -m unittest discover -s tests -p test_source_evidence_archive.py -v
       - run: python -m unittest discover -s tests -p test_deferred_visual_native.py -v
       - run: python -m unittest discover -s tests -p test_empty_table_deferred.py -v
       - run: python -m unittest discover -s tests -p test_deferred_ocr.py -v
