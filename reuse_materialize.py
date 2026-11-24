@@ -182,6 +182,7 @@ def quality_summary(rows, policy):
     links and avoidable tiny-chunk prevalence before optional embeddings.
     """
     import collections
+    import re
     import tiktoken
     if not rows:
         raise ValueError("No prepared chunks")
@@ -192,6 +193,8 @@ def quality_summary(rows, policy):
     table_ids=set()
     multi_page_tables=set()
     semantic=policy.get("boundary_mode","v1")=="semantic_v2"
+    packed_chunks=0
+    packed_source_components=0
     exceptional=collections.Counter()
     short_reasons=collections.Counter()
     issues=[]
@@ -218,14 +221,40 @@ def quality_summary(rows, policy):
                 issues.append(f"broken neighbor links chunk {index}")
             if not meta.get("section_id"):
                 issues.append(f"missing section_id chunk {index}")
-        if tid:=meta.get("table_id"):
+        for tid in meta.get("table_ids") or (
+                [meta["table_id"]] if meta.get("table_id") else []):
             table_ids.add(tid)
             if meta.get("table_continuation_verified"):
                 multi_page_tables.add(tid)
+        for component in meta.get("table_components",[]):
+            if component.get("table_id"):
+                table_ids.add(component["table_id"])
+                if component.get("continuation_verified"):
+                    multi_page_tables.add(component["table_id"])
+        components=meta.get("source_components",[])
+        if components:
+            packed_chunks+=1
+            packed_source_components+=len(components)
+            if len(components)<2 or meta.get("packing_policy")!="merge_forward":
+                issues.append(f"invalid packing descriptor chunk {index}")
+            referenced=set()
+            for component in components:
+                if (not isinstance(component,dict)
+                        or type(component.get("page_start")) is not int
+                        or type(component.get("page_end")) is not int
+                        or component["page_start"]<start
+                        or component["page_end"]>end
+                        or not re.fullmatch(r"[0-9a-f]{64}",
+                                            component.get("text_sha256",""))):
+                    issues.append(f"invalid source component chunk {index}")
+                    continue
+                referenced.update(component.get("table_ids",[]))
+            if referenced!=set(meta.get("table_ids",[])):
+                issues.append(f"packed source table lineage mismatch chunk {index}")
         for reason in meta.get("exceptional_splits",[]):
             exceptional[reason]+=1
         if size<floor:
-            if meta.get("table_id"):
+            if meta.get("table_id") or meta.get("table_ids"):
                 short_reasons["table_boundary"]+=1
             elif meta.get("previous_chunk_id") is None or meta.get("next_chunk_id") is None:
                 short_reasons["document_boundary"]+=1
@@ -246,6 +275,9 @@ def quality_summary(rows, policy):
         "chunks_above_budget":sum(x>limit for x in lengths),
         "short_chunk_categories":dict(short_reasons),
         "exceptional_split_categories":dict(exceptional),
+        "packed_chunks":packed_chunks,
+        "packed_source_components":packed_source_components,
+        "estimated_original_chunks":len(rows)+packed_source_components-packed_chunks,
         "logical_tables":len(table_ids),
         "linked_multi_page_tables":len(multi_page_tables),
         "structural_errors":len(issues),
