@@ -410,6 +410,7 @@ class PDFProcessor:
         preserve_uninterpreted_visuals: bool = False,
         max_visual_regions_per_page: int = 256,
         empty_table_policy: str = "fail",
+        profile_page_timings: bool = False,
     ):
         self.strict = strict
         self.capture_rich_text = capture_rich_text
@@ -423,6 +424,12 @@ class PDFProcessor:
         if empty_table_policy=="preserve_defer" and not preserve_uninterpreted_visuals:
             raise ValueError("empty_table_policy=preserve_defer requires source preservation")
         self.empty_table_policy = empty_table_policy
+        if type(profile_page_timings) is not bool:
+            raise ValueError("profile_page_timings must be a boolean")
+        self.profile_page_timings = profile_page_timings
+        self.profiled_table_detection_seconds = 0.0
+        self.profiled_table_extraction_seconds = 0.0
+        self.profiled_pages = 0
         self._image_digest_cache: dict[int, tuple[str, int]] = {}
         self.max_render_pixels = max_render_pixels
         self.file_path = file_path
@@ -833,7 +840,13 @@ class PDFProcessor:
         if self.strict and plumb_page is not None:
             from table_extractor import TableExtractor
             extractor = TableExtractor(self.file_path, summarise=False)
+            if self.profile_page_timings:
+                from time import perf_counter
+                started=perf_counter()
             detected = plumb_page.find_tables(TABLE_SETTINGS)
+            if self.profile_page_timings:
+                self.profiled_table_detection_seconds += perf_counter()-started
+                started=perf_counter()
             candidates = [
                 (idx, table, table.extract())
                 for idx, table in enumerate(detected)
@@ -844,6 +857,9 @@ class PDFProcessor:
                     preserve_source=self.capture_table_structure))
                 for idx, table, raw in candidates
             ]
+            if self.profile_page_timings:
+                self.profiled_table_extraction_seconds += perf_counter()-started
+                self.profiled_pages += 1
             valid_tables = [table for _, table, _, result in assessed
                             if result is not None]
             staged_table_results = []
