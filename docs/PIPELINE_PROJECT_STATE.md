@@ -123,6 +123,14 @@ Regression in tests/test_deferred_ocr.py: test_z_large_enqueue_releases_reads_be
 
 Next local action after downloading the new deferred_ocr.py: no re-extraction and no init. Rerun deferred_ocr.py enqueue for document 2721ac39536ef7b439091e3018506b426bda3616c5a76e4271fd29e0b8abfb86, with the same OCR profile and --apply, then scoped status. Expect documents=1, candidates=323, inserted=323 and PENDING=323 on first successful enqueue; if a prior run inserted rows, lower insert count is valid if status count reconciles. No GCP calls until a separate explicit run --apply.
 
+## 2026-11-24 — Original-PDF OCR enqueue recovery completed (USER-VERIFIED)
+
+**Original 778-page PBRER real database outcome:** following the DB lease lifetime fix, the user copied the corrected deferred_ocr.py and reran the isolated queue enqueue. Result exactly: `documents=1`, `candidates=323`, `inserted=323`, `writes=true`. Subsequent source-scoped `deferred_ocr.py status`: `PENDING=323`, `writes=false`. Previous `pool exhausted max=2` failure is resolved on the real original document, not only in synthetic CI. Native PDF content, published pages, source tables and semantic chunks were not modified. **Zero GCP OCR calls to date.**
+
+**Next action — P0 small GCP pilot:** inspect the verified local profile's actual GCP project quota and data-processing approval. With `cv_corpus_deferred_ocr_v1.yml`, run at most 8 jobs / 2 workers with explicit `--doc-id 2721ac39536ef7b439091e3018506b426bda3616c5a76e4271fd29e0b8abfb86` and `--apply`. This **sends source PDF clips to Google Cloud Vision and may incur charges**; do not execute automatically. Collect command statuses, elapsed seconds, source-scoped queue status, confidence/word-polygon coverage and any retry error codes before increasing throttle. The configured 1,500 rpm/1,500 ipm are *not evidence* that GCP grants those quotas. For fleet 3.2M/15d SLA, measure candidate-count distribution and pilot mean/p95 Vision latency before forecasting OCR workers.
+
+Do not rerun native extraction/queue init/enqueue. Existing PENDING=323 and the project-state URL are the handoff checkpoints.
+
 ## What is NOT done
 
 - **Deferred OCR processing implementation exists**, with explicit source-referenced rendering, bounded batches, global quotas and durable retries. It has **not** been invoked against original sources/GCP. Enrichment output is not yet rejoined with retrieval chunks; reconcile duplicates and original page/table geometry before exposing derived text.
