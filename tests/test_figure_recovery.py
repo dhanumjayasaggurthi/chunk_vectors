@@ -293,5 +293,90 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 
+
+class DerivativePageEvidenceTests(unittest.TestCase):
+    def _fixture(self, folder):
+        import fitz
+        from PIL import Image, ImageDraw
+        source = folder / "mixed.pdf"
+        image = Image.new("RGB", (200, 120), "white")
+        ImageDraw.Draw(image).ellipse((15, 15, 180, 100), outline="black", width=5)
+        stream = io.BytesIO()
+        image.save(stream, format="PNG")
+        with fitz.open() as doc:
+            page = doc.new_page(width=612, height=792)
+            page.insert_text((60, 70), "Figure 1: Reporting rates by interval")
+            for x in range(100, 500, 80):
+                page.draw_line((x, 130), (x, 280))
+                page.draw_line((x-8, 130), (x+8, 130))
+                page.draw_line((x-8, 280), (x+8, 280))
+            page.draw_polyline([(100,220),(180,190),(260,230),(340,180),(420,200)])
+            page = doc.new_page(width=612, height=792)
+            for x in (60, 230, 400):
+                page.insert_image(fitz.Rect(x, 100, x+150, 220), stream=stream.getvalue())
+            page.insert_text((60, 250), "Fig. 2. Three microscopy panels")
+            page.set_rotation(90)
+            page = doc.new_page(width=612, height=792)
+            page.insert_image(page.rect, stream=stream.getvalue())
+            doc.set_page_labels([{"startpage":0,"style":"D","firstpagenum":1340}])
+            doc.save(source)
+        return source
+
+    def test_derivative_evidence_survives_source_removal_and_replay(self):
+        from visual_evidence import capture, verify, _paths
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = self._fixture(folder)
+            root = folder / "retained"
+            original = source.read_bytes()
+            kwargs = dict(dpi=150, policy_id="synthetic-test",
+                          authorized_page_derivatives=True)
+            result = capture(source, root, 1, 3, **kwargs)
+            self.assertEqual(result["verified_pages"], 3)
+            self.assertFalse(result["purge_safe"])
+            self.assertFalse(result["original_copied"])
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(result["capture_id"], capture(source,root,1,3,**kwargs)["capture_id"])
+            self.assertEqual(len(list(root.rglob("*.png"))),3)
+            self.assertEqual(len(list(root.rglob("*.json"))),3)
+            self.assertEqual(list(root.rglob("*.pdf")),[])
+            png, manifest = _paths(root,result["capture_id"],2)
+            record = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(record["page_rotation"],90)
+            self.assertEqual(record["printed_page_label"],"1341")
+            self.assertGreater(record["pixel_width"],record["pixel_height"])
+            source.unlink()  # synthetic fixture only
+            self.assertTrue(verify(root,result["capture_id"],1,3)["local_content_verified"])
+            with png.open("ab") as f:
+                f.write(b"tamper")
+            with self.assertRaisesRegex(ValueError,"checksum/size"):
+                verify(root,result["capture_id"],1,3)
+
+    def test_derivative_policy_and_range_fail_before_writes(self):
+        from visual_evidence import capture
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = self._fixture(folder)
+            root = folder / "retained"
+            with self.assertRaises(PermissionError):
+                capture(source,root,1,3)
+            with self.assertRaisesRegex(ValueError,"policy identifier"):
+                capture(source,root,1,3,authorized_page_derivatives=True)
+            with self.assertRaisesRegex(ValueError,"physical page range"):
+                capture(source,root,1,4,policy_id="test",authorized_page_derivatives=True)
+            self.assertFalse(root.exists())
+
+    def test_derivative_missing_page_fails_verification(self):
+        from visual_evidence import capture, verify
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = self._fixture(folder)
+            root = folder / "retained"
+            result = capture(source,root,1,1,dpi=150,policy_id="test",
+                             authorized_page_derivatives=True)
+            with self.assertRaises(FileNotFoundError):
+                verify(root,result["capture_id"],1,3)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,17 @@
 
 **This is the canonical handoff link for a new conversation.** Read this document and [native_throughput_semantic_v2.md](native_throughput_semantic_v2.md), inspect branch HEAD, then work from the P0 section below. Update this document whenever implementation, validation, benchmarks or priorities change.
 
+
+## P0 UPDATE — derivative-only retention confirmed; 15-candidate real-document baseline
+
+User explicitly confirmed originals must be purged after 15 days: **do not retain original PDF/DOCX copies or rely on source-archive fallback**. Only policy-permitted extracted/stored content remains. Full-page rendered derivatives can be sensitive substitutes and require separate explicit policy approval; no original archives have been authorized. Prior archive-option discussion below is historical, not the selected design.
+
+Real 10-page article rerun on corrected inventory: **15 caption candidates (previously 28), unique continuous figures 1–15; 13 mixed raster/vector, 2 embedded raster; physical pages 3–9, printed labels 1342–1348; page-spanning images unassigned; no writes/cloud calls.** Accepted as caption-discovery baseline only. Screenshots confirm Figures 7–12 include SEM panels, logarithmic profiles, multi-panel plots, and the separate PBRER Figures 1/3 have error bars and statistical narrative. No complete visual association or numerical interpretation established.
+
+New opt-in `visual_evidence.py` pilot renders bounded physical page ranges into RGB PNG derivatives and immutable per-page manifests (source SHA, page/label/rotation/geometry, DPI, renderer version, image SHA). Verify by capture ID without original source. Explicit full-page derivative permission and policy ID required; no original PDF/DOCX copy, no cloud/DB calls. It renders all selected pages deliberately for validation, not as a production storage recommendation. Local verification never implies production durability or purge safety. Synthetic tests added to existing figure CI; latest CI and real-document validation must be checked, not assumed.
+
+Next: benchmark this pilot on authorized 10-page PDF derivatives, then 778-page PBRER page ranges. Production must retain original-resolution extracted raster/inline images, vector/plot evidence, native text, source table grids, captions and figure/panel links, with page-render fallback for scanned/ambiguous pages only where allowed. Add source-independent OCR and multimodal LLM enrichment from stored evidence, separately versioned and evidence-grounded; never send source data to a provider without approval. DOCX evidence adapter, streaming integration, durability gate, storage policy, throughput sizing and production scheduling remain open. **Do not rerun native extraction or outstanding cloud OCR just to validate this pilot.**
+
 ## Objective and safety contract
 
 Extract **3.2 million regulatory PDFs/DOCXs, approximately 4 TB, within 15 calendar days** into PostgreSQL. Preserve original native text, rich formatting, table-cell grids, page/bbox/source version, images/figures and language provenance. Support independent OCR/vision, multilingual translations, semantic chunks and optional embeddings; keep all knobs and destination names configurable.

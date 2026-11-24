@@ -2,6 +2,15 @@
 
 **Priority: P0 release blocker.** The intake PDFs/DOCXs are available for 15 days and may then be purged. A native-page checkpoint, populated OCR queue, text chunk, translation, or chart summary is **not** proof that all source evidence is safely preserved. If an item depends on an original file path after purge, it is *not recoverable*. The original published 778-page PBRER currently has 219 unprocessed OCR source assets and 26 VISUAL_PENDING assets (last user report); this is explicitly **NOT retention ready**.
 
+
+## Selected policy (user confirmed 2026-11-24)
+
+**Derivative-only. No byte-identical PDF/DOCX originals may be retained after purge.** The archive-copy option described below is historical/not applicable to this corpus. Do not enable it. Extracted page images, original-resolution image regions, vector evidence and other derivatives remain subject to the organization's approved storage and retention policy. In particular, full-page PNGs may constitute a prohibited substitute: explicitly confirm permission before using the pilot below.
+
+The real corrected 10-page inventory now returns 15 distinct numbered caption candidates (1–15), 13 mixed and 2 raster, with zero reported DB/cloud writes. Caption discovery is not proof of figure-region completeness.
+
+`visual_evidence.py` is a bounded PDF derivative pilot. It captures RGB PNG and source-linked manifest per physical page with explicit permission (`--authorized-page-derivatives`, `--policy-id`), 150–400 DPI, 50 pages/call, pixel and byte bounds; original files are never copied. `verify` reads only retained derivatives by capture ID; missing or corrupt pages fail. It does not replace native text/table extraction or native-resolution raster/vector retention. It does not write PostgreSQL, invoke any LLM, assert durable storage or authorize purge. Synthetic source-removal, tamper, rotation and policy tests are included in figure recovery tests. A verified local pilot does not establish fleet readiness.
+
 ## First policy decision (not optional)
 
 Determine whether the purge agreement permits retaining a **byte-identical immutable copy** in the authorized output storage after the intake system deletes its copy. The legal/contractual retention rules apply to any copies, backups, rendered images, source text and derived artifacts as applicable. Do not copy an original or create persistent image snapshots until permitted storage and deletion terms are established.
