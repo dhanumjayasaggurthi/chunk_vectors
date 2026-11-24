@@ -24,6 +24,7 @@ Repo branch above. Windows local validation directory: chunk_vectors_validation,
 - 778-page PBRER: initial strict extraction rejected 26 empty detected table regions (pages 117–171); five additional genuine page tables had source cells. New opt-in 'empty_table_policy=preserve_defer' completed 778 pages. Read-only PostgreSQL audit: **778/778 published, 26 unresolved source geometries persisted, five genuine tables retained, zero new version errors/checkpoints, no provenance issues**. Earlier 752 strict-version checkpoints isolated.
 - 778-page fresh processing: ~111.77 sec; **417.7 pages/min** on one native worker; pdf_parse ~103.785s; checkpoint SQL ~5.31s; publish SQL ~0.75s. OCR and embeddings OFF.
 - Semantic-v2 read-only preview of 778 pages: **5,601 chunks in ~10.96s** with 800 maximum tokens, 80 overlap, embeddings OFF. This proves preparation but NOT semantic quality or cost; avoid persisting chunks before review of quality distribution.
+- **Latest real-document quality preview (user report)**: 5,601 chunks, token p50=66, p90=363, p95=430, max=798; 4,321/5,601 (77.1%) below min=120; 1,867 underfilled table-boundary and 2,453 structural-boundary; 2,195 distinct table IDs, six verified cross-page groups, 27 exceptional split events (four paragraph, 21 paragraph-word, two table-row-word); zero oversized chunks, zero broken structural links. **Quality gate: do not materialize/embeddings yet**. These are observed results, not a fleet benchmark.
 - Benchmark corpus: 11 mixed regulatory PDFs / 11,584 pages, includes 2,548 and 3,082-page outliers. Synthetic 100-document CI is not original-document stress evidence.
 
 ## Existing implementation
@@ -67,6 +68,20 @@ Native profile uses visual_processing=preserve_defer, empty_table_policy=preserv
 Semantic-v2 implementation identity is also versioned internally (revision 2), **even when YAML is unchanged**; this prevents stale rows being SKIPPED after boundary/neighbor logic changes. Legacy profile fingerprints are preserved. Verify versioned output target before any materialization; never silently mix old/new chunk content.
 
 Note: changing semantic chunk rules changes its profile fingerprint, and the preview chunk count may change. **Do not overwrite a previously versioned output without explicit isolation.**
+
+## Step 59 — configurable small-chunk packing, in development
+
+**Cause verified in current code**: semantic_v2 previously never consulted chunking.small_section_policy or min_tokens for consolidation. It flushed on every new table ID and type boundary, which left thousands of undersized standalone table and text chunks. This does not imply the 2,195 table detections were invalid.
+
+**New opt-in**: chunking.small_section_policy=merge_forward. The existing 'keep' option preserves old chunk boundaries. Merge compatible short retrieval chunks only while original section path remains the same, within configured max token limit, page-span <= small_chunk_max_pages (default 2, range 1..8), and distinct source tables <= small_chunk_max_tables (default 3, range 1..12). Unknown sections may merge only within the same page; across different section headings never merge. Do not fabricate or truncate source content.
+
+**Source fidelity**: each packed chunk records source_components = original page spans, table IDs, content types and SHA-256 of its unmodified retrieval text; table_components references original distinct logical table IDs/geometry. Multiple source tables are never misrepresented by a single table_id. Original source_tables and page rows remain untouched. Derived previous/next IDs and section offsets are recalculated, with materialization mapping to the actual persisted profile-versioned IDs. Internal semantic implementation version **3** prevents stale output reuse.
+
+**Preview quality**: reuse_materialize.py preview reports packed_chunks, packed_source_components, estimated_original_chunks, table_ids, page provenance validation and unchanged token percentiles/structural checks. No new CLI/scripts/tables.
+
+**Original 778-page comparison after copying updated branch**: do not overwrite original cv_corpus_semantic_v2.yml. Create a versioned local candidate profile with small_section_policy=merge_forward and limits 2 pages/3 tables, preserving current source table and embedding.enabled=false; run one existing read-only preview. Compare new chunk count and p50/below-120 against 5,601/66/4,321, verify zero structural_errors, zero over-budget, exactly 2,195 logical source-table IDs (unless a genuine preexisting issue is separately fixed) and six cross-page groups. No new page extraction or DB writes.
+
+**CI**: [Windows/Linux Python + PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45335880576) PASS for commit 6e5e1a46 (targeted source preservation + grouping + profile validation). Rich-document CI link to be recorded after final result. This verifies synthetic behavior only; real-document packed counts not yet measured.
 
 ## CI and correctness gates
 
