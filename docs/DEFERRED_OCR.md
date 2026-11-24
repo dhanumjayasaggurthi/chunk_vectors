@@ -70,6 +70,14 @@ Read-only discovery **confirmed exactly 323 source-linked candidates** for the 7
 - The OCR table is deliberately separate from native pages. A future versioned overlay must reconcile duplicate native/OCR text, resolve rotated-page coordinates, and expose source-linked content to semantic materialization. This is **NOT implemented yet**; do not claim end-to-end OCR-to-chunks completion.
 - Do not open new approval queues. VISUAL_PENDING is an automated retry/enrichment classification, not a request for a person to transcribe each source graphic.
 
+## Current recovery — original 778-page OCR enqueue (2026-11-24)
+
+- Read-only discovery found exactly 323 assets, no writes or cloud calls.
+- init --apply succeeded and created the isolated OCR job/result table; original pages were not changed.
+- First enqueue --apply failed with PostgreSQL pool max=2 exhaustion. Cause: two suspended Python generators held leases and the insert requested a third; source-scoped status was {}. **Do not increase the pool cap or rerun native PDF extraction.**
+- Fix in deferred_ocr.py closes read leases before yielded document and page batches. Regression covers 70 pages/140 assets, a forced two-lease cap, idempotent 128-row insert batches, and source-scoped status.
+- Next: copy corrected deferred_ocr.py from feature branch and rerun only enqueue for the already-verified doc ID, then status. Expected candidates=323 and PENDING=323, with no GCP calls.
+
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
