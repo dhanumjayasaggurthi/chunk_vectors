@@ -91,7 +91,49 @@ def check(spec, config):
         resumed = capture(source, retained, first, last, **kw)
         assert resumed["rendered_pages"] == 1 and resumed["skipped_verified_pages"] == n-1
         assert digest_file(source) == source_hash
+        selective_result = None
+        if config.get("selective_validation"):
+            mode = {**kw["settings"], **config["selective_validation"],
+                    "selection_mode": "native_text_or_render"}
+            selected = capture(source, root/"selected", first, last, **{**kw,"settings":mode})
+            sid = selected["capture_id"]
+            native = fallback = 0
+            with fitz.open(source) as doc:
+                for i in range(first,last+1):
+                    png, manifest = _paths(root/"selected",sid,i)
+                    record = json.loads(manifest.read_text(encoding="utf-8"))
+                    page = doc[i-1]
+                    if record.get("representation") == "native_text_only_candidate":
+                        assert not png.exists()
+                        # Independently enforce no non-text paint operations.
+                        assert all(op[0]=="fill-text" for op in page.get_bboxlog())
+                        assert not page.get_image_info()
+                        assert not page.get_drawings()
+                        assert page.first_annot is None and page.first_widget is None
+                        native += 1
+                    else:
+                        reference, _ = _paths(retained,cid,i)
+                        assert digest_file(png) == digest_file(reference)
+                        fallback += 1
+            assert native+fallback == n
+            assert selected["native_text_only_pages"] == native
+            assert selected["verified_image_pages"] == fallback
+            selected_replay = capture(source, root/"selected",first,last,**{**kw,"settings":mode})
+            assert selected_replay["rendered_pages"] == 0
+            assert selected_replay["new_native_text_only_pages"] == 0
+            assert selected_replay["skipped_verified_pages"] == n
+            selective_result = {
+                "native_only_candidate_pages": native, "rendered_fallback_pages": fallback,
+                "rendered_image_bytes":selected["image_bytes"],
+                "capture_seconds":selected["elapsed_seconds"],
+                "replay_seconds":selected_replay["elapsed_seconds"],
+                "requires_native_reconciliation":bool(native),
+            }
         source.unlink()
+        if selective_result is not None:
+            post = verify(root/"selected",sid,first,last,settings=mode)
+            assert post["verified_pages"] == n
+            selective_result["verified_after_source_removal"] = n
         restored = verify(retained, cid, first, last, settings=config['visual_evidence'])
         assert restored["verified_pages"] == n
         assert not list(retained.rglob("*.pdf"))
@@ -116,7 +158,7 @@ def check(spec, config):
             "replay_skipped_pages": replay["skipped_verified_pages"],
             "resume_rendered_pages": resumed["rendered_pages"],
             "verified_after_source_removal": restored["verified_pages"],
-            "tamper_rejected": True,
+            "tamper_rejected": True, "selective":selective_result,
         }
 
 

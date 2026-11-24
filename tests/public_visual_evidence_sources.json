@@ -29,6 +29,18 @@
       "https://www.ema.europa.eu/en/documents/assessment-report/balversa-epar-public-assessment-report_en.pdf",
       1,
       0
+    ],
+    [
+      "nist_legacy_sem_calibration",
+      "https://nvlpubs.nist.gov/nistpubs/Legacy/IR/nbsir77-1248.pdf",
+      1,
+      0
+    ],
+    [
+      "historical_federal_register",
+      "https://www.govinfo.gov/content/pkg/FR-1950-04-06/pdf/FR-1950-04-06.pdf",
+      1,
+      0
     ]
   ],
   "long_document_stress": {
@@ -43,5 +55,9 @@
       "max_pixels": 500000,
       "max_png_bytes": 1000000
     }
+  },
+  "selective_validation": {
+    "min_native_chars": 100,
+    "max_native_json_bytes": 8000000
   }
 }

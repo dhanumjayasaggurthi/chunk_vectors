@@ -295,6 +295,56 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_selective_native_payload_and_complex_render_fallback(self):
+        import fitz
+        from visual_evidence import capture, verify, _paths
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = folder / "selective.pdf"
+            with fitz.open() as doc:
+                plain = doc.new_page()
+                plain.insert_text((40,40), "Ordinary native text without a drawing")
+                vector = doc.new_page()
+                vector.insert_text((40,40), "Text next to a vector graph")
+                vector.draw_line((20,80),(180,100))
+                raster = doc.new_page()
+                pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0,0,20,20), False)
+                pix.clear_with(200)
+                raster.insert_image(fitz.Rect(10,10,100,100),pixmap=pix)
+                hidden = doc.new_page()
+                hidden.insert_text((40,40), "Invisible OCR layer", render_mode=3)
+                hidden.insert_text((40,70), "Visible text")
+                doc.new_page()
+                doc.save(source)
+            settings = dict(dpi=150, workers=2, batch_pages=2, max_in_flight=2,
+                            selection_mode="native_text_or_render", min_native_chars=10)
+            kw = dict(policy_id="test", authorized_page_derivatives=True)
+            result = capture(source,folder/"out",1,5,settings=settings,**kw)
+            self.assertEqual(result["rendered_pages"],4)
+            self.assertEqual(result["native_text_only_pages"],1)
+            self.assertEqual(result["new_native_text_only_pages"],1)
+            self.assertTrue(result["native_reconciliation_required"])
+            png, manifest = _paths(folder/"out",result["capture_id"],1)
+            self.assertFalse(png.exists())
+            data=json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertIn("Ordinary native text",json.dumps(data["native_page"]))
+            replay = capture(source,folder/"out",1,5,settings=settings,**kw)
+            self.assertEqual(replay["rendered_pages"],0)
+            self.assertEqual(replay["skipped_verified_pages"],5)
+            self.assertEqual(replay["native_text_only_pages"],1)
+            self.assertFalse(replay["derivative_writes"])
+            all_pages = capture(source,folder/"out",1,5,
+                                settings={**settings,"selection_mode":"all_pages"},**kw)
+            self.assertNotEqual(all_pages["capture_id"],result["capture_id"])
+            self.assertEqual(all_pages["rendered_pages"],5)
+            source.unlink()
+            self.assertEqual(verify(folder/"out",result["capture_id"],1,5,
+                                    settings=settings)["verified_image_pages"],4)
+            data["native_page"]["blocks"][0]["lines"][0]["spans"][0]["text"]="tamper"
+            manifest.write_text(json.dumps(data),encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,"checksum"):
+                verify(folder/"out",result["capture_id"],1,5,settings=settings)
+
     def test_profile_parallel_replay_and_runtime_identity(self):
         import fitz
         from visual_evidence import capture, verify, load_visual_profile

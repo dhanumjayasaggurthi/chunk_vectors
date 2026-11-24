@@ -6,6 +6,9 @@
     "batch_pages": 16,
     "max_in_flight": 8,
     "max_pixels": 40000000,
-    "max_png_bytes": 100000000
+    "max_png_bytes": 100000000,
+    "selection_mode": "all_pages",
+    "min_native_chars": 100,
+    "max_native_json_bytes": 8000000
   }
 }
