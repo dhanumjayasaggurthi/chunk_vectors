@@ -1,6 +1,6 @@
 # Deferred OCR stage — design, controls and usage
 
-Read [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) first. This stage is implemented on the feature branch; always check current CI and run a no-cloud discovery before authorizing API calls.
+Read [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) first. This stage is implemented and **cloud-free CI passed**, including [Windows/Linux plus disposable PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875585) and [rich-document tests](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875427). No actual GCP OCR calls or original 778-page OCR discovery have been executed. Perform a read-only discovery before authorizing cloud requests.
 
 ## End-to-end contract
 
