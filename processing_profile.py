@@ -159,7 +159,7 @@ def validate_profile(profile: dict) -> None:
             "capture_table_structure", "max_table_source_json_bytes",
             "visual_processing", "max_visual_regions_per_page",
             "worker_backend", "worker_recycle_documents", "profile_stage_timings",
-            "empty_table_policy",
+            "empty_table_policy", "retained_evidence",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -346,6 +346,13 @@ def validate_profile(profile: dict) -> None:
             raise ValueError("extraction.ocr_confidence_min must be 0..1")
         if extract.get("ocr_max_batch_bytes",6_000_000) < 1024 * extract.get("ocr_batch_images",8):
             raise ValueError("OCR batch byte budget too small")
+        if extract.get("retained_evidence") is not None:
+            from visual_evidence import native_capture_config
+            native_capture_config(extract["retained_evidence"])
+            if (worker_backend!="processes" or policy!="preserve_defer"
+                    or extract.get("ocr_enabled",True) or extract.get("chart_descriptions_enabled",True)
+                    or extract.get("table_summaries_enabled",False)):
+                raise ValueError("Retained evidence requires native preserve_defer process workers without inline AI")
     if "deferred_ocr" in profile:
         from deferred_ocr import settings as validate_deferred_ocr
         validate_deferred_ocr(profile)

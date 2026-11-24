@@ -11,6 +11,32 @@ The real corrected 10-page inventory now returns 15 distinct numbered caption ca
 
 `visual_evidence.py` is a bounded PDF derivative pilot. It captures RGB PNG and source-linked manifest per physical page with explicit permission (`--authorized-page-derivatives`, `--policy-id`), 150–400 DPI, 50 pages/call, pixel and byte bounds; original files are never copied. `verify` reads only retained derivatives by capture ID; missing or corrupt pages fail. It does not replace native text/table extraction or native-resolution raster/vector retention. It does not write PostgreSQL, invoke any LLM, assert durable storage or authorize purge. Synthetic source-removal, tamper, rotation and policy tests are included in figure recovery tests. A verified local pilot does not establish fleet readiness.
 
+## Integrated native evidence capture (opt-in, CI pending)
+
+Use the existing extraction profile, retaining its approved schema/table settings. Example only:
+
+~~~yaml
+extraction:
+  worker_backend: processes
+  visual_processing: preserve_defer
+  ocr_enabled: false
+  chart_descriptions_enabled: false
+  table_summaries_enabled: false
+  retained_evidence:
+    root: /approved/extracted/evidence
+    policy_id: approved-policy-identifier
+    renderer: "1.26.0"
+    authorized_page_derivatives: true
+    visual_settings:
+      dpi: 300
+      workers: 1
+      selection_mode: all_pages
+      capture_rasters: false
+      capture_vectors: false
+~~~
+
+Set the root/policy and exact installed renderer to approved actual values (example version is not a current-version claim). Single visual worker is intentional: existing document workers provide parallelism, avoiding nested pools. Evidence semantics are independently versioned, not part of native extraction fingerprint. New native extraction uses the same PDF handle; already published native docs verify/backfill without rewriting native rows. Local evidence report does not certify production durability or purge readiness. For retained OCR, use the same semantic visual settings and renderer. No extra DB table or transaction types; original copies forbidden. Public and PostgreSQL acceptance pending for integration.
+
 ## Deferred OCR from retained evidence (opt-in, CI pending)
 
 The existing deferred OCR profile accepts a retained_evidence mapping; example shape (replace root, policy, renderer and settings with the exact approved capture configuration):

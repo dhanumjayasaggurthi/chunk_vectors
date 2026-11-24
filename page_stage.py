@@ -76,8 +76,16 @@ def settings(profile):
         "worker_recycle_documents":0,
         "profile_stage_timings":False,
         "empty_table_policy":"fail",
+        "retained_evidence":None,
     }
     result.update(opts)
+    if result['retained_evidence'] is not None:
+        from visual_evidence import native_capture_config
+        result['retained_evidence']=native_capture_config(result['retained_evidence'])
+        if (result['worker_backend']!='processes' or result['visual_processing']!='preserve_defer'
+                or result['ocr_enabled'] or result['chart_descriptions_enabled']
+                or result['table_summaries_enabled']):
+            raise ValueError('Retained evidence requires native preserve_defer process workers without inline AI')
     return result
 
 
@@ -732,6 +740,8 @@ def stage_one(
         str(path).encode("utf-8")
     ).hexdigest())
     before=path.stat()
+    retained_cfg=cfg['retained_evidence']
+    evidence_state=(before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)
     source_hash_started=time.monotonic()
     source=source_hash(str(path))
     initial_hash_seconds=time.monotonic()-source_hash_started
@@ -757,14 +767,28 @@ def stage_one(
             empty_table_policy=cfg["empty_table_policy"],
             profile_page_timings=cfg["profile_stage_timings"],
         )
-        # Header-only read is cheap; don't render completed pages during resume.
+        # Existing native publication and evidence checkpoints are independent.
+        evidence=None
         with __import__("fitz").open(str(path)) as pdf:
             page_count=pdf.page_count
             if pdf.is_encrypted:
                 raise ValueError("Encrypted PDF")
-        if published==(source,fingerprint,page_count):
-            return {"doc_id":doc_id,"status":"SKIPPED",
-                    "pages":page_count,"elapsed_seconds":0}
+            if retained_cfg is not None:
+                from visual_evidence import OpenPageCapture
+                evidence=OpenPageCapture(path,source,evidence_state,page_count,retained_cfg)
+            if published==(source,fingerprint,page_count):
+                if evidence is None:
+                    return {"doc_id":doc_id,"status":"SKIPPED","pages":page_count,"elapsed_seconds":0}
+                # Backfill/verify evidence without parsing native rows or touching
+                # previously published tables. No nested process pool.
+                for number in range(1,page_count+1):
+                    evidence.consume(pdf,number)
+                if source_hash(str(path))!=source:
+                    raise RuntimeError("Source PDF changed during evidence backfill")
+                report=evidence.report()
+                return {"doc_id":doc_id,"status":"SKIPPED","pages":page_count,
+                        "elapsed_seconds":round(time.monotonic()-started,2),
+                        "retained_evidence":report}
         errors_total=0
         pages_processed=0
         images_processed=0
@@ -776,6 +800,7 @@ def stage_one(
         for window in proc.iter_page_batches(
             cfg["page_batch_size"],completed_pages=done,
             max_window_raster_bytes=cfg["max_window_raster_bytes"],
+            **({"page_observer":evidence.consume} if evidence is not None else {}),
         ):
             timings["pdf_parse"]+=time.monotonic()-parse_started
             invalid={
@@ -831,6 +856,7 @@ def stage_one(
             or before.st_mtime_ns!=after.st_mtime_ns
             or source_hash(str(path))!=source):
             raise RuntimeError("Source PDF changed during extraction; no publication")
+        evidence_report=evidence.report() if evidence is not None else None
         timings["source_verification"]+=time.monotonic()-verification_started
         if cfg["profile_stage_timings"]:
             timings["pdf_table_detection"]=proc.profiled_table_detection_seconds
@@ -872,6 +898,7 @@ def stage_one(
             "native_extraction_complete":True,
             "visual_enrichment_complete":visuals_deferred==0,
             "visual_assets_deferred_this_run":visuals_deferred,
+            **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
             **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
                 "stage_timings_seconds":{key:round(value,3)
                                          for key,value in timings.items()}}

@@ -564,107 +564,108 @@ def _native_only_payload(page, settings):
     return native, _sha(payload)
 
 
-def _capture_batch(source, root, first, last, identity, state, source_count, settings):
+def _capture_open_page(source, root, pdf, number, identity, state, source_count, settings):
+    """Shared page implementation for standalone and native document workers."""
     import fitz
-    total = rendered = skipped = native_new = native_total = 0
-    dpi = identity['dpi']
+    dpi = identity["dpi"]
     cid = _capture_id(identity)
-    max_pixels, max_png_bytes = settings['max_pixels'], settings['max_png_bytes']
-    with fitz.open(source) as pdf:
-        if pdf.is_encrypted:
-            raise ValueError("Encrypted source PDF")
-        if pdf.page_count != source_count or _source_state(source) != state:
-            raise RuntimeError('Source version changed before page batch')
-        _validate_range(first, last, source_count)
-        for number in range(first, last + 1):
-            if _source_state(source) != state:
-                raise RuntimeError("Source changed during evidence capture")
-            png, manifest = _paths(root, cid, number)
-            # A published manifest is a commit marker, never a mere existence
-            # check. Verify actual stored bytes before skipping a completed page.
-            if manifest.exists():
-                record = _verify_page(root, cid, number, max_pixels=max_pixels, max_png_bytes=max_png_bytes)
-                if record["source_page_count"] != source_count:
-                    raise ValueError("Existing derivative source page count mismatch")
-                total += record["image_bytes"]
-                native_total += record.get("representation") == "native_text_only_candidate"
-                skipped += 1
-                continue
-            # An orphan PNG from a crash before manifest publication is replayed
-            # and accepted only if its bytes agree with the new rendering.
-            page = pdf[number - 1]
-            if settings["selection_mode"] == "native_text_or_render":
-                # Any detector exception must keep the conservative render fallback.
-                try:
-                    candidate = _native_only_payload(page, settings)
-                except Exception:
-                    candidate = None
-                if candidate is not None:
-                    if png.exists():
-                        raise ValueError("Unexpected orphan PNG for native-only candidate")
-                    native, native_hash = candidate
-                    record = {
-                        "identity": identity, "capture_id": cid,
-                        "source_page": number, "source_page_count": source_count,
-                        "printed_page_label": page.get_label(), "page_rotation": page.rotation,
-                        "page_rect": list(page.rect), "page_cropbox": list(page.cropbox),
-                        "page_mediabox": list(page.mediabox),
-                        "rotation_matrix": list(page.rotation_matrix),
-                        "representation": "native_text_only_candidate",
-                        "native_page": native, "native_page_sha256": native_hash,
-                        "native_reconciliation_required": True,
-                        "image_file": None, "image_bytes": 0,
-                        "interpretation_status": "NOT_PERFORMED",
-                    }
-                    if _source_state(source) != state:
-                        raise RuntimeError("Source changed during native evidence capture")
-                    _write_once(manifest, _json_bytes(record))
-                    _verify_page(root, cid, number, max_pixels=max_pixels, max_png_bytes=max_png_bytes)
-                    native_new += 1
-                    native_total += 1
-                    continue
-            predicted = (page.rect * fitz.Matrix(dpi / 72, dpi / 72)).irect
-            if (predicted.width <= 0 or predicted.height <= 0
-                    or predicted.width * predicted.height > max_pixels):
-                raise ValueError(f"PAGE_RENDER_PIXEL_LIMIT: physical page {number}")
-            pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csRGB,
-                                  alpha=False, annots=True)
-            if pix.width * pix.height > max_pixels:
-                raise ValueError(f"PAGE_RENDER_PIXEL_LIMIT: physical page {number}")
-            data = pix.tobytes("png")
-            if not 0 < len(data) <= max_png_bytes:
-                raise ValueError(f"PAGE_RENDER_BYTE_LIMIT: physical page {number}")
+    max_pixels, max_png_bytes = settings["max_pixels"], settings["max_png_bytes"]
+    if _source_state(source) != state:
+        raise RuntimeError("Source changed during evidence capture")
+    png, manifest = _paths(root, cid, number)
+    # A published manifest is a commit marker, never a mere existence
+    # check. Verify actual stored bytes before skipping a completed page.
+    if manifest.exists():
+        record = _verify_page(root, cid, number, max_pixels=max_pixels, max_png_bytes=max_png_bytes)
+        if record["source_page_count"] != source_count:
+            raise ValueError("Existing derivative source page count mismatch")
+        return (record["image_bytes"],0,1,0,int(record.get("representation") == "native_text_only_candidate"))
+    # An orphan PNG from a crash before manifest publication is replayed
+    # and accepted only if its bytes agree with the new rendering.
+    page = pdf[number - 1]
+    if settings["selection_mode"] == "native_text_or_render":
+        # Any detector exception must keep the conservative render fallback.
+        try:
+            candidate = _native_only_payload(page, settings)
+        except Exception:
+            candidate = None
+        if candidate is not None:
+            if png.exists():
+                raise ValueError("Unexpected orphan PNG for native-only candidate")
+            native, native_hash = candidate
             record = {
                 "identity": identity, "capture_id": cid,
-                "source_page": number, "source_page_count": pdf.page_count,
+                "source_page": number, "source_page_count": source_count,
                 "printed_page_label": page.get_label(), "page_rotation": page.rotation,
                 "page_rect": list(page.rect), "page_cropbox": list(page.cropbox),
                 "page_mediabox": list(page.mediabox),
                 "rotation_matrix": list(page.rotation_matrix),
-                "pixel_width": pix.width, "pixel_height": pix.height,
-                "image_file": png.name, "image_bytes": len(data),
-                "image_sha256": _sha(data),
+                "representation": "native_text_only_candidate",
+                "native_page": native, "native_page_sha256": native_hash,
+                "native_reconciliation_required": True,
+                "image_file": None, "image_bytes": 0,
                 "interpretation_status": "NOT_PERFORMED",
             }
-            del pix
-            if settings["capture_rasters"]:
-                inventory = _capture_rasters(root, cid, page, pdf, settings)
-                record.update(raster_inventory=inventory,
-                              raster_inventory_sha256=_sha(_json_bytes(inventory)))
-            if settings["capture_vectors"]:
-                vectors = _vector_inventory(page, settings)
-                record.update(vector_inventory=vectors,
-                              vector_inventory_sha256=_sha(_json_bytes(vectors)))
             if _source_state(source) != state:
-                raise RuntimeError("Source changed during page rendering")
-            _write_once(png, data)
+                raise RuntimeError("Source changed during native evidence capture")
             _write_once(manifest, _json_bytes(record))
-            del data
-            total += _verify_page(root, cid, number, max_pixels=max_pixels, max_png_bytes=max_png_bytes)["image_bytes"]
-            rendered += 1
+            _verify_page(root, cid, number, max_pixels=max_pixels, max_png_bytes=max_png_bytes)
+            return (0,0,0,1,1)
+    predicted = (page.rect * fitz.Matrix(dpi / 72, dpi / 72)).irect
+    if (predicted.width <= 0 or predicted.height <= 0
+            or predicted.width * predicted.height > max_pixels):
+        raise ValueError(f"PAGE_RENDER_PIXEL_LIMIT: physical page {number}")
+    pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csRGB,
+                          alpha=False, annots=True)
+    if pix.width * pix.height > max_pixels:
+        raise ValueError(f"PAGE_RENDER_PIXEL_LIMIT: physical page {number}")
+    data = pix.tobytes("png")
+    if not 0 < len(data) <= max_png_bytes:
+        raise ValueError(f"PAGE_RENDER_BYTE_LIMIT: physical page {number}")
+    record = {
+        "identity": identity, "capture_id": cid,
+        "source_page": number, "source_page_count": pdf.page_count,
+        "printed_page_label": page.get_label(), "page_rotation": page.rotation,
+        "page_rect": list(page.rect), "page_cropbox": list(page.cropbox),
+        "page_mediabox": list(page.mediabox),
+        "rotation_matrix": list(page.rotation_matrix),
+        "pixel_width": pix.width, "pixel_height": pix.height,
+        "image_file": png.name, "image_bytes": len(data),
+        "image_sha256": _sha(data),
+        "interpretation_status": "NOT_PERFORMED",
+    }
+    del pix
+    if settings["capture_rasters"]:
+        inventory = _capture_rasters(root, cid, page, pdf, settings)
+        record.update(raster_inventory=inventory,
+                      raster_inventory_sha256=_sha(_json_bytes(inventory)))
+    if settings["capture_vectors"]:
+        vectors = _vector_inventory(page, settings)
+        record.update(vector_inventory=vectors,
+                      vector_inventory_sha256=_sha(_json_bytes(vectors)))
+    if _source_state(source) != state:
+        raise RuntimeError("Source changed during page rendering")
+    _write_once(png, data)
+    _write_once(manifest, _json_bytes(record))
+    del data
+    size = _verify_page(root, cid, number, max_pixels=max_pixels, max_png_bytes=max_png_bytes)["image_bytes"]
+    return (size,1,0,0,0)
+
+def _capture_batch(source, root, first, last, identity, state, source_count, settings):
+    import fitz
+    totals = [0,0,0,0,0]
+    with fitz.open(source) as pdf:
+        if pdf.is_encrypted:
+            raise ValueError("Encrypted source PDF")
+        if pdf.page_count != source_count or _source_state(source) != state:
+            raise RuntimeError("Source version changed before page batch")
+        _validate_range(first,last,source_count)
+        for number in range(first,last+1):
+            result = _capture_open_page(source,root,pdf,number,identity,state,source_count,settings)
+            totals = [a+b for a,b in zip(totals,result)]
     if _source_state(source) != state:
         raise RuntimeError("Source changed during page batch")
-    return total, rendered, skipped, native_new, native_total
+    return tuple(totals)
 
 
 def _bounded_batches(args_iter, settings):
@@ -728,6 +729,79 @@ def capture_identity(source_hash, settings, policy_id, renderer):
                         max_vector_items=settings["max_vector_items"],
                         max_vector_json_bytes=settings["max_vector_json_bytes"])
     return identity
+
+
+def native_capture_config(value):
+    """Explicit authorization and single-worker budget for native integration."""
+    if (not isinstance(value,dict) or set(value) !=
+            {"root","policy_id","renderer","visual_settings","authorized_page_derivatives"}):
+        raise ValueError("extraction.retained_evidence requires root, policy_id, renderer, visual_settings and authorized_page_derivatives")
+    if value["authorized_page_derivatives"] is not True:
+        raise PermissionError("Explicit approval for full-page PNG derivatives is required")
+    root = value["root"]
+    if not isinstance(root,str) or not root.strip() or not Path(root).is_absolute():
+        raise ValueError("extraction.retained_evidence.root must be absolute")
+    settings = _settings(value["visual_settings"])
+    if settings["workers"] != 1:
+        raise ValueError("Native evidence capture requires visual workers=1; use document process parallelism")
+    capture_identity("0"*64,settings,value["policy_id"],value["renderer"])
+    return {**value,"visual_settings":settings}
+
+
+class OpenPageCapture:
+    """Consume physical pages from the existing process-local PDF handle.
+
+    The caller must hash the source before and after the entire operation
+    under its existing document lock. No database or process pool here.
+    """
+    def __init__(self, source, source_hash, state, count, config):
+        import fitz
+        config = native_capture_config(config)
+        if config["renderer"] != str(fitz.VersionBind):
+            raise ValueError("Configured evidence renderer differs from installed PyMuPDF")
+        self.source = Path(source)
+        self.root = Path(config["root"]).resolve()
+        self.state = state
+        self.count = count
+        _full_range(1,count)
+        if _source_state(self.source) != state:
+            raise RuntimeError("Source changed before native evidence capture")
+        self.settings = config["visual_settings"]
+        self.identity = capture_identity(source_hash,self.settings,config["policy_id"],config["renderer"])
+        self.cid = _capture_id(self.identity)
+        self.next_page = 1
+        self.totals = [0,0,0,0,0]
+        self.elapsed = 0.0
+
+    def consume(self, pdf, number):
+        if (number != self.next_page or pdf.page_count != self.count
+                or pdf.is_encrypted or number > self.count):
+            raise ValueError("Native evidence page sequence/source count mismatch")
+        started = time.monotonic()
+        result = _capture_open_page(self.source,self.root,pdf,number,self.identity,
+                                    self.state,self.count,self.settings)
+        self.totals = [a+b for a,b in zip(self.totals,result)]
+        self.next_page += 1
+        self.elapsed += time.monotonic()-started
+
+    def report(self):
+        if self.next_page != self.count+1 or _source_state(self.source) != self.state:
+            raise RuntimeError("Native evidence incomplete or source changed")
+        size, rendered, skipped, native_new, native_total = self.totals
+        if rendered+skipped+native_new != self.count:
+            raise RuntimeError("Native evidence page reconciliation mismatch")
+        # The outer native stage performs its own full source hash before
+        # accepting this report. No storage durability or purge claim here.
+        return {"capture_id":self.cid,"source_pdf_sha256":self.identity["source_pdf_sha256"],
+                "renderer":self.identity["renderer"],"source_pages":self.count,
+                "verified_pages":self.count,"verified_image_pages":self.count-native_total,
+                "rendered_pages":rendered,"skipped_verified_pages":skipped,
+                "native_text_only_pages":native_total,"new_native_text_only_pages":native_new,
+                "native_reconciliation_required":bool(native_total),
+                "image_bytes":size,"elapsed_seconds":round(self.elapsed,3),
+                "derivative_writes":bool(rendered+native_new),
+                "local_content_verified":True,"durable_storage_verified":False,
+                "purge_safe":False,"original_copied":False,"cloud_calls":False}
 
 
 def capture(source, root, first, last, *, dpi=None, policy_id="",

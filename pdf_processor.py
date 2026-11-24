@@ -544,6 +544,7 @@ class PDFProcessor:
         completed_pages: set[int] | None = None,
         *,
         max_window_raster_bytes: int = 160_000_000,
+        page_observer=None,
     ):
         """Stream bounded page windows, including image-memory backpressure.
 
@@ -580,6 +581,11 @@ class PDFProcessor:
                 )
 
             for i in range(count):
+                # Evidence is independent of native checkpoint reuse. The
+                # observer runs on the same process-local PDF handle and may
+                # fail the document before publishing incomplete evidence.
+                if page_observer is not None:
+                    page_observer(doc,i+1)
                 if i + 1 in completed:
                     continue
                 plumb_page = plumb_doc.pages[i]

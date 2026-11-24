@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster, read_vectors, _json_bytes
+from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster, read_vectors, _json_bytes, OpenPageCapture, _source_state
 
 
 def check(spec, config):
@@ -57,7 +57,21 @@ def check(spec, config):
                 vector_pages += bool(page.get_drawings())
                 text_pages += bool(page.get_text().strip())
         kw = dict(settings=config["visual_evidence"], policy_id="public-benchmark", authorized_page_derivatives=True)
-        baseline = capture(source, root/"serial", first, last, **{**kw,"settings":{**kw["settings"],"workers":1}})
+        # Exercise the exact native-worker open-handle path on complete public
+        # documents, comparing with independently scheduled parallel capture.
+        if first==1 and last==count:
+            serial_settings={**kw["settings"],"workers":1}
+            native_config={"root":str(root/"serial"),"policy_id":kw["policy_id"],
+                           "renderer":str(fitz.VersionBind),"authorized_page_derivatives":True,
+                           "visual_settings":serial_settings}
+            observer=OpenPageCapture(source,source_hash,_source_state(source),count,native_config)
+            with fitz.open(source) as doc:
+                for i in range(1,count+1):
+                    observer.consume(doc,i)
+            assert digest_file(source)==source_hash
+            baseline=observer.report()
+        else:
+            baseline = capture(source, root/"serial", first, last, **{**kw,"settings":{**kw["settings"],"workers":1}})
         cold = capture(source, retained, first, last, **kw)
         assert baseline["capture_id"] == cold["capture_id"]
         assert baseline["image_bytes"] == cold["image_bytes"]
