@@ -13,6 +13,10 @@
     "capture_rasters": false,
     "max_raster_occurrences": 256,
     "max_raster_pixels": 40000000,
-    "max_raster_bytes": 100000000
+    "max_raster_bytes": 100000000,
+    "capture_vectors": false,
+    "max_vector_paths": 20000,
+    "max_vector_items": 100000,
+    "max_vector_json_bytes": 8000000
   }
 }

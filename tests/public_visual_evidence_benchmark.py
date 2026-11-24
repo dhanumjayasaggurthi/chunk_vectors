@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster
+from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster, read_vectors, _json_bytes
 
 
 def check(spec, config):
@@ -186,7 +186,34 @@ def check(spec, config):
                                 expected=doc.extract_image(item["xref"])
                                 assert item["width"]==expected["width"] and item["height"]==expected["height"]
                                 raster_refs.append((rid,i,index,is_mask,hashlib.sha256(expected["image"]).hexdigest()))
+        vector_refs = []
+        vector_config = config.get("vector_validation")
+        if vector_config:
+            import hashlib
+            import itertools
+            vector_settings={**kw["settings"],**vector_config["settings"],"capture_vectors":True}
+            with fitz.open(source) as doc:
+                vector_pages=(i for i in range(first,last+1) if doc[i-1].get_drawings())
+                for i in itertools.islice(vector_pages,vector_config["max_pages"]):
+                    report=capture(source,root/"vectors",i,i,**{**kw,"settings":vector_settings})
+                    vid=report["capture_id"]
+                    inv,_=read_vectors(root/"vectors",vid,i,settings=vector_settings)
+                    original=doc[i-1].get_cdrawings(extended=True)
+                    if inv["status"]=="EXTRACTED_RENDERER_PATHS":
+                        assert _json_bytes(inv["paths"])==_json_bytes(original), f"Vector geometry mismatch on {i}"
+                        digest=hashlib.sha256(_json_bytes(original)).hexdigest()
+                    else:
+                        digest=None
+                        assert not inv["paths"]
+                    vector_refs.append((vid,i,inv["status"],digest,len(original)))
         source.unlink()
+        for vid,i,status,digest,count in vector_refs:
+            inv,meta=read_vectors(root/"vectors",vid,i,settings=vector_settings)
+            assert inv["status"]==status and not meta["original_required"]
+            if digest is not None:
+                import hashlib
+                assert hashlib.sha256(_json_bytes(inv["paths"])).hexdigest()==digest
+                assert inv["path_count"]==count
         for rid,i in raster_ranges:
             assert verify(root/"rasters",rid,i,i,settings=raster_settings)["verified_pages"]==1
         for rid,i,index,is_mask,digest in raster_refs:
@@ -232,6 +259,10 @@ def check(spec, config):
             "post_source_region_pixel_matches":len(region_references),
             "raster_sample_pages":len(raster_ranges),"raster_occurrences":raster_occurrences,
             "raster_fallbacks":raster_fallbacks,"post_source_raster_asset_matches":len(raster_refs),
+            "vector_sample_pages":len(vector_refs),
+            "post_source_vector_matches":sum(digest is not None for _,_,_,digest,_ in vector_refs),
+            "vector_fallback_pages":sum(digest is None for _,_,_,digest,_ in vector_refs),
+            "vector_reference_paths":sum(count for _,_,_,_,count in vector_refs),
         }
 
 

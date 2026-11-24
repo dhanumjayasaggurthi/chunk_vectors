@@ -295,6 +295,48 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_vector_paths_retention_limits_and_post_source_access(self):
+        import fitz
+        from visual_evidence import capture, read_vectors, verify, _paths, _json_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp)
+            source=folder/"vector.pdf"
+            with fitz.open() as doc:
+                p=doc.new_page(width=200,height=200)
+                p.draw_line((10,10),(10,90),color=(0,0,0))
+                p.draw_line((10,90),(100,90),color=(0,0,0))
+                p.draw_bezier((10,80),(30,30),(60,90),(100,20),color=(1,0,0))
+                p.draw_rect(fitz.Rect(40,40,60,60),fill=(0,1,0),fill_opacity=0.5)
+                p.insert_text((10,110),"Figure 1: synthetic graph")
+                p.set_rotation(90)
+                doc.save(source)
+            with fitz.open(source) as doc:
+                expected=doc[0].get_cdrawings(extended=True)
+            settings=dict(dpi=150,capture_vectors=True,workers=1)
+            kw=dict(policy_id="test",authorized_page_derivatives=True)
+            root=folder/"out"
+            normal=capture(source,root,1,1,settings=settings,**kw)
+            cid=normal["capture_id"]
+            self.assertEqual(capture(source,root,1,1,settings=settings,**kw)["skipped_verified_pages"],1)
+            limited={**settings,"max_vector_paths":1}
+            reduced=capture(source,root,1,1,settings=limited,**kw)
+            self.assertNotEqual(reduced["capture_id"],cid)
+            source.unlink()
+            inventory,meta=read_vectors(root,cid,1,settings=settings)
+            self.assertEqual(inventory["status"],"EXTRACTED_RENDERER_PATHS")
+            self.assertEqual(_json_bytes(inventory["paths"]),_json_bytes(expected))
+            self.assertFalse(meta["original_required"])
+            fallback,_=read_vectors(root,reduced["capture_id"],1,settings=limited)
+            self.assertEqual(fallback["status"],"PATH_LIMIT_RENDER_FALLBACK")
+            self.assertEqual(fallback["paths"],[])
+            self.assertEqual(verify(root,cid,1,1,settings=settings)["verified_pages"],1)
+            _,manifest=_paths(root,cid,1)
+            row=json.loads(manifest.read_text(encoding="utf-8"))
+            row["vector_inventory"]["paths"].pop()
+            manifest.write_text(json.dumps(row),encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,"Vector inventory checksum"):
+                verify(root,cid,1,1,settings=settings)
+
     def test_native_raster_retention_dedup_mask_and_source_removal(self):
         import fitz
         from PIL import Image

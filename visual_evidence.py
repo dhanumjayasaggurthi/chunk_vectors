@@ -220,6 +220,85 @@ def read_raster(root, capture_id, number, occurrence, *, mask=False, settings=No
                  "is_mask":mask,"original_required":False,"writes":False}
 
 
+
+def _vector_inventory(page, settings):
+    """Retain renderer-exposed path, clipping and group geometry, not PDF streams.
+
+    get_cdrawings avoids constructing large numbers of Python geometry objects.
+    Limits are applied before serializing; a complete rendered page is still
+    required for unsupported paint operations and final visual composition.
+    """
+    try:
+        paths = page.get_cdrawings(extended=True)
+    except (RuntimeError, ValueError):
+        return {"status":"EXTRACTION_ERROR_RENDER_FALLBACK","path_count":None,
+                "item_count":None,"paths":[]}
+    count = len(paths)
+    if count > settings["max_vector_paths"]:
+        return {"status":"PATH_LIMIT_RENDER_FALLBACK","path_count":count,
+                "item_count":None,"paths":[]}
+    items = sum(len(p.get("items", ())) for p in paths)
+    if items > settings["max_vector_items"]:
+        return {"status":"ITEM_LIMIT_RENDER_FALLBACK","path_count":count,
+                "item_count":items,"paths":[]}
+    try:
+        payload = _json_bytes(paths)
+    except (TypeError, ValueError):
+        return {"status":"UNSUPPORTED_GEOMETRY_RENDER_FALLBACK","path_count":count,
+                "item_count":items,"paths":[]}
+    if len(payload) > settings["max_vector_json_bytes"]:
+        return {"status":"BYTE_LIMIT_RENDER_FALLBACK","path_count":count,
+                "item_count":items,"paths":[]}
+    return {"status":"EXTRACTED_RENDERER_PATHS","path_count":count,
+            "item_count":items,"paths":paths}
+
+
+def _verify_vectors(record):
+    inventory = record.get("vector_inventory")
+    if not record["identity"].get("vector_capture"):
+        if inventory is not None:
+            raise ValueError("Unexpected vector inventory")
+        return
+    if (not isinstance(inventory,dict)
+            or _sha(_json_bytes(inventory)) != record.get("vector_inventory_sha256")):
+        raise ValueError("Vector inventory checksum mismatch")
+    paths = inventory["paths"]
+    status = inventory["status"]
+    if not isinstance(paths,list):
+        raise ValueError("Invalid vector path inventory")
+    if status == "EXTRACTED_RENDERER_PATHS":
+        identity = record["identity"]
+        if (len(paths) != inventory["path_count"]
+                or len(paths) > identity["max_vector_paths"]
+                or sum(len(p.get("items", ())) for p in paths) != inventory["item_count"]
+                or inventory["item_count"] > identity["max_vector_items"]
+                or len(_json_bytes(paths)) > identity["max_vector_json_bytes"]):
+            raise ValueError("Vector inventory reconciliation mismatch")
+    elif (status not in ("EXTRACTION_ERROR_RENDER_FALLBACK","PATH_LIMIT_RENDER_FALLBACK",
+                        "ITEM_LIMIT_RENDER_FALLBACK","UNSUPPORTED_GEOMETRY_RENDER_FALLBACK",
+                        "BYTE_LIMIT_RENDER_FALLBACK") or paths):
+        raise ValueError("Invalid vector fallback inventory")
+
+
+def read_vectors(root, capture_id, number, *, settings=None):
+    """Read checked vector path evidence and explicit fallback state, without source."""
+    settings = _settings({} if settings is None else settings)
+    _full_range(number,number)
+    record = _verify_page(root,capture_id,number,max_pixels=settings["max_pixels"],
+                          max_png_bytes=settings["max_png_bytes"])
+    if "vector_inventory" not in record:
+        raise ValueError("NO_RETAINED_VECTOR_INVENTORY")
+    return record["vector_inventory"], {
+        "capture_id":capture_id,"source_pdf_sha256":record["identity"]["source_pdf_sha256"],
+        "source_page":number,"printed_page_label":record["printed_page_label"],
+        "vector_inventory_sha256":record["vector_inventory_sha256"],
+        "parent_image_sha256":record["image_sha256"],
+        "coordinate_space":"unrotated_pymupdf_points",
+        "original_required":False,"writes":False,
+        "interpretation_status":"NOT_PERFORMED",
+    }
+
+
 def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_bytes=MAX_PNG_BYTES):
     png, manifest = _paths(root, capture_id, number)
     record = json.loads(manifest.read_text(encoding="utf-8"))
@@ -243,6 +322,7 @@ def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_byt
                 or not native.get("blocks") or _sha(payload) != record.get("native_page_sha256")):
             raise ValueError("Native-only evidence checksum/structure mismatch")
         _verify_rasters(root, capture_id, record)
+        _verify_vectors(record)
         return record
     if record.get("image_file") != png.name or record.get("representation") not in (None, "rendered_page"):
         raise ValueError("Invalid rendered evidence manifest")
@@ -259,6 +339,7 @@ def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_byt
             or pix.width * pix.height > max_pixels):
         raise ValueError("Page evidence image geometry mismatch")
     _verify_rasters(root, capture_id, record)
+    _verify_vectors(record)
     return record
 
 
@@ -390,6 +471,8 @@ _DEFAULT_SETTINGS = {
     "max_native_json_bytes": MAX_NATIVE_BYTES,
     "capture_rasters": False, "max_raster_occurrences": 256,
     "max_raster_pixels": MAX_PIXELS, "max_raster_bytes": MAX_PNG_BYTES,
+    "capture_vectors": False, "max_vector_paths": 20000,
+    "max_vector_items": 100000, "max_vector_json_bytes": 8000000,
 }
 _LIMITS = {
     "dpi": (150, 400), "workers": (1, 32), "batch_pages": (1, MAX_PAGES),
@@ -398,6 +481,8 @@ _LIMITS = {
     "min_native_chars": (1, 1_000_000), "max_native_json_bytes": (1024, MAX_NATIVE_BYTES),
     "max_raster_occurrences": (1, 1024),
     "max_raster_pixels": (1, MAX_PIXELS), "max_raster_bytes": (1024, MAX_PNG_BYTES),
+    "max_vector_paths": (1, 50000), "max_vector_items": (1, 500000),
+    "max_vector_json_bytes": (1024, 16000000),
 }
 
 
@@ -411,8 +496,10 @@ def _settings(value):
             raise ValueError(f"Invalid visual evidence setting {key}: expected {low}..{high}")
     if type(result["capture_rasters"]) is not bool:
         raise ValueError("capture_rasters must be boolean")
-    if result["capture_rasters"] and result["selection_mode"] != "all_pages":
-        raise ValueError("Raster pilot requires all_pages to retain compositing fallback")
+    if type(result["capture_vectors"]) is not bool:
+        raise ValueError("capture_vectors must be boolean")
+    if (result["capture_rasters"] or result["capture_vectors"]) and result["selection_mode"] != "all_pages":
+        raise ValueError("Raster/vector pilot requires all_pages to retain compositing fallback")
     if result["selection_mode"] not in ("all_pages", "native_text_or_render"):
         raise ValueError("Unsupported visual evidence selection_mode")
     if result["max_in_flight"] < result["workers"]:
@@ -564,6 +651,10 @@ def _capture_batch(source, root, first, last, identity, state, source_count, set
                 inventory = _capture_rasters(root, cid, page, pdf, settings)
                 record.update(raster_inventory=inventory,
                               raster_inventory_sha256=_sha(_json_bytes(inventory)))
+            if settings["capture_vectors"]:
+                vectors = _vector_inventory(page, settings)
+                record.update(vector_inventory=vectors,
+                              vector_inventory_sha256=_sha(_json_bytes(vectors)))
             if _source_state(source) != state:
                 raise RuntimeError("Source changed during page rendering")
             _write_once(png, data)
@@ -644,6 +735,11 @@ def capture(source, root, first, last, *, dpi=None, policy_id="",
                         max_raster_occurrences=settings["max_raster_occurrences"],
                         max_raster_pixels=settings["max_raster_pixels"],
                         max_raster_bytes=settings["max_raster_bytes"])
+    if settings["capture_vectors"]:
+        identity.update(vector_capture="extended_cdrawings_v1",
+                        max_vector_paths=settings["max_vector_paths"],
+                        max_vector_items=settings["max_vector_items"],
+                        max_vector_json_bytes=settings["max_vector_json_bytes"])
     cid = _capture_id(identity)
     with fitz.open(source) as pdf:
         if pdf.is_encrypted:

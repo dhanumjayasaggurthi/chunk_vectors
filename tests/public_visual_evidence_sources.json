@@ -69,5 +69,14 @@
       "max_raster_pixels": 40000000,
       "max_raster_bytes": 100000000
     }
+  },
+  "vector_validation": {
+    "max_pages": 3,
+    "settings": {
+      "workers": 1,
+      "max_vector_paths": 20000,
+      "max_vector_items": 100000,
+      "max_vector_json_bytes": 8000000
+    }
   }
 }
