@@ -203,6 +203,7 @@ def _full_range(first, last, count=None):
 
 
 def _capture_batch(source, root, first, last, identity, state, source_count, settings):
+    import fitz
     total = rendered = skipped = 0
     dpi = identity['dpi']
     cid = _capture_id(identity)
