@@ -75,13 +75,13 @@ Read-only discovery **confirmed exactly 323 source-linked candidates** for the 7
 - Read-only discovery found exactly 323 assets, no writes or cloud calls.
 - init --apply succeeded and created the isolated OCR job/result table; original pages were not changed.
 - First enqueue --apply failed with PostgreSQL pool max=2 exhaustion. Cause: two suspended Python generators held leases and the insert requested a third; source-scoped status was {}. **Do not increase the pool cap or rerun native PDF extraction.**
-- Fix in deferred_ocr.py closes read leases before yielded document and page batches. Regression covers 70 pages/140 assets, a forced two-lease cap, idempotent 128-row insert batches, and source-scoped status.
+- Fix in deferred_ocr.py closes read leases before yielded document and page batches. Regression covers 70 pages/140 assets, a forced two-lease cap, idempotent 128-row insert batches, and source-scoped status. **PASS**: [Windows/Linux/PostgreSQL CI 45341046132](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45341046132) explicitly ran the two-lease regression successfully; [rich-document CI 45341046181](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45341046181) also passed. Original 778-page enqueue retry pending.
 - Next: copy corrected deferred_ocr.py from feature branch and rerun only enqueue for the already-verified doc ID, then status. Expected candidates=323 and PENDING=323, with no GCP calls.
 
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
-2. **DONE 2026-11-24**: read-only discovery of original 778-page PBRER verified 323 candidates, 0 inserts, 0 cloud calls. Next: initialize and enqueue only that document's candidates into the isolated OCR table, then review queue counts.
+2. **DONE 2026-11-24**: read-only discovery identified 323 candidates and isolated OCR table initialization succeeded. The first enqueue hit pool exhaustion; corrected module passes CI. Next: repeat enqueue only for that document and check PENDING=323. Do NOT repeat init.
 3. Cloud pilot on a **very small, explicitly authorized** document-scoped 8-asset/2-worker batch; confirm real GCP project caps, confidence/word polygons, latency, retries and cost. Do not run all 323 before validating observed quality.
 4. Implement optional source-versioned OCR overlay into retrieval chunk generation (while preserving original pages), then independent grounded visual/table summaries.
 5. Prove fleet OCR throughput, peak RSS, per-document retries and completed-source/annotation coverage against 3.2M/15 days.
