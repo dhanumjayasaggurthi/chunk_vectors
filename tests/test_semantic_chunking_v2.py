@@ -100,6 +100,24 @@ class SemanticChunkV2Tests(unittest.TestCase):
                  if "table_id" in c.chunk_metadata}
             self.assertGreater(len(ids),1)
 
+    def test_streamed_four_page_table_projection_has_source_row_citations(self):
+        from table_continuity import link_tables, iter_logical_table_rows
+        document=document_with_continued_table()
+        groups=link_tables(document,config())
+        self.assertEqual(len(groups),1)
+        source=list(groups.values())[0]
+        original=[list(el.source_table["source_cells"]) for el in source]
+        rows=list(iter_logical_table_rows(source))
+        self.assertEqual(len(rows),29)  # Four source grids x 8 rows, 3 repeated headers.
+        self.assertEqual([page for page,idx,row in rows if idx==0],[1])
+        self.assertEqual(rows[0][2],["Subject ID","Adverse Events"])
+        self.assertEqual(rows[-1][0],4)
+        self.assertEqual(rows[-1][2][0],"ROW-4-6")
+        for el,original_rows in zip(source,original):
+            self.assertEqual(el.source_table["source_cells"],original_rows)
+        with self.assertRaisesRegex(ValueError,"fragment count"):
+            list(iter_logical_table_rows(source[:2]))
+
     def test_persisted_profile_versioned_chunk_ids_resolve_neighbors(self):
         from processing_profile import load_profile
         from reuse_materialize import prepare_document,quality_summary
