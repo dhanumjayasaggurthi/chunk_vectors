@@ -131,6 +131,14 @@ Next local action after downloading the new deferred_ocr.py: no re-extraction an
 
 Do not rerun native extraction/queue init/enqueue. Existing PENDING=323 and the project-state URL are the handoff checkpoints.
 
+## 2026-11-24 — First live Vision OCR pilot BLOCKED (user-verified)
+
+The original 778-page PBRER OCR queue was at PENDING=323 after successful enqueue. User ran a source-scoped eight-asset/two-worker deferred_ocr.py run --apply. Output: **processed=8, RETRY_WAIT=8, elapsed=1.91 seconds, exit code=0**. Scoped queue afterward: **PENDING=315, RETRY_WAIT=8, TEXT_READY=0, VISUAL_PENDING=0**. These timings are not valid Vision throughput evidence and cloud_calls_possible=true does not prove any API call reached Vision.
+
+**STOP: Do not rerun OCR, re-enqueue or increase concurrency.** Rapid failures may share a local configuration/source/credential error, but cause is unverified. Production observability defect: exit code 0 despite zero successful OCR recognition. Next immediate action is a read-only query of existing cv_validation_v1.cv_bench_pages_v1_visual_ocr rows filtered by doc_id and OCR semantic fingerprint, grouping error_code/error_message/attempts without printing PDF text. Determine whether the failure is pre-provider (source rendering, local dependency, quota limiter, credentials) or provider-side. There is no basis to choose a code fix until the underlying stored error is inspected.
+
+**Current blocker: waiting for OCR error_code/error_message.** Retain retry state and source provenance; no blanket retries. Record the observed error, corrective commit, CI and retest outcome here.
+
 ## What is NOT done
 
 - **Deferred OCR processing implementation exists**, with explicit source-referenced rendering, bounded batches, global quotas and durable retries. It has **not** been invoked against original sources/GCP. Enrichment output is not yet rejoined with retrieval chunks; reconcile duplicates and original page/table geometry before exposing derived text.
