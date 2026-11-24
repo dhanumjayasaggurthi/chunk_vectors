@@ -64,12 +64,16 @@ def check(spec, config):
             native_config={"root":str(root/"serial"),"policy_id":kw["policy_id"],
                            "renderer":str(fitz.VersionBind),"authorized_page_derivatives":True,
                            "visual_settings":serial_settings}
-            observer=OpenPageCapture(source,source_hash,_source_state(source),count,native_config)
+            serial_started=time.monotonic()
+            serial_state=_source_state(source)
+            assert digest_file(source)==source_hash
+            observer=OpenPageCapture(source,source_hash,serial_state,count,native_config)
             with fitz.open(source) as doc:
                 for i in range(1,count+1):
                     observer.consume(doc,i)
             assert digest_file(source)==source_hash
             baseline=observer.report()
+            baseline["elapsed_seconds"]=round(time.monotonic()-serial_started,3)
         else:
             baseline = capture(source, root/"serial", first, last, **{**kw,"settings":{**kw["settings"],"workers":1}})
         cold = capture(source, retained, first, last, **kw)
@@ -221,13 +225,13 @@ def check(spec, config):
                         assert not inv["paths"]
                     vector_refs.append((vid,i,inv["status"],digest,len(original)))
         source.unlink()
-        for vid,i,status,digest,count in vector_refs:
+        for vid,i,status,digest,path_count in vector_refs:
             inv,meta=read_vectors(root/"vectors",vid,i,settings=vector_settings)
             assert inv["status"]==status and not meta["original_required"]
             if digest is not None:
                 import hashlib
                 assert hashlib.sha256(_json_bytes(inv["paths"])).hexdigest()==digest
-                assert inv["path_count"]==count
+                assert inv["path_count"]==path_count
         for rid,i in raster_ranges:
             assert verify(root/"rasters",rid,i,i,settings=raster_settings)["verified_pages"]==1
         for rid,i,index,is_mask,digest in raster_refs:
