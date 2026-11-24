@@ -15,6 +15,8 @@ on:
       - figure_recovery.py
       - tests/test_deferred_visual_native.py
       - tests/test_empty_table_deferred.py
+      - deferred_ocr.py
+      - tests/test_deferred_ocr.py
       - db.py
       - db_pool.py
       - config.py
@@ -80,6 +82,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_figure_recovery.py -v
       - run: python -m unittest discover -s tests -p test_deferred_visual_native.py -v
       - run: python -m unittest discover -s tests -p test_empty_table_deferred.py -v
+      - run: python -m unittest discover -s tests -p test_deferred_ocr.py -v
       - run: python -m unittest discover -s tests -p test_semantic_chunking_v2.py -v
       - run: python -m unittest discover -s tests -p test_materialization_quality_summary.py -v
       - run: python -m unittest discover -s tests -p test_db_pool.py -v
