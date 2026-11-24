@@ -129,6 +129,26 @@ Write-Host 'OCR pilot exit code:' $PilotExitCode
 
 **This is a billable Vision API call against original regulatory content.** It must not run before the user verifies allowed data processing and configured project quota limits. Do not re-enqueue, clear statuses or rerun native extraction. If processed=0, check retry eligibility; never force queue state. Send the result and status counts for measured performance/accuracy.
 **SAFE RETRY-ONLY FIX TESTED** (2026-11-24): [Windows/Linux Python 3.11/3.13 and real disposable PostgreSQL CI 45343815239](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45343815239) **PASS**, and [rich-document CI 45343815324](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45343815324) **PASS**, commit 1d96adff. Specifically verified test_retry_only_claim_does_not_consume_pending_ocr_assets executed successfully in PostgreSQL CI. Production requirements.txt now explicitly lists google-cloud-vision, google-cloud-translate, and google-auth (commit 4b028a40). New retry-only CLI exists only in updated deferred_ocr.py; older local copies DO NOT support it. Real original PDF retry after package repair not yet executed.
+## Step 64 — Live source-linked OCR recovery SUCCESS (user-verified 2026-11-24)
+
+Using the existing gcpkeys.json credential for project rehdocreader, source-scoped retry-only OCR processed all eight previously failed regions: **TEXT_READY=6**, **VISUAL_PENDING=2**, **RETRY_WAIT=0**, **elapsed 3.98 s**, **exit code 0**. Current source-scoped queue totals: **PENDING=315**, TEXT_READY=6, VISUAL_PENDING=2. OCR stage and database result persistence are operational; original pages unchanged. Visual-pending regions are deliberately not declared reconstructed charts or structured tables. This is not a validated clinical accuracy score or sustainable load rate.
+
+Next controlled extension (actual cloud calls, charges possible; only if original regulatory document transfer to the project is permitted):
+
+~~~powershell
+$Python = '.\.venv-validation\Scripts\python.exe'
+$Profile = '.\profiles\cv_corpus_deferred_ocr_v1.yml'
+$DocId = '2721ac39536ef7b439091e3018506b426bda3616c5a76e4271fd29e0b8abfb86'
+$Timer = [System.Diagnostics.Stopwatch]::StartNew()
+& $Python deferred_ocr.py run --profile $Profile --doc-id $DocId --max-jobs 32 --workers 4 --apply
+$ExitCode = $LASTEXITCODE
+$Timer.Stop()
+Write-Host 'OCR elapsed seconds:' ([math]::Round($Timer.Elapsed.TotalSeconds,2))
+Write-Host 'OCR exit code:' $ExitCode
+& $Python deferred_ocr.py status --profile $Profile --doc-id $DocId
+~~~
+
+Do not pass --retry-only for this fresh-batch test: it would correctly find no previously failed eligible assets. Do not repeat enqueue/init. Expect 283 PENDING if 32 new assets are claimed and completed (regardless of TEXT_READY versus VISUAL_PENDING), absent concurrent workers. Record actual retry/status/error counts, confidence distributions and elapsed time before scaling or presenting throughput estimates. Do not print source OCR text to shared logs.
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
