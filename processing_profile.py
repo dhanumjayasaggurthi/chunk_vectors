@@ -140,6 +140,7 @@ def validate_profile(profile: dict) -> None:
             "capture_table_structure", "max_table_source_json_bytes",
             "visual_processing", "max_visual_regions_per_page",
             "worker_backend", "worker_recycle_documents", "profile_stage_timings",
+            "empty_table_policy",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -297,6 +298,16 @@ def validate_profile(profile: dict) -> None:
         recycled=extract.get("worker_recycle_documents",0)
         if type(recycled) is not int or not 0<=recycled<=10000:
             raise ValueError("extraction.worker_recycle_documents must be 0..10000")
+        table_policy=extract.get("empty_table_policy","fail")
+        if table_policy not in ("fail","preserve_defer"):
+            raise ValueError("extraction.empty_table_policy must be fail or preserve_defer")
+        if table_policy=="preserve_defer" and (
+            extract.get("visual_processing","blocking")!="preserve_defer"
+            or extract.get("ocr_enabled",True)
+        ):
+            raise ValueError(
+                "empty_table_policy=preserve_defer requires native visual_processing=preserve_defer"
+            )
         policy=extract.get("visual_processing","blocking")
         if policy not in ("blocking","preserve_defer"):
             raise ValueError("extraction.visual_processing must be blocking or preserve_defer")
