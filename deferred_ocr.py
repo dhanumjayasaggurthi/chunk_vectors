@@ -513,7 +513,22 @@ def _file_path(profile,doc_id,source,version):
             row=cur.fetchone()
             if row is None:
                 raise ValueError("Published source PDF missing or version changed")
-            return Path(row[0]).resolve(strict=True)
+            source_path=Path(row[0])
+            try:
+                return source_path.resolve(strict=True)
+            except FileNotFoundError:
+                # Only an explicitly configured, fully SHA-verified archive
+                # may replace the purged intake location. Never search for
+                # similarly named files or infer credentials/cloud storage.
+                archive_root=os.getenv("SOURCE_EVIDENCE_ARCHIVE_ROOT")
+                if not archive_root:
+                    raise FileNotFoundError(
+                        "Original PDF purged/unavailable and no authorized "
+                        "SOURCE_EVIDENCE_ARCHIVE_ROOT configured"
+                    )
+                from source_evidence_archive import verify as verify_archive
+                preserved=verify_archive(archive_root,source,suffix=".pdf")
+                return Path(preserved["archive_path"]).resolve(strict=True)
     finally:
         conn.rollback()
         conn.close()
@@ -528,7 +543,13 @@ class _SourceVerifier:
         from page_stage import source_hash as hash_pdf
         path=Path(path)
         if hashlib.sha256(str(path).encode("utf-8")).hexdigest()!=doc_id:
-            raise ValueError("Source PDF doc_id/path mismatch")
+            archive_root=os.getenv("SOURCE_EVIDENCE_ARCHIVE_ROOT")
+            if not archive_root:
+                raise ValueError("Source PDF doc_id/path mismatch")
+            from source_evidence_archive import verify as verify_archive
+            preserved=verify_archive(archive_root,source,suffix=".pdf")
+            if Path(preserved["archive_path"]).resolve(strict=True)!=path.resolve(strict=True):
+                raise ValueError("OCR source is not the authorized archived PDF")
         stat=path.stat()
         key=(str(path),source,stat.st_size,stat.st_mtime_ns)
         with self._guard:
