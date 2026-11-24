@@ -134,3 +134,45 @@ def link_tables(struct, policy):
             element.table_continuity=info
         result[group_id]=[el for _,el in group]
     return result
+
+
+def iter_logical_table_rows(fragments):
+    """Iterate a linked table's original rows in source order, without copying.
+
+    Yield (page_number, source_row_index, original_cell_list) for every
+    logical row. Duplicate *verified* continuation header rows are skipped
+    only in the derived projection: every original source_table stays intact.
+    Caller may stream the iterator into a grounded summary with page citations.
+    """
+    fragments=list(fragments)
+    if not fragments:
+        return
+    fragments.sort(key=lambda el:getattr(el,"table_continuity",{}).get(
+        "fragment_index",-1))
+    first=getattr(fragments[0],"table_continuity",{})
+    if not first or first.get("fragment_index")!=0:
+        raise ValueError("Logical table group has no initial fragment")
+    expected=first["fragment_count"]
+    if len(fragments)!=expected:
+        raise ValueError("Logical table fragment count mismatch")
+    header=_header(fragments[0])
+    for index,element in enumerate(fragments):
+        info=getattr(element,"table_continuity",{})
+        if (info.get("table_id")!=first["table_id"]
+                or info.get("fragment_index")!=index
+                or info.get("fragment_count")!=expected):
+            raise ValueError("Logical table fragment provenance mismatch")
+        rows=(getattr(element,"source_table",None) or {}).get("source_cells")
+        if not isinstance(rows,list):
+            raise ValueError("Logical table source cells missing")
+        pages=info["source_pages"]
+        page_number=pages[index]
+        for row_index,row in enumerate(rows):
+            if index>0 and row_index==0 and header and _header(element)==header:
+                # Only skip a repeated first-row header if the first row
+                # itself matches (not merely a matching header lower down).
+                first_row=tuple(re.sub(r"\s+"," ",str(cell or "")).strip().casefold()
+                                for cell in row)
+                if first_row==header:
+                    continue
+            yield page_number,row_index,row
