@@ -61,7 +61,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             raise ValueError("Profile root must be an object")
     result = copy.deepcopy(_DEFAULTS)
     for key, value in data.items():
-        if key not in result and key not in {"name", "extraction"}:
+        if key not in result and key not in {"name", "extraction", "deferred_ocr"}:
             raise ValueError("Unknown profile setting: " + key)
         if isinstance(result.get(key), dict):
             if not isinstance(value, dict):
@@ -141,6 +141,9 @@ def validate_profile(profile: dict) -> None:
                               "page_end_column", "source_columns"},
         "output": {"schema", "table"},
     }
+    if "deferred_ocr" in profile:
+        from deferred_ocr import _DEFAULTS as _DEFERRED_OCR_OPTIONS
+        allowed_nested["deferred_ocr"] = set(_DEFERRED_OCR_OPTIONS)
     if "extraction" in profile:
         allowed_nested["extraction"] = {
             "enabled", "schema", "table",
@@ -343,6 +346,9 @@ def validate_profile(profile: dict) -> None:
             raise ValueError("extraction.ocr_confidence_min must be 0..1")
         if extract.get("ocr_max_batch_bytes",6_000_000) < 1024 * extract.get("ocr_batch_images",8):
             raise ValueError("OCR batch byte budget too small")
+    if "deferred_ocr" in profile:
+        from deferred_ocr import settings as validate_deferred_ocr
+        validate_deferred_ocr(profile)
     meta = profile["metadata"]
     if type(meta.get("inherit_document_fields")) is not bool:
         raise ValueError("metadata.inherit_document_fields must be boolean")
