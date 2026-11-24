@@ -138,13 +138,18 @@ def discover_element(doc_id,source,version,page_number,position,element,ocr_hash
 
 
 def iter_documents(profile,doc_id=None,max_docs=1):
+    """Keyset document scan; release the DB lease BEFORE yielding a batch.
+
+    Generator suspension must never retain a PostgreSQL connection. Enqueue
+    may acquire a separate connection for writes with pool_max_connections=2.
+    """
     from db import get_conn
     n=tables(profile)
-    conn=get_conn()
-    try:
-        last=""
-        count=0
-        while count<max_docs:
+    last=""
+    count=0
+    while count<max_docs:
+        conn=get_conn()
+        try:
             with conn.cursor() as cur:
                 if doc_id:
                     cur.execute(f"""
@@ -158,30 +163,36 @@ def iter_documents(profile,doc_id=None,max_docs=1):
                         ORDER BY doc_id LIMIT %s
                     """,(last,min(64,max_docs-count)))
                 batch=cur.fetchall()
-            if not batch:
-                break
-            for doc in batch:
-                yield doc
-                count+=1
-            last=batch[-1][0]
-            if doc_id:
-                break
-    finally:
-        conn.rollback()
-        conn.close()
+        finally:
+            conn.rollback()
+            conn.close()
+
+        if not batch:
+            break
+        for doc in batch:
+            yield doc
+            count+=1
+        last=batch[-1][0]
+        if doc_id:
+            break
 
 
 def iter_assets(profile,doc):
-    """Keyset pagination: only 32 pages' JSONB lives in memory at a time."""
+    """Keyset pagination with bounded page JSON and NO leased yield.
+
+    Keep only 32 published source pages in memory. Release the read-only
+    PostgreSQL lease before yielding any visual assets to the caller; an
+    upsert or other downstream consumer never nests a third pool lease.
+    """
     from db import get_conn
     n=tables(profile)
     doc_id,source,version,page_count=doc
     last=0
-    ocr_hash=ocr_fingerprint(settings(profile))
-    conn=get_conn()
     seen=0
-    try:
-        while True:
+    ocr_hash=ocr_fingerprint(settings(profile))
+    while True:
+        conn=get_conn()
+        try:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT page_number,source_hash,extraction_hash,elements
@@ -190,30 +201,32 @@ def iter_assets(profile,doc):
                     ORDER BY page_number LIMIT 32
                 """,(doc_id,last))
                 pages=cur.fetchall()
-            if not pages:
-                break
-            for page_number,row_source,row_version,elements in pages:
-                if (row_source,row_version)!=(source,version):
-                    raise ValueError("Published page source/extraction version mismatch")
-                if not isinstance(elements,list):
-                    raise ValueError("Published page geometry is not JSONB array")
-                seen+=1
-                for position,element in enumerate(elements):
-                    if not isinstance(element,dict):
-                        raise ValueError("Malformed source JSONB element")
-                    if "visual_asset" not in element and "unresolved_region" not in element:
-                        continue
-                    candidate=discover_element(
-                        doc_id,source,version,page_number,position,element,ocr_hash)
-                    if candidate is None:
-                        raise ValueError("Ambiguous source visual provenance")
-                    yield candidate
-            last=pages[-1][0]
-        if seen!=page_count:
-            raise ValueError(f"Only {seen}/{page_count} original published pages")
-    finally:
-        conn.rollback()
-        conn.close()
+        finally:
+            conn.rollback()
+            conn.close()
+
+        if not pages:
+            break
+        for page_number,row_source,row_version,elements in pages:
+            if (row_source,row_version)!=(source,version):
+                raise ValueError("Published page source/extraction version mismatch")
+            if not isinstance(elements,list):
+                raise ValueError("Published page geometry is not JSONB array")
+            seen+=1
+            for position,element in enumerate(elements):
+                if not isinstance(element,dict):
+                    raise ValueError("Malformed source JSONB element")
+                if "visual_asset" not in element and "unresolved_region" not in element:
+                    continue
+                candidate=discover_element(
+                    doc_id,source,version,page_number,position,element,ocr_hash)
+                if candidate is None:
+                    raise ValueError("Ambiguous source visual provenance")
+                yield candidate
+        last=pages[-1][0]
+
+    if seen!=page_count:
+        raise ValueError(f"Only {seen}/{page_count} original published pages")
 
 
 def init(profile,apply=False):
