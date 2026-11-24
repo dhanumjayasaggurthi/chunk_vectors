@@ -31,9 +31,16 @@ class Unit:
     split_reason: str = ""
     overlap_copy: bool = False
     page_joined: bool = False
+    near_top: bool = False
+    near_bottom: bool = False
 
 
-def _paragraph_units(page, el, headings, known_titles, source_end):
+def _paragraph_units(page, el, headings, known_titles, source_end,
+                     edge_fraction=0.20):
+    # Page adjacency and missing punctuation alone can merge unrelated
+    # regulatory text. Require the source block to touch the page edge.
+    top = bool(page.height and el.bbox.y0 <= page.height * edge_fraction)
+    bottom = bool(page.height and el.bbox.y1 >= page.height * (1-edge_fraction))
     for paragraph in re.split(r"\n\s*\n", el.text):
         paragraph=paragraph.strip()
         if not paragraph:
@@ -47,12 +54,14 @@ def _paragraph_units(page, el, headings, known_titles, source_end):
             if matched:
                 if text_lines:
                     yield Unit(" ".join(text_lines),page.page_number,
-                               source_end,tuple(headings),"text")
+                               source_end,tuple(headings),"text",
+                               near_top=top,near_bottom=bottom)
                     text_lines=[]
                 depth,title=matched
                 headings[:]=headings[:max(0,depth-1)]+[title]
                 yield Unit(title,page.page_number,source_end,
-                           tuple(headings),"text")
+                           tuple(headings),"text",
+                           near_top=top,near_bottom=bottom)
             else:
                 text_lines.append(stripped)
         if text_lines:
@@ -149,7 +158,10 @@ def _units(struct,policy):
                 yield Unit(el.text.strip(),page.page_number,source_end,
                            tuple(headings),kind)
                 continue
-            yield from _paragraph_units(page,el,headings,known_titles,source_end)
+            yield from _paragraph_units(
+                page,el,headings,known_titles,source_end,
+                policy.get("page_join_edge_fraction",0.20),
+            )
 
 
 def _coalesce_cross_page_paragraphs(units):
@@ -168,6 +180,7 @@ def _coalesce_cross_page_paragraphs(units):
             previous.kind=="text" and current.kind=="text"
             and previous.path==current.path
             and previous.page_end+1==current.page_start
+            and previous.near_bottom and current.near_top
             and bool(previous.text.strip())
             and bool(current.text.strip())
             and not re.search(r"[.!?;:。！？。؟।]\s*$",previous.text)
@@ -180,6 +193,7 @@ def _coalesce_cross_page_paragraphs(units):
                 text=previous.text.rstrip()+joiner+current.text.lstrip(),
                 page_end=current.page_end,
                 page_joined=True,
+                near_bottom=current.near_bottom,
             )
         else:
             yield previous
