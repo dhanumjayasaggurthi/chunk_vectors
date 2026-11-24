@@ -54,6 +54,109 @@ def config(**overrides):
 
 
 class SemanticChunkV2Tests(unittest.TestCase):
+    def test_pack_small_tables_preserves_every_source_table_identity(self):
+        from configurable_chunking import chunk_with_profile
+        import tiktoken
+        tables=[]
+        for i in range(8):
+            rows=[["Endpoint","Result"],[f"Result-{i}","Observed"]]
+            tables.append(PageElement(
+                ElementType.TABLE,BBox(60,80+i*70,520,120+i*70),
+                text=f"| Endpoint | Result |\n| --- | --- |\n| Result-{i} | Observed |",
+                source_table={"max_columns":2,"source_cells":rows},
+                reading_order=i,
+            ))
+        page=PageContent(page_number=1,width=612,height=792,
+                         raw_text="Reported safety outcomes.",
+                         elements=tables,has_tables=True)
+        doc=DocumentStructure(
+            file_path="safety.pdf",file_name="safety.pdf",doc_id="f"*64,
+            page_count=1,pages=[page],
+            toc=[TocEntry(1,"4. Safety results",1)],has_toc=True,
+        )
+        base=config(max_tokens=180,min_tokens=100,overlap_tokens=0,
+                    small_section_policy="keep")
+        baseline=chunk_with_profile(doc,base)
+        packed=chunk_with_profile(doc,{
+            **base,"small_section_policy":"merge_forward",
+            "small_chunk_max_pages":1,"small_chunk_max_tables":3,
+        })
+        self.assertLess(len(packed),len(baseline))
+        tokenizer=tiktoken.get_encoding("cl100k_base")
+        for c in packed:
+            self.assertLessEqual(len(tokenizer.encode(c.chunk_text)),180)
+        all_text="\n".join(c.chunk_text for c in packed)
+        for i in range(8):
+            self.assertEqual(all_text.count(f"Result-{i}"),1)
+        baseline_ids={
+            c.chunk_metadata["table_id"] for c in baseline
+            if "table_id" in c.chunk_metadata
+        }
+        packed_ids=set()
+        for chunk in packed:
+            metadata=chunk.chunk_metadata
+            packed_ids.update(metadata.get("table_ids",[
+                metadata["table_id"]] if metadata.get("table_id") else []))
+            if len(metadata.get("table_ids",[]))>1:
+                self.assertNotIn("table_id",metadata)
+                self.assertGreaterEqual(len(metadata["source_components"]),2)
+            self.assertEqual(chunk.page_start,1)
+            self.assertEqual(chunk.page_end,1)
+        self.assertEqual(packed_ids,baseline_ids)
+        self.assertEqual(len(baseline_ids),8)
+        self.assertTrue(all(
+            tab.source_table["source_cells"][1][0]==f"Result-{index}"
+            for index,tab in enumerate(tables)
+        ))
+
+    def test_packing_never_crosses_different_section_or_unknown_page(self):
+        from configurable_chunking import chunk_with_profile
+        pages=[]
+        for pg,heading in ((1,"Safety"),(2,"Efficacy")):
+            pages.append(PageContent(
+                page_number=pg,width=612,height=792,
+                raw_text=f"Data_{pg} for section {heading}",
+                elements=[PageElement(ElementType.TEXT,BBox(50,100,550,160),
+                                      text=f"Data_{pg} for section {heading}")],
+            ))
+            pages[-1].source_section_title=heading
+        doc=DocumentStructure(
+            file_path="s.pdf",file_name="s.pdf",doc_id="9"*64,
+            page_count=2,pages=pages,
+        )
+        packed=chunk_with_profile(doc,config(
+            max_tokens=180,min_tokens=120,overlap_tokens=0,
+            small_section_policy="merge_forward",
+            small_chunk_max_pages=2,table_row_mode="legacy",
+            table_continuation="none",
+        ))
+        self.assertEqual(len(packed),2)
+        self.assertEqual({c.page_start for c in packed},{1,2})
+        self.assertEqual(len({c.chunk_metadata["section_id"] for c in packed}),2)
+        self.assertFalse(any("Data_1" in c.chunk_text and "Data_2" in c.chunk_text
+                             for c in packed))
+
+    def test_packed_materialized_neighbors_and_source_lineage(self):
+        from processing_profile import load_profile
+        from reuse_materialize import prepare_document, quality_summary
+        document=document_with_continued_table()
+        p=load_profile("profiles/regulatory_page_stage_example.yml")
+        p["chunking"].update(config(max_tokens=180,min_tokens=120,
+                                    small_section_policy="merge_forward",
+                                    small_chunk_max_pages=2,
+                                    small_chunk_max_tables=3))
+        rows=prepare_document(document,p)
+        summary=quality_summary(rows,p["chunking"])
+        self.assertEqual(summary["structural_errors"],0)
+        self.assertEqual(summary["chunks_above_budget"],0)
+        self.assertGreaterEqual(summary["logical_tables"],1)
+        for i,row in enumerate(rows):
+            meta=json.loads(row[13])
+            self.assertEqual(meta["previous_chunk_id"],
+                             rows[i-1][0] if i else None)
+            self.assertEqual(meta["next_chunk_id"],
+                             rows[i+1][0] if i+1<len(rows) else None)
+
     def test_four_page_table_is_one_logical_table_and_row_chunks(self):
         from configurable_chunking import chunk_with_profile
         import tiktoken
