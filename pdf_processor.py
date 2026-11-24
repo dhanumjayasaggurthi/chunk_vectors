@@ -116,6 +116,7 @@ class PageElement:
     approved_asset: dict     = field(default_factory=dict)
     source_table:  dict | None = None  # opt-in unmodified table cell matrix
     visual_asset:  dict = field(default_factory=dict)  # source PDF refs, no fabricated OCR
+    unresolved_region: dict = field(default_factory=dict)  # source PDF region, no cell inference
 
 
 def validate_visual_asset(asset: dict, *, page_number: int | None = None) -> dict:
@@ -155,6 +156,69 @@ def validate_visual_asset(asset: dict, *, page_number: int | None = None) -> dic
                 or bb[0] >= bb[2] or bb[1] >= bb[3]):
             raise ValueError("Invalid preserved image geometry/source")
     return asset
+
+
+def validate_unresolved_region(data: dict, *, page_number: int | None = None) -> dict:
+    """Unclassified source-only region; not recovered table or OCR content."""
+    if not isinstance(data, dict) or set(data) != {
+        "version", "source", "source_page", "detector", "candidate_index",
+        "status", "structured_table_recovered",
+    }:
+        raise ValueError("Invalid unresolved source region")
+    if (type(data["version"]) is not int or data["version"] != 1
+            or data["source"] != "original_pdf"
+            or type(data["source_page"]) is not int or data["source_page"] < 1
+            or (page_number is not None and data["source_page"] != page_number)
+            or data["detector"] != "pdfplumber_table_candidate"
+            or type(data["candidate_index"]) is not int
+            or data["candidate_index"] < 0
+            or data["status"] != "PENDING_OCR_OR_VISUAL_ENRICHMENT"
+            or data["structured_table_recovered"] is not False):
+        raise ValueError("Invalid unresolved source region provenance")
+    return data
+
+
+def _preserve_empty_table_candidate(table, raw, plumb_page, page_number: int,
+                                    max_regions: int, retained_regions: int,
+                                    *, candidate_index: int) -> PageElement:
+    """Defer only empty candidates with no source PDF words inside their bounds.
+
+    Original PDF bytes + exact page and bbox remain authoritative. We never
+    fabricate table cells or store duplicate raster PNGs in native mode.
+    """
+    import math
+    if not isinstance(raw, list) or any(
+            not isinstance(row, (list,tuple)) for row in raw):
+        raise ValueError("Cannot verify empty-table source cell rows")
+    if any(str(value).strip() for row in raw
+           for value in row if value is not None):
+        raise ValueError("Cannot defer a candidate containing source cell text")
+    if retained_regions >= max_regions:
+        raise ValueError("VISUAL_REGION_LIMIT_EXCEEDED for unresolved PDF region")
+    try:
+        coords=tuple(float(value) for value in table.bbox)
+        if (len(coords)!=4 or not all(math.isfinite(v) for v in coords)
+                or coords[0]>=coords[2] or coords[1]>=coords[3]):
+            raise ValueError("Invalid unresolved table candidate geometry")
+        if (coords[0]<-1 or coords[1]<-1
+                or coords[2]>float(plumb_page.width)+1
+                or coords[3]>float(plumb_page.height)+1):
+            raise ValueError("Unresolved region outside the original PDF page")
+        if plumb_page.crop(coords).extract_words():
+            raise ValueError("Unresolved table candidate contains source PDF words")
+    except (TypeError, AttributeError) as exc:
+        raise ValueError("Cannot verify original PDF candidate bounds") from exc
+    return PageElement(
+        element_type=ElementType.VECTOR_REGION,
+        bbox=BBox(*coords),
+        unresolved_region={
+            "version":1, "source":"original_pdf", "source_page":page_number,
+            "detector":"pdfplumber_table_candidate",
+            "candidate_index":candidate_index,
+            "status":"PENDING_OCR_OR_VISUAL_ENRICHMENT",
+            "structured_table_recovered":False,
+        },
+    )
 
 
 @dataclass
@@ -345,6 +409,7 @@ class PDFProcessor:
         max_table_source_json_bytes: int = 8_000_000,
         preserve_uninterpreted_visuals: bool = False,
         max_visual_regions_per_page: int = 256,
+        empty_table_policy: str = "fail",
     ):
         self.strict = strict
         self.capture_rich_text = capture_rich_text
@@ -353,6 +418,11 @@ class PDFProcessor:
         self.max_table_source_json_bytes = max_table_source_json_bytes
         self.preserve_uninterpreted_visuals = preserve_uninterpreted_visuals
         self.max_visual_regions_per_page = max_visual_regions_per_page
+        if empty_table_policy not in ("fail", "preserve_defer"):
+            raise ValueError("Unsupported empty_table_policy")
+        if empty_table_policy=="preserve_defer" and not preserve_uninterpreted_visuals:
+            raise ValueError("empty_table_policy=preserve_defer requires source preservation")
+        self.empty_table_policy = empty_table_policy
         self._image_digest_cache: dict[int, tuple[str, int]] = {}
         self.max_render_pixels = max_render_pixels
         self.file_path = file_path
@@ -779,15 +849,30 @@ class PDFProcessor:
             staged_table_results = []
             for idx, table, raw, result in assessed:
                 if result is None:
+                    if (self.empty_table_policy=="preserve_defer"
+                            and self.preserve_uninterpreted_visuals):
+                        # Retain exact source page/geometry, not inferred cells.
+                        # Independently recovered tables still pass unchanged.
+                        try:
+                            region=_preserve_empty_table_candidate(
+                                table, raw, plumb_page, page_number,
+                                self.max_visual_regions_per_page,
+                                len(image_elements)+len(vector_elements),
+                                candidate_index=idx,
+                            )
+                        except ValueError as exc:
+                            raise RuntimeError(
+                                f"Unresolved table candidate p{page_number} index {idx}: {exc}"
+                            ) from exc
+                        vector_elements.append(region)
+                        continue
                     if not _is_nested_empty_table_artifact(
                         table, raw, valid_tables, plumb_page, image_elements
                     ):
                         raise RuntimeError(
                             f"Table {idx} page {page_number} has no recoverable cells"
                         )
-                    # Rasterize ONLY the tiny ambiguous region. Store source
-                    # geometry and a bounded PNG for future human/visual review,
-                    # rather than dropping graphical evidence from the page.
+                    # Legacy strict behavior unchanged by default.
                     if len(vector_elements) >= 8:
                         raise RuntimeError(
                             f"Too many unclassified vector regions p{page_number}"
