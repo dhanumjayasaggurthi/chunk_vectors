@@ -25,7 +25,7 @@ _DEFAULTS={
     "render_dpi":200, "max_render_pixels":50_000_000,
     "max_attempts":3, "max_api_retries":4,
     "timeout_seconds":90, "quota_wait_seconds":600,
-    "lease_seconds":1800, "retry_delay_seconds":60,
+    "lease_seconds":3600, "retry_delay_seconds":60,
     "confidence_min":0.60, "bbox_detail":"word",
     "rpm":1500, "ipm":1500,
 }
@@ -63,8 +63,8 @@ def settings(profile):
         raise ValueError("deferred_ocr.confidence_min must be 0..1")
     if cfg["bbox_detail"] not in ("word","block"):
         raise ValueError("deferred_ocr.bbox_detail must be word or block")
-    if cfg["lease_seconds"]<=cfg["quota_wait_seconds"]+cfg["timeout_seconds"]:
-        raise ValueError("OCR lease must exceed quota wait plus API timeout")
+    if cfg["lease_seconds"]<=cfg["max_api_retries"]*(cfg["quota_wait_seconds"]+cfg["timeout_seconds"])+60:
+        raise ValueError("OCR lease must exceed worst-case one cloud batch retry budget")
     return cfg
 
 
@@ -86,15 +86,27 @@ def _canonical(obj):
                       separators=(",",":"),allow_nan=False)
 
 
-def asset_id(doc_id,source_hash,extraction_hash,page_number,position,element):
+def ocr_fingerprint(cfg):
+    """Version recognition semantics, NOT retry budget or throttle settings."""
+    payload={
+        "version":1,
+        "provider":"google_vision_document_text_detection",
+        "render_dpi":cfg["render_dpi"],
+        "confidence_min":cfg["confidence_min"],
+        "bbox_detail":cfg["bbox_detail"],
+    }
+    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+
+
+def asset_id(doc_id,source_hash,extraction_hash,page_number,position,element,ocr_hash):
     ref=element.get("visual_asset") or element.get("unresolved_region")
     return hashlib.sha256(
-        _canonical([doc_id,source_hash,extraction_hash,page_number,position,
+        _canonical([doc_id,source_hash,extraction_hash,ocr_hash,page_number,position,
                     element.get("type"),element.get("bbox"),ref]).encode("utf-8")
     ).hexdigest()
 
 
-def discover_element(doc_id,source,version,page_number,position,element):
+def discover_element(doc_id,source,version,page_number,position,element,ocr_hash):
     """Fail closed on malformed source evidence; never infer image content."""
     from pdf_processor import validate_unresolved_region,validate_visual_asset
     if not isinstance(element,dict):
@@ -119,8 +131,8 @@ def discover_element(doc_id,source,version,page_number,position,element):
             or bbox[0]>=bbox[2] or bbox[1]>=bbox[3]):
         raise ValueError("Malformed preserved source geometry")
     return (
-        asset_id(doc_id,source,version,page_number,position,element),
-        doc_id,source,version,page_number,kind,
+        asset_id(doc_id,source,version,page_number,position,element,ocr_hash),
+        doc_id,source,version,ocr_hash,page_number,kind,
         _canonical(bbox),_canonical(ref),
     )
 
@@ -165,6 +177,7 @@ def iter_assets(profile,doc):
     n=tables(profile)
     doc_id,source,version,page_count=doc
     last=0
+    ocr_hash=ocr_fingerprint(settings(profile))
     conn=get_conn()
     seen=0
     try:
@@ -191,7 +204,7 @@ def iter_assets(profile,doc):
                     if "visual_asset" not in element and "unresolved_region" not in element:
                         continue
                     candidate=discover_element(
-                        doc_id,source,version,page_number,position,element)
+                        doc_id,source,version,page_number,position,element,ocr_hash)
                     if candidate is None:
                         raise ValueError("Ambiguous source visual provenance")
                     yield candidate
@@ -220,6 +233,7 @@ def init(profile,apply=False):
                   doc_id text NOT NULL,
                   source_hash text NOT NULL,
                   extraction_hash text NOT NULL,
+                  ocr_hash text NOT NULL,
                   page_number integer NOT NULL,
                   kind text NOT NULL,
                   bbox jsonb NOT NULL,
@@ -290,10 +304,10 @@ def _insert_assets(n,group):
         with conn.cursor() as cur:
             execute_values(cur,f"""
                 INSERT INTO {n['ocr']} (
-                  asset_id,doc_id,source_hash,extraction_hash,page_number,
-                  kind,bbox,source_ref
+                  asset_id,doc_id,source_hash,extraction_hash,ocr_hash,
+                  page_number,kind,bbox,source_ref
                 ) VALUES %s ON CONFLICT (asset_id) DO NOTHING
-            """,group,template="(%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)",
+            """,group,template="(%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)",
             page_size=128)
             changed=cur.rowcount
         conn.commit()
@@ -310,6 +324,7 @@ def claim(profile,limit,max_attempts,lease_seconds):
     from db import get_conn
     n=tables(profile)
     token=str(uuid.uuid4())
+    ocr_hash=ocr_fingerprint(settings(profile))
     conn=get_conn()
     try:
         with conn.cursor() as cur:
@@ -321,7 +336,7 @@ def claim(profile,limit,max_attempts,lease_seconds):
                     lease_until=NULL,error_code='OCR_ATTEMPT_LIMIT',
                     error_message='Retry allowance exhausted after expired lease',
                     updated_at=now()
-                WHERE j.attempts >= %s
+                WHERE j.ocr_hash=%s AND j.attempts >= %s
                   AND (j.status IN ('PENDING','RETRY_WAIT')
                        OR (j.status='RUNNING' AND j.lease_until<now()))
                   AND EXISTS (
@@ -329,14 +344,14 @@ def claim(profile,limit,max_attempts,lease_seconds):
                     AND d.source_hash=j.source_hash
                     AND d.extraction_hash=j.extraction_hash
                   )
-            """,(max_attempts,))
+            """,(ocr_hash,max_attempts,))
             cur.execute(f"""
                 WITH picked AS (
                   SELECT j.asset_id FROM {n['ocr']} AS j
                   JOIN {n['docs']} AS d ON d.doc_id=j.doc_id
                     AND d.source_hash=j.source_hash
                     AND d.extraction_hash=j.extraction_hash
-                  WHERE (
+                  WHERE j.ocr_hash=%s AND (
                     (j.status IN ('PENDING','RETRY_WAIT')
                        AND j.next_attempt_at<=now())
                     OR (j.status='RUNNING' AND j.lease_until<now())
@@ -355,7 +370,7 @@ def claim(profile,limit,max_attempts,lease_seconds):
                 RETURNING j.asset_id,j.doc_id,j.source_hash,
                   j.extraction_hash,j.page_number,j.kind,
                   j.bbox,j.attempts,j.lease_token
-            """,(max_attempts,limit,token,lease_seconds))
+            """,(ocr_hash,max_attempts,limit,token,lease_seconds))
             rows=cur.fetchall()
         conn.commit()
         return rows
@@ -626,6 +641,7 @@ def run(profile,max_jobs=100,workers=None):
 def status(profile):
     from db import get_conn
     n=tables(profile)
+    ocr_hash=ocr_fingerprint(settings(profile))
     conn=get_conn()
     try:
         with conn.cursor() as cur:
@@ -635,8 +651,9 @@ def status(profile):
                 JOIN {n['docs']} AS d ON d.doc_id=j.doc_id
                     AND d.source_hash=j.source_hash
                     AND d.extraction_hash=j.extraction_hash
+                WHERE j.ocr_hash=%s
                 GROUP BY j.status ORDER BY j.status
-            """)
+            """,(ocr_hash,))
             rows=cur.fetchall()
         return {"statuses":dict(rows),"writes":False}
     finally:
