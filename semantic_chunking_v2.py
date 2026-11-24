@@ -270,6 +270,146 @@ def _split(unit,budget,count):
     return pieces
 
 
+def _pack_short_chunks(chunks, policy, count):
+    """Merge compatible small retrieval units, never immutable source grids.
+
+    A packed chunk retains explicit per-component source page/table provenance.
+    We do not merge across different section paths, large page gaps, missing
+    context across pages, hard token limits or excessive distinct table IDs.
+    The separate source PDF/page JSON remains the fidelity authority.
+    """
+    if policy.get("small_section_policy","keep")!="merge_forward":
+        return chunks
+    minimum=policy["min_tokens"]
+    maximum=policy["max_tokens"]
+    max_pages=policy.get("small_chunk_max_pages",2)
+    max_tables=policy.get("small_chunk_max_tables",3)
+    if not minimum:
+        return chunks
+
+    def ids_for(item):
+        meta=item.chunk_metadata
+        return list(meta.get("table_ids") or
+                    ([meta["table_id"]] if meta.get("table_id") else []))
+
+    def text_for(group):
+        # Every original chunk is preserved in full, including real table
+        # headings and complete rows; only an explicit boundary is inserted.
+        return "\n\n".join(chunk.chunk_text for chunk in group)
+
+    def can_add(group, nxt):
+        if count(text_for(group))>=minimum:
+            return False
+        first,last=group[0],group[-1]
+        if nxt._section_path!=first._section_path:
+            return False
+        if (not first._section_path
+                and nxt.page_start!=last.page_end):
+            # Without a trusted section title, never bridge page boundaries.
+            return False
+        if nxt.page_start>last.page_end+1:
+            return False
+        if max(nxt.page_end, *(c.page_end for c in group))-min(
+                nxt.page_start, *(c.page_start for c in group))+1>max_pages:
+            return False
+        distinct={
+            table_id for item in group+[nxt]
+            for table_id in ids_for(item)
+        }
+        if len(distinct)>max_tables:
+            return False
+        return count(text_for(group+[nxt]))<=maximum
+
+    def finish(group):
+        if len(group)==1:
+            return group[0]
+        first=group[0]
+        text=text_for(group)
+        if count(text)>maximum:
+            raise RuntimeError("Short-chunk packing exceeded token budget")
+        entries=[]
+        table_ids=[]
+        table_components=[]
+        for child in group:
+            meta=child.chunk_metadata
+            ids=ids_for(child)
+            entries.append({
+                "page_start":child.page_start,
+                "page_end":child.page_end,
+                "content_types":list(child.content_types),
+                "table_ids":ids,
+                "text_sha256":hashlib.sha256(
+                    child.chunk_text.encode("utf-8")).hexdigest(),
+            })
+            for table_id in ids:
+                if table_id not in table_ids:
+                    table_ids.append(table_id)
+                    table_components.append({
+                        "table_id":table_id,
+                        "source_pages":meta.get("table_source_pages",[
+                            child.page_start]),
+                        "fragment_count":meta.get("table_fragment_count",1),
+                        "continuation_verified":meta.get(
+                            "table_continuation_verified",False),
+                        "columns":meta.get("table_columns"),
+                        "source_rows":meta.get("table_source_rows"),
+                    })
+        first.chunk_text=text
+        first.page_start=min(c.page_start for c in group)
+        first.page_end=max(c.page_end for c in group)
+        first.content_types=sorted({
+            kind for c in group for kind in c.content_types
+        })
+        original=first.chunk_metadata
+        result={
+            "semantic_boundary":"compatible_short_chunk_packing",
+            "packing_policy":"merge_forward",
+            "source_page_start":first.page_start,
+            "source_page_end":first.page_end,
+            "source_components":entries,
+            "overlap_copied":any(
+                c.chunk_metadata.get("overlap_copied",False) for c in group),
+            "cross_page_paragraph_joined":any(
+                c.chunk_metadata.get("cross_page_paragraph_joined",False)
+                for c in group),
+        }
+        reasons=sorted({
+            r for child in group for r in
+            child.chunk_metadata.get("exceptional_splits",[])
+        })
+        if reasons:
+            result["exceptional_splits"]=reasons
+        if table_ids:
+            result["table_ids"]=table_ids
+            result["table_components"]=table_components
+        if (len(table_ids)==1
+                and all(c.content_types==["table"] for c in group)):
+            # Only a genuinely single-table chunk may expose the historical
+            # singular table_id and its individual structural summary.
+            for key,value in original.items():
+                if key.startswith("table_"):
+                    result[key]=value
+            result["table_id"]=table_ids[0]
+        first.chunk_metadata=result
+        return first
+
+    output=[]
+    group=[]
+    for chunk in chunks:
+        if group and can_add(group,chunk):
+            group.append(chunk)
+        else:
+            if group:
+                output.append(finish(group))
+            group=[chunk]
+    if group:
+        output.append(finish(group))
+    for index,chunk in enumerate(output):
+        chunk.chunk_index=index
+        chunk.chunk_id=_make_chunk_id(chunk.doc_id,index)
+    return output
+
+
 def chunk_semantic_v2(struct,policy):
     import tiktoken
     encoding=policy.get("tokenizer","cl100k_base")
@@ -395,6 +535,7 @@ def chunk_semantic_v2(struct,policy):
             if count(render(pending))>maximum:
                 raise ValueError("Single semantic unit exceeded token budget")
     emit(pending)
+    chunks=_pack_short_chunks(chunks,policy,count)
     section_key=None
     section_id=""
     section_ordinal=0
