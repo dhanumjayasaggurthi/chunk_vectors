@@ -103,9 +103,19 @@ $Python = ".\.venv-validation\Scripts\python.exe"
 & $Python reuse_materialize.py preview --profile .\profiles\cv_corpus_semantic_v2.yml --doc-id 2721ac39536ef7b439091e3018506b426bda3616c5a76e4271fd29e0b8abfb86
 ~~~
 
+## Independent deferred OCR — newly implemented, validation in progress
+
+**Module**: deferred_ocr.py, [runbook](DEFERRED_OCR.md), tests/test_deferred_ocr.py. OCR source discovery is separate from native extraction and chunk materialization; one additive OCR job/result table in the existing extraction schema is created only with explicit init --apply. Read-only validate/discover never call cloud services. enqueue --apply is idempotent. run --apply alone issues batch GCP Vision calls under shared project-wide PostgreSQL request/image quotas. Bounded thread workers, per-thread PyMuPDF source PDF clip rendering, max image/pixel/byte budgets, DB SKIP LOCKED leases and explicit retry/terminal states.
+
+Published pages remain immutable. Source file doc-id and SHA-256 must match original; current published document version is enforced on claim. Asset IDs incorporate source/extraction hash plus OCR semantic render/model fingerprint (DPI, min confidence, word/block bbox). No-text or low-confidence OCR => VISUAL_PENDING; it is NOT a reconstructed table or chart. Original OCR text/word polygons and confidence stored only in OCR output rows. DB lease renewal before each sub-batch, expired/terminal attempts recovered by the claim handler. **Full chart description, native/OCR text reconciliation, OCR overlay into semantic materialization and actual GCP pilot remain outstanding**.
+
+CI: cloud-free tests on Windows/Linux and disposable PostgreSQL. Check latest [ingestion workflow](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/workflows/ingestion-reuse-tests.yml) and [rich-document workflow](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/workflows/rich-document-tests.yml). Do not claim original private PDF OCR has run; **NO GCP CLOUD CALLS HAVE BEEN MADE**.
+
+Next immediate action: once CI green, create a COPY of the existing native preserve_defer YAML with optional deferred_ocr settings, then run deferred_ocr.py validate and discover for the verified 778-page doc ID (read-only, no DDL). Reconcile expected ~323 previously deferred visual candidates. Ask for explicit approval before any cloud OCR calls, even in the staging environment. Do not rerun the native extractor or packed chunk audits.
+
 ## What is NOT done
 
-- **No independent deferred OCR enrichment worker** yet. Existing GCP OCR and quota primitives are available in vision_ocr.py/ocr_quota.py. Must build independent source-referenced rendering, batching, global quotas, retries/checkpoints and idempotent rejoin. Avoid synchronous OCR blocking native extraction.
+- **Deferred OCR processing implementation exists**, with explicit source-referenced rendering, bounded batches, global quotas and durable retries. It has **not** been invoked against original sources/GCP. Enrichment output is not yet rejoined with retrieval chunks; reconcile duplicates and original page/table geometry before exposing derived text.
 - **No full semantic summaries of reconstructed multi-page tables** yet. Existing table_structure_summary is a source-grounded structural description (columns, row counts/pages), not a clinical/numeric conclusion. Later optional async grounded summary stage must use whole logical table, cite cells/pages and undergo accuracy evaluation.
 - **No streaming large-document materialization** yet: extracted_source.load_extracted_document collects all source pages with rows.extend, then prepare_document/save_document hold all chunks. Implement bounded sliding-window/two-pass or spool processing before 25k-page stress. Preserve deterministic neighbor IDs and transaction atomicity.
 - The 15-day SLA is **not validated**. Stage parse dominates the pilot. Next original-document run should use substage timing and A/B profiling before switching table detector or reducing strictness. Scale nodes/workers based on fleet file/page distributions and p95 throughput, not a single 778-page PDF.
