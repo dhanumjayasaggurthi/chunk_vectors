@@ -113,6 +113,16 @@ CI: **PASS** [cross-platform ingestion and disposable PostgreSQL workflow 453388
 
 **Original 778-page read-only OCR discovery PASSED (user-reported 2026-11-24)**: OCR profile validated; exactly 1 document, **323 source-linked visual candidates**, `inserted=0`, `writes=false`; no GCP calls and no schema changes. Next concrete action: use the existing OCR profile to `init --apply` the isolated OCR table, then `enqueue --doc-id <verified doc-id> --apply`; verify 323 candidates and queue statuses. **Final scoped-OCR code CI passed**: [Windows/Linux Python 3.11/3.13 and disposable PostgreSQL 45339898781](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45339898781), [rich document and 100 mixed synthetic PDFs 45339898776](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45339898776). Scoped claim/status tests prevent a single-PDF pilot consuming other documents' queued jobs. No GCP cloud calls. **No `run --apply` until project quota caps/credentials and small pilot are agreed.**
 
+## 2026-11-24 — Real OCR enqueue connection-pool failure and correction
+
+Original 778-page OCR discovery passed with **323 candidates** and zero writes/GCP calls. User then ran OCR init --apply: isolated table **cv_validation_v1.cv_bench_pages_v1_visual_ocr** was created with native_source_unchanged=true. First enqueue --apply failed before asset insert: **TimeoutError: PostgreSQL pool exhausted: max=2 timeout=30s**; source-scoped status returned {}. **Do not rerun init or increase the pool cap**.
+
+Root cause in deferred_ocr.py: iter_documents() and iter_assets() held PostgreSQL connections across Python generator yields; _insert_assets() requested a third connection. Implemented: fetch/read, rollback/close in each iterator *before* yield; preserves 64-document / 32-page bounded pagination and 128-asset upserts with no nested read leases. No changes to source provenance, OCR version, GCP quotas or native page rows.
+
+Regression in tests/test_deferred_ocr.py: test_z_large_enqueue_releases_reads_before_insert_under_pool_cap_2 creates 70 published pages/140 visual assets, forces an effective two-lease cap, asserts 140 first inserts and 0 repeat inserts, and no leases remain. **CI must pass before calling this corrected local.**
+
+Next local action after downloading the new deferred_ocr.py: no re-extraction and no init. Rerun deferred_ocr.py enqueue for document 2721ac39536ef7b439091e3018506b426bda3616c5a76e4271fd29e0b8abfb86, with the same OCR profile and --apply, then scoped status. Expect documents=1, candidates=323, inserted=323 and PENDING=323 on first successful enqueue; if a prior run inserted rows, lower insert count is valid if status count reconciles. No GCP calls until a separate explicit run --apply.
+
 ## What is NOT done
 
 - **Deferred OCR processing implementation exists**, with explicit source-referenced rendering, bounded batches, global quotas and durable retries. It has **not** been invoked against original sources/GCP. Enrichment output is not yet rejoined with retrieval chunks; reconcile duplicates and original page/table geometry before exposing derived text.
