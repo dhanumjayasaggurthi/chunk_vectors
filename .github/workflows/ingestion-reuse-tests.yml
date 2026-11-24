@@ -31,6 +31,8 @@ on:
       - tests/test_native_process_workers.py
       - profiles/regulatory_semantic_v2_example.yml
       - figure_recovery.py
+      - source_evidence_archive.py
+      - tests/test_source_evidence_archive.py
       - page_stage.py
       - ocr_quota.py
       - pdf_processor.py
@@ -71,7 +73,7 @@ jobs:
           gcp_key_path=not-used.json
           EOF
       - name: Compile modified modules
-        run: python -m py_compile main.py extracted_source.py configurable_chunking.py metadata_extractor.py processing_profile.py reuse_materialize.py page_stage.py ocr_quota.py vision_ocr.py pdf_processor.py db.py db_pool.py semantic_chunking_v2.py table_continuity.py
+        run: python -m py_compile main.py extracted_source.py configurable_chunking.py metadata_extractor.py processing_profile.py reuse_materialize.py page_stage.py ocr_quota.py vision_ocr.py pdf_processor.py db.py db_pool.py semantic_chunking_v2.py table_continuity.py source_evidence_archive.py
       - name: Run intake reuse unit tests
         run: python -m unittest discover -s tests -p 'test_*materialize.py' -v
       - name: Semantic-v2 paragraph, table-continuity and metadata integrity
@@ -94,6 +96,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_empty_table_deferred.py' -v
       - name: Independent OCR source/provenance, rendering, and no-cloud retry tests
         run: python -m unittest discover -s tests -p 'test_deferred_ocr.py' -v
+      - name: Validate explicit source preservation and checksum verification
+        run: python -m unittest discover -s tests -p 'test_source_evidence_archive.py' -v
 
   postgres-integration:
     runs-on: ubuntu-latest
