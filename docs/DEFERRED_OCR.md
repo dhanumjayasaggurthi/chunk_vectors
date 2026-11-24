@@ -157,6 +157,13 @@ Original PBRER run: --max-jobs 32, --workers 4, --apply, elapsed **4.58 sec**, *
 
 Next performance step after QA: a controlled **64–128 fresh PENDING jobs / 4 workers** against the same document, with measured wall-time, transient failures, project-wide quota limits and observed source readability; do not extrapolate 3.2M/15d capacity from the 4.58-sec pilot alone.
 
+## OCR quality read-only aggregate — original PBRER (2026-11-24)
+
+Across 323 source-linked OCR assets: PENDING images=261; PENDING unresolved vector regions=22; TEXT_READY images=27, mean OCR confidence 0.967 and mean word-level regions=1.0; VISUAL_PENDING images=9, vector regions=4, all NO_OCR_TEXT, zero OCR regions. Recognized language distribution for TEXT_READY: unknown=24, en=3. The parser emits one region per Vision word at bbox_detail=word, so these are mostly **single-word labels**, not evidence that complete clinical figures/tables were transcribed. High confidence is on identified words only. Unknown language comes from absent language metadata; it is not a translation failure or proof of English.
+
+Do not rerun the 40 completed assets or re-enqueue the 323 candidates. Original image sources remain available; blank OCR on 13 assets is not a reconstructed table/figure. Do not call unavailable Document AI, Vertex AI, Azure or third-party vision models. Any future semantic overlay must preserve doc/page/bbox/asset_id, source/version identity, confidence/word polygons and non-text status while avoiding native OCR duplicates. For retrieval, favor attaching isolated labels to relevant source-backed context rather than inventing standalone clinical summaries.
+
+Next controlled performance extension: run 64 fresh PENDING assets with four workers, without --retry-only, retaining --doc-id and --apply; this uses approved original source clips and may incur Google Vision charges. Record batch elapsed seconds, exit code, TEXT_READY/VISUAL_PENDING/RETRY_WAIT counts and cumulative status. With no unrelated workers and 64 claimed, PENDING should go from 283 to 219; individual outcome mix is not predetermined. Actual GCP quota limits and sustained multi-document SLA remain unverified.
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
