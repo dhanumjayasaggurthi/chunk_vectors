@@ -19,6 +19,8 @@ on:
       - tests/test_page_stage.py
       - tests/test_deferred_visual_native.py
       - tests/test_empty_table_deferred.py
+      - deferred_ocr.py
+      - tests/test_deferred_ocr.py
       - db.py
       - db_pool.py
       - semantic_chunking_v2.py
@@ -90,6 +92,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_page_stage.py' -v
       - name: Verify native deferred empty-table preservation
         run: python -m unittest discover -s tests -p 'test_empty_table_deferred.py' -v
+      - name: Independent OCR source/provenance, rendering, and no-cloud retry tests
+        run: python -m unittest discover -s tests -p 'test_deferred_ocr.py' -v
 
   postgres-integration:
     runs-on: ubuntu-latest
@@ -153,3 +157,5 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_deferred_visual_native.py' -v
       - name: Verify source-only empty table candidates and PostgreSQL replay
         run: python -m unittest discover -s tests -p 'test_empty_table_deferred.py' -v
+      - name: Verify deferred OCR lease/claim/idempotency in disposable PostgreSQL
+        run: python -m unittest discover -s tests -p 'test_deferred_ocr.py' -v
