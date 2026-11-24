@@ -100,6 +100,13 @@ $Python = ".\.venv-validation\Scripts\python.exe"
 5. **P1 semantic table summaries + search/vector API**: downstream teams need one stable interface with document/page/chunk metadata, table references, optional embedding and explicit enrichment states.
 6. **P1 fleet benchmark**: >=100 original regulatory documents of diverse layouts/languages, sustained multi-node load, retries, QA sampling, p95 processing time, peak RSS, PostgreSQL WAL, OCR quota, and projected 3.2M/15d feasibility.
 
+## Latest validated automated evidence
+
+- 2026-11-24, implementation commit [a0233637](https://github.com/dhanumjayasaggurthi/chunk_vectors/commit/a02336373f5a7d227ad0c7489832639b64be6865): [ingestion CI 45332875178](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45332875178) **PASS** (Windows/Linux Python 3.11/3.13, disposable PostgreSQL, integrated quality preview, semantic paragraph/table linking, native stage).
+- [Rich document CI 45332875209](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45332875209) **PASS**, including 100 synthetic mixed-content PDF smoke.
+- **These are CI/synthetic tests**, not evidence of 3.2M-file fleet throughput, private PDF retest of the new chunk-boundary heuristic, or production deferred OCR.
+- Latest feature-branch document changes do not modify extraction or chunk logic beyond the tested implementation; always re-check HEAD/CI before merge.
+
 ## How to resume from this file
 
 Open branch URL, then this exact file. Read latest Git commits/CI, inspect source and tests before modifying. Continue from priority 1 without repeating setup, approval gates, new schemas or separate audit scripts. **Update this file with each meaningful change, test evidence, current blocker, next action and SHA.** Always distinguish 'implemented', 'CI-tested', 'validated on original PDFs', and 'SLA proven'.
