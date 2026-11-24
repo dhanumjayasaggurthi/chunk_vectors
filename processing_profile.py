@@ -8,6 +8,9 @@ import re
 from pathlib import Path
 
 _ALLOWED_METHODS = {"label", "regex", "constant"}
+# Internal semantic algorithm revision, not a tunable operational setting.
+# Bump whenever chunk boundaries/IDs/continuity or materialized semantics change.
+_SEMANTIC_V2_IMPLEMENTATION_VERSION = 2
 _DEFAULTS = {
     "version": 1,
     "chunking": {
@@ -97,7 +100,16 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             parsed = value
         result[section][field] = parsed
     validate_profile(result)
-    canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # Keep legacy profiles byte-for-byte fingerprint compatible. Semantic-v2
+    # output must change identity when implementation semantics change, even
+    # if the user did not modify the YAML, so stale chunks never SKIP.
+    identity = (
+        {"profile": result, "semantic_v2_implementation_version":
+         _SEMANTIC_V2_IMPLEMENTATION_VERSION}
+        if result["chunking"].get("boundary_mode")=="semantic_v2"
+        else result
+    )
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     result["_fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return result
 
