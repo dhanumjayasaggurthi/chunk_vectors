@@ -19,11 +19,11 @@ Use profiles/visual_evidence_example.json for DPI, workers, batch_pages, max_in_
 & $Python visual_evidence.py capture --file $OriginalPdf --root $EvidenceRoot --page 1 --end-page 10 --profile .\profiles\visual_evidence_example.json --policy-id $PolicyId --authorized-page-derivatives
 ~~~
 
-Use the same profile with verify, capture ID and page range, no source file. A single invocation owns the document; do not launch nested pools or multiple hosts on the same source without a fleet scheduler. Local verification remains distinct from production durability and mandatory purge. Public acceptance is pending for the new parallel implementation.
+Use the same profile with verify, capture ID and page range, no source file. A single invocation owns the document; do not launch nested pools or multiple hosts on the same source without a fleet scheduler. Local verification remains distinct from production durability and mandatory purge. Public acceptance for implementation 04d1032 passed 43/43 selected pages across three real NIST/EMA PDFs, with zero replay rendering; 15/15 Linux figure tests. Extended complete-public-document, 3,001 synthetic page and explicit Windows figure-test gate is pending.
 
 ## Local validation runbook — derivative-only pilot
 
-The 2026-11-24 Windows validation run reported 9 passed/3 import errors (optional source_evidence_archive module not copied). The derivative pilot is now self-contained apart from PyMuPDF and the Python standard library. Transfer visual_evidence.py and tests/test_figure_recovery.py from the latest feature branch ZIP; do not enable original archiving. Expected updated regression count: 13, including isolated module launch. Verify current CI and local tests before any real-document derivative capture.
+The 2026-11-24 Windows validation run reported 9 passed/3 import errors (optional source_evidence_archive module not copied). The derivative pilot is now self-contained apart from PyMuPDF and the Python standard library. Transfer visual_evidence.py and tests/test_figure_recovery.py from the latest feature branch ZIP; do not enable original archiving. Expected current regression count: 15, including isolated module launch, replay and parallel runtime identity. Verify current CI and local tests before any real-document derivative capture.
 
 ~~~powershell
 $Python = ".\.venv-validation\Scripts\python.exe"
@@ -34,9 +34,9 @@ $Python = ".\.venv-validation\Scripts\python.exe"
 Only after explicit organizational approval for full-page derivatives and a permitted persistent storage root, set $OriginalPdf to the previously verified 10-page article and set $EvidenceRoot and $PolicyId to the actual approved path and identifier:
 
 ~~~powershell
-$Capture = & $Python visual_evidence.py capture --file $OriginalPdf --root $EvidenceRoot --page 1 --end-page 10 --dpi 300 --policy-id $PolicyId --authorized-page-derivatives | ConvertFrom-Json
+$Capture = & $Python visual_evidence.py capture --file $OriginalPdf --root $EvidenceRoot --page 1 --end-page 10 --profile .\profiles\visual_evidence_example.json --policy-id $PolicyId --authorized-page-derivatives | ConvertFrom-Json
 $Capture | Format-List
-& $Python visual_evidence.py verify --root $EvidenceRoot --capture-id $Capture.capture_id --page 1 --end-page 10
+& $Python visual_evidence.py verify --root $EvidenceRoot --capture-id $Capture.capture_id --page 1 --end-page 10 --profile .\profiles\visual_evidence_example.json
 ~~~
 
 Expected: verified_pages=10, local_content_verified=true, original_copied=false, original_required_for_verification=false, durable_storage_verified=false, purge_safe=false. Do not delete the original manually; synthetic tests cover removal. The deadline remains mandatory. Real capture, storage approval and complete figure-level evidence are still pending.

@@ -21,14 +21,27 @@
     [
       "nist_ir8524",
       "https://nvlpubs.nist.gov/nistpubs/ir/2024/NIST.IR.8524.pdf",
-      25,
-      40
+      1,
+      0
     ],
     [
       "ema_balversa",
       "https://www.ema.europa.eu/en/documents/assessment-report/balversa-epar-public-assessment-report_en.pdf",
-      110,
-      118
+      1,
+      0
     ]
-  ]
+  ],
+  "long_document_stress": {
+    "pages": 3001,
+    "page_width_pt": 72,
+    "page_height_pt": 72,
+    "visual_evidence": {
+      "dpi": 150,
+      "workers": 4,
+      "batch_pages": 32,
+      "max_in_flight": 8,
+      "max_pixels": 500000,
+      "max_png_bytes": 1000000
+    }
+  }
 }

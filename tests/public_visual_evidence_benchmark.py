@@ -68,7 +68,10 @@ def check(spec, config):
         started = time.monotonic()
         with fitz.open(source) as pdf:
             for i in range(first, last+1):
-                png, _ = _paths(retained, cid, i)
+                png, manifest = _paths(retained, cid, i)
+                serial_png, serial_manifest = _paths(root/"serial", cid, i)
+                assert manifest.read_bytes() == serial_manifest.read_bytes(), f"Serial manifest mismatch on page {i}"
+                assert digest_file(png) == digest_file(serial_png), f"Serial PNG mismatch on page {i}"
                 saved = fitz.Pixmap(str(png))
                 expected = pdf[i-1].get_pixmap(dpi=config['visual_evidence']['dpi'], colorspace=fitz.csRGB,
                                                 alpha=False, annots=True)
@@ -117,6 +120,69 @@ def check(spec, config):
         }
 
 
+
+def check_long(config):
+    """Stress scheduling and resume across >3,000 small synthetic pages.
+
+    This is deliberately a small-page stress fixture, not a substitute for
+    a large, complex, real regulatory document or a fleet/RSS benchmark.
+    """
+    import fitz
+    count = config["pages"]
+    settings = config["visual_evidence"]
+    if type(count) is not int or count < 3001:
+        raise ValueError("Long document acceptance needs at least 3001 pages")
+    with tempfile.TemporaryDirectory(prefix="long-visual-") as tmp:
+        root = Path(tmp)
+        source = root / "long.pdf"
+        retained = root / "retained"
+        with fitz.open() as doc:
+            for i in range(count):
+                page = doc.new_page(width=config["page_width_pt"], height=config["page_height_pt"])
+                page.insert_text((8, 18), str(i + 1), fontsize=8)
+                page.draw_line((8, 30), (40, 45))
+            doc.save(source)
+        kw = dict(settings=settings, policy_id="public-benchmark",
+                  authorized_page_derivatives=True)
+        initial = capture(source, retained, 1, count, **kw)
+        assert initial["rendered_pages"] == count
+        cid = initial["capture_id"]
+        batch = settings["batch_pages"]
+        missing = sorted({1, min(batch, count), min(batch + 1, count), count})
+        for page in missing:
+            _, manifest = _paths(retained, cid, page)
+            manifest.unlink()
+        resumed = capture(source, retained, 1, count, **kw)
+        assert resumed["rendered_pages"] == len(missing)
+        assert resumed["skipped_verified_pages"] == count - len(missing)
+        replay = capture(source, retained, 1, count, **kw)
+        assert replay["rendered_pages"] == 0
+        assert replay["skipped_verified_pages"] == count
+        with fitz.open(source) as doc:
+            for page in missing:
+                png, _ = _paths(retained, cid, page)
+                actual = fitz.Pixmap(str(png))
+                expected = doc[page-1].get_pixmap(dpi=settings["dpi"],
+                            colorspace=fitz.csRGB, alpha=False, annots=True)
+                assert actual.samples == expected.samples
+        source.unlink()
+        restored = verify(retained, cid, 1, count, settings=settings)
+        assert restored["verified_pages"] == count
+        return {
+            "source": "synthetic_long_document", "source_pages": count,
+            "verified_after_source_removal": restored["verified_pages"],
+            "cold_seconds": initial["elapsed_seconds"],
+            "resume_seconds": resumed["elapsed_seconds"],
+            "replay_seconds": replay["elapsed_seconds"],
+            "replay_rendered_pages": replay["rendered_pages"],
+            "replay_skipped_pages": replay["skipped_verified_pages"],
+            "resume_rendered_pages": resumed["rendered_pages"],
+            "resume_missing_pages": missing, "workers": settings["workers"],
+            "batch_pages": batch, "retained_bytes": initial["image_bytes"],
+            "scope": "synthetic small pages: scheduler and reconciliation only",
+        }
+
+
 def main():
     if len(sys.argv) != 3:
         raise SystemExit("usage: public_visual_evidence_benchmark.py CONFIG REPORT")
@@ -134,7 +200,15 @@ def main():
             failure = {"source":spec[0],"error":repr(exc)}
             failures.append(failure)
             print(json.dumps(failure), flush=True)
-    report = {"results":results,"failures":failures,"passed":len(results)==len(config['sources']) and not failures,
+    stress = None
+    if "long_document_stress" in config:
+        try:
+            stress = check_long(config["long_document_stress"])
+            print(json.dumps(stress), flush=True)
+        except Exception as exc:
+            failures.append({"source": "synthetic_long_document", "error": repr(exc)})
+            print(json.dumps(failures[-1]), flush=True)
+    report = {"results":results,"long_document_stress":stress,"failures":failures,"passed":len(results)==len(config['sources']) and not failures,
               "scope":"rendered-page integrity and replay only; not figure/OCR/LLM quality"}
     output.write_text(json.dumps(report,indent=2),encoding="utf-8")
     if not report["passed"]:
