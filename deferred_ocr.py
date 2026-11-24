@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
+import multiprocessing
 import hashlib
 import json
 import logging
@@ -29,6 +31,7 @@ _DEFAULTS={
     "lease_seconds":3600, "retry_delay_seconds":60,
     "confidence_min":0.60, "bbox_detail":"word",
     "rpm":1500, "ipm":1500,
+    "retained_evidence":None,
 }
 _INT_LIMITS={
     "workers":(1,32),"batch_images":(1,16),
@@ -66,7 +69,27 @@ def settings(profile):
         raise ValueError("deferred_ocr.bbox_detail must be word or block")
     if cfg["lease_seconds"]<=cfg["max_api_retries"]*(cfg["quota_wait_seconds"]+cfg["timeout_seconds"])+60:
         raise ValueError("OCR lease must exceed worst-case one cloud batch retry budget")
+    if cfg["retained_evidence"] is not None:
+        cfg["retained_evidence"] = _retained_config(cfg["retained_evidence"], cfg["render_dpi"])
     return cfg
+
+
+def _retained_config(value, dpi):
+    from visual_evidence import _settings, capture_identity
+    if (not isinstance(value,dict) or set(value) !=
+            {"root","policy_id","renderer","visual_settings","read_workers"}):
+        raise ValueError("retained_evidence requires root, policy_id, renderer, visual_settings, read_workers")
+    root=value["root"]
+    if not isinstance(root,str) or not root.strip() or not Path(root).is_absolute():
+        raise ValueError("retained_evidence.root must be an absolute approved storage path")
+    workers=value["read_workers"]
+    if type(workers) is not int or not 1<=workers<=32:
+        raise ValueError("retained_evidence.read_workers must be 1..32")
+    visual=_settings(value["visual_settings"])
+    if visual["dpi"] != dpi:
+        raise ValueError("Retained evidence DPI must equal deferred OCR render_dpi")
+    capture_identity("0"*64,visual,value["policy_id"],value["renderer"])
+    return {**value,"visual_settings":visual}
 
 
 def tables(profile):
@@ -96,6 +119,12 @@ def ocr_fingerprint(cfg):
         "confidence_min":cfg["confidence_min"],
         "bbox_detail":cfg["bbox_detail"],
     }
+    retained=cfg.get("retained_evidence")
+    if retained is not None:
+        from visual_evidence import capture_identity
+        payload["input_evidence"] = capture_identity(
+            "0"*64,retained["visual_settings"],retained["policy_id"],retained["renderer"])
+        payload["input_mode"] = "retained_page_crop_v1"
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
@@ -587,7 +616,46 @@ def _mark_failure(profile,job,cfg,exc,terminal=False):
     return status
 
 
-def run_group(profile,group,cfg,limiter,verifier):
+def _retained_png(job,cfg):
+    """Executed in a separate process in production; no database/cloud access."""
+    from visual_evidence import capture_identity, _capture_id, read_region
+    retained=cfg["retained_evidence"]
+    identity=capture_identity(job[2],retained["visual_settings"],
+                              retained["policy_id"],retained["renderer"])
+    capture_id=_capture_id(identity)
+    png, meta=read_region(retained["root"],capture_id,job[4],job[6],
+                          settings=retained["visual_settings"])
+    if meta["source_pdf_sha256"]!=job[2] or meta["source_page"]!=job[4] or meta["dpi"]!=cfg["render_dpi"]:
+        raise ValueError("Retained OCR evidence source/page/DPI mismatch")
+    x0,y0,x1,y1=meta["pixel_bbox"]
+    if (x1-x0)*(y1-y0)>cfg["max_render_pixels"]:
+        raise ValueError("Retained OCR clip exceeds pixel budget")
+    if len(png)>cfg["max_batch_bytes"]:
+        raise ValueError("OCR PNG exceeds request byte budget")
+    return png
+
+
+@contextlib.contextmanager
+def _ocr_input(profile,group,cfg,verifier,reader_pool):
+    if cfg.get("retained_evidence") is not None:
+        # Strict mode: never consult original paths or archive fallback.
+        # Production run() supplies a single shared process pool. The direct
+        # path is for synchronous unit tests and other single-thread callers.
+        def render(job):
+            if reader_pool is None:
+                return _retained_png(job,cfg)
+            return reader_pool.submit(_retained_png,job,cfg).result()
+        yield render, lambda: None
+        return
+    import fitz
+    path=_file_path(profile,group[0][1],group[0][2],group[0][3])
+    state=verifier.verify(path,group[0][1],group[0][2])
+    with fitz.open(str(path)) as pdf:
+        yield (lambda job:render_clipped(pdf,job[4],job[6],cfg),
+               lambda:verifier.ensure_unchanged(path,state))
+
+
+def run_group(profile,group,cfg,limiter,verifier,reader_pool=None):
     """Own one PDF handle per thread and complete every claimed asset.
 
     The cloud batch and each persisted result are handled separately. A DB
@@ -595,7 +663,6 @@ def run_group(profile,group,cfg,limiter,verifier):
     handler; a crashed worker's lease remains recoverable.
     """
     from vision_ocr import batch_document_text_detection
-    import fitz
     counts=Counter()
     finished=set()
 
@@ -632,9 +699,7 @@ def run_group(profile,group,cfg,limiter,verifier):
         counts[status]+=1
 
     try:
-        path=_file_path(profile,group[0][1],group[0][2],group[0][3])
-        state=verifier.verify(path,group[0][1],group[0][2])
-        with fitz.open(str(path)) as pdf:
+        with _ocr_input(profile,group,cfg,verifier,reader_pool) as (render,ensure_unchanged):
             current=[]
             byte_count=0
 
@@ -645,7 +710,7 @@ def run_group(profile,group,cfg,limiter,verifier):
                 batch=current
                 current=[]
                 byte_count=0
-                verifier.ensure_unchanged(path,state)
+                ensure_unchanged()
                 renew_leases(
                     profile,[j for j in group if j[0] not in finished],
                     cfg["lease_seconds"],
@@ -672,7 +737,7 @@ def run_group(profile,group,cfg,limiter,verifier):
 
             for job in group:
                 try:
-                    png=render_clipped(pdf,job[4],job[6],cfg)
+                    png=render(job)
                     if len(png)>cfg["max_batch_bytes"]:
                         raise ValueError("OCR PNG exceeds request byte budget")
                     if current and byte_count+len(png)>cfg["max_batch_bytes"]:
@@ -707,7 +772,13 @@ def run(profile,max_jobs=100,workers=None,*,doc_id=None,retry_only=False):
         max_wait_seconds=cfg["quota_wait_seconds"])
     verifier=_SourceVerifier()
     counters=Counter()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+    retained=cfg.get("retained_evidence")
+    # One shared bounded process pool, not a pool per document/cloud worker.
+    with contextlib.ExitStack() as stack:
+        reader_pool=(stack.enter_context(concurrent.futures.ProcessPoolExecutor(
+            max_workers=retained["read_workers"],mp_context=multiprocessing.get_context("spawn")))
+            if retained is not None else None)
+        executor=stack.enter_context(concurrent.futures.ThreadPoolExecutor(max_workers=workers))
         while sum(counters.values())<max_jobs:
             quota=min(max_jobs-sum(counters.values()),
                       workers*cfg["batch_images"])
@@ -716,7 +787,7 @@ def run(profile,max_jobs=100,workers=None,*,doc_id=None,retry_only=False):
             if not jobs:
                 break
             future=[
-                executor.submit(run_group,profile,group,cfg,limiter,verifier)
+                executor.submit(run_group,profile,group,cfg,limiter,verifier,reader_pool)
                 for group in _group_jobs(jobs,cfg["batch_images"])
             ]
             for item in concurrent.futures.as_completed(future):

@@ -193,8 +193,8 @@ def check(spec, config):
             import itertools
             vector_settings={**kw["settings"],**vector_config["settings"],"capture_vectors":True}
             with fitz.open(source) as doc:
-                vector_pages=(i for i in range(first,last+1) if doc[i-1].get_drawings())
-                for i in itertools.islice(vector_pages,vector_config["max_pages"]):
+                vector_candidates=(i for i in range(first,last+1) if doc[i-1].get_drawings())
+                for i in itertools.islice(vector_candidates,vector_config["max_pages"]):
                     report=capture(source,root/"vectors",i,i,**{**kw,"settings":vector_settings})
                     vid=report["capture_id"]
                     inv,_=read_vectors(root/"vectors",vid,i,settings=vector_settings)
@@ -340,8 +340,9 @@ def main():
     for spec in config["sources"]:
         try:
             result = check(spec,config)
+            serialized = json.dumps(result, allow_nan=False)
             results.append(result)
-            print(json.dumps(result), flush=True)
+            print(serialized, flush=True)
         except Exception as exc:
             failure = {"source":spec[0],"error":repr(exc),"traceback":traceback.format_exc()}
             failures.append(failure)

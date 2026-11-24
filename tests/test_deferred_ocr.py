@@ -53,6 +53,56 @@ def make_pdf(where):
 
 
 class DeferredOcrUnitTests(unittest.TestCase):
+    def test_retained_ocr_uses_existing_queue_without_original_or_cloud(self):
+        import concurrent.futures
+        import multiprocessing
+        import fitz
+        from visual_evidence import capture, read_region, _paths
+        from vision_ocr import OcrResult
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            source=make_pdf(folder)
+            sha=hashlib.sha256(source.read_bytes()).hexdigest()
+            doc_id=hashlib.sha256(str(source).encode("utf-8")).hexdigest()
+            visual=dict(dpi=200,workers=1)
+            result=capture(source,root/"retained",1,1,settings=visual,
+                           policy_id="synthetic-test",authorized_page_derivatives=True)
+            p={**profile(),"deferred_ocr":{"retained_evidence":{
+                "root":str(root/"retained"),"policy_id":"synthetic-test",
+                "renderer":str(fitz.VersionBind),"visual_settings":visual,"read_workers":2}}}
+            cfg=ocr.settings(p)
+            self.assertNotEqual(ocr.ocr_fingerprint(cfg),ocr.ocr_fingerprint(ocr.settings(profile())))
+            tuned={**cfg,"retained_evidence":{**cfg["retained_evidence"],"read_workers":1}}
+            self.assertEqual(ocr.ocr_fingerprint(cfg),ocr.ocr_fingerprint(tuned))
+            job=("retained-job",doc_id,sha,"e"*64,1,"image",[45,50,200,190],1,"lease")
+            expected,_=read_region(root/"retained",result["capture_id"],1,job[6],settings=visual)
+            source.unlink()
+            with concurrent.futures.ProcessPoolExecutor(
+                    max_workers=2,mp_context=multiprocessing.get_context("spawn")) as pool:
+                with (patch("deferred_ocr._file_path",side_effect=AssertionError("source lookup forbidden")),
+                      patch("deferred_ocr.renew_leases"),
+                      patch("deferred_ocr.complete") as completed,
+                      patch("vision_ocr.batch_document_text_detection",
+                            return_value=[OcrResult("Dose 20 mg",.98,3,"en",True)]) as api):
+                    report=ocr.run_group(p,[job],cfg,None,ocr._SourceVerifier(),pool)
+                    self.assertEqual(report["TEXT_READY"],1)
+                    self.assertEqual(api.call_args.args[0],[expected])
+                    self.assertEqual(completed.call_args.kwargs["status"],"TEXT_READY")
+            png,_=_paths(root/"retained",result["capture_id"],1)
+            with png.open("ab") as stream:
+                stream.write(b"tamper")
+            with (patch("deferred_ocr._file_path",side_effect=AssertionError("source lookup forbidden")),
+                  patch("deferred_ocr.renew_leases"),
+                  patch("deferred_ocr.complete") as completed,
+                  patch("vision_ocr.batch_document_text_detection") as api):
+                report=ocr.run_group(p,[job],cfg,None,ocr._SourceVerifier())
+                self.assertEqual(report["FAILED_TERMINAL"],1)
+                api.assert_not_called()
+                self.assertIn("checksum",completed.call_args.kwargs["error_message"])
+            bad={**p,"deferred_ocr":{**p["deferred_ocr"],"render_dpi":300}}
+            with self.assertRaisesRegex(ValueError,"DPI"):
+                ocr.settings(bad)
+
     def test_versioned_discovery_and_source_validation(self):
         c=ocr.settings(profile())
         version=ocr.ocr_fingerprint(c)

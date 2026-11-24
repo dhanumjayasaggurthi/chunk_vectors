@@ -696,6 +696,40 @@ def _bounded_batches(args_iter, settings):
                 future.cancel()
 
 
+def capture_identity(source_hash, settings, policy_id, renderer):
+    """Reproduce the exact semantic capture identity independently of source bytes.
+
+    Renderer version is explicit so a later runtime upgrade cannot silently
+    address evidence produced by a different renderer.
+    """
+    _hash_id(source_hash)
+    settings = _settings(settings)
+    if not isinstance(policy_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", policy_id):
+        raise ValueError("Explicit retention policy identifier required")
+    if not isinstance(renderer, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", renderer):
+        raise ValueError("Expected explicit PyMuPDF renderer version")
+    identity = {
+        "schema": SCHEMA, "source_pdf_sha256": source_hash,
+        "dpi": settings["dpi"], "policy_id": policy_id, "renderer": renderer,
+        "colorspace": "RGB", "alpha": False, "annotations": True,
+    }
+    if settings["selection_mode"] == "native_text_or_render":
+        identity.update(selection_mode="native_text_or_render_v1",
+                        min_native_chars=settings["min_native_chars"],
+                        max_native_json_bytes=settings["max_native_json_bytes"])
+    if settings["capture_rasters"]:
+        identity.update(raster_capture="xref_extracted_bytes_v1",
+                        max_raster_occurrences=settings["max_raster_occurrences"],
+                        max_raster_pixels=settings["max_raster_pixels"],
+                        max_raster_bytes=settings["max_raster_bytes"])
+    if settings["capture_vectors"]:
+        identity.update(vector_capture="extended_cdrawings_v1",
+                        max_vector_paths=settings["max_vector_paths"],
+                        max_vector_items=settings["max_vector_items"],
+                        max_vector_json_bytes=settings["max_vector_json_bytes"])
+    return identity
+
+
 def capture(source, root, first, last, *, dpi=None, policy_id="",
             authorized_page_derivatives=False, settings=None):
     """One source hash before/after; independently opened bounded page batches."""
@@ -721,25 +755,7 @@ def capture(source, root, first, last, *, dpi=None, policy_id="",
     source_hash = digest_file(source)
     if _source_state(source) != state:
         raise RuntimeError("Source changed during hashing")
-    identity = {
-        "schema": SCHEMA, "source_pdf_sha256": source_hash,
-        "dpi": settings["dpi"], "policy_id": policy_id, "renderer": str(fitz.VersionBind),
-        "colorspace": "RGB", "alpha": False, "annotations": True,
-    }
-    if settings["selection_mode"] == "native_text_or_render":
-        identity.update(selection_mode="native_text_or_render_v1",
-                        min_native_chars=settings["min_native_chars"],
-                        max_native_json_bytes=settings["max_native_json_bytes"])
-    if settings["capture_rasters"]:
-        identity.update(raster_capture="xref_extracted_bytes_v1",
-                        max_raster_occurrences=settings["max_raster_occurrences"],
-                        max_raster_pixels=settings["max_raster_pixels"],
-                        max_raster_bytes=settings["max_raster_bytes"])
-    if settings["capture_vectors"]:
-        identity.update(vector_capture="extended_cdrawings_v1",
-                        max_vector_paths=settings["max_vector_paths"],
-                        max_vector_items=settings["max_vector_items"],
-                        max_vector_json_bytes=settings["max_vector_json_bytes"])
+    identity = capture_identity(source_hash, settings, policy_id, str(fitz.VersionBind))
     cid = _capture_id(identity)
     with fitz.open(source) as pdf:
         if pdf.is_encrypted:

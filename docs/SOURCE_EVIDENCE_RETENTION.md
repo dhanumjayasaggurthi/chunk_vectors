@@ -11,6 +11,25 @@ The real corrected 10-page inventory now returns 15 distinct numbered caption ca
 
 `visual_evidence.py` is a bounded PDF derivative pilot. It captures RGB PNG and source-linked manifest per physical page with explicit permission (`--authorized-page-derivatives`, `--policy-id`), 150–400 DPI, 50 pages/call, pixel and byte bounds; original files are never copied. `verify` reads only retained derivatives by capture ID; missing or corrupt pages fail. It does not replace native text/table extraction or native-resolution raster/vector retention. It does not write PostgreSQL, invoke any LLM, assert durable storage or authorize purge. Synthetic source-removal, tamper, rotation and policy tests are included in figure recovery tests. A verified local pilot does not establish fleet readiness.
 
+## Deferred OCR from retained evidence (opt-in, CI pending)
+
+The existing deferred OCR profile accepts a retained_evidence mapping; example shape (replace root, policy, renderer and settings with the exact approved capture configuration):
+
+~~~yaml
+deferred_ocr:
+  render_dpi: 300
+  retained_evidence:
+    root: /approved/extracted/evidence
+    policy_id: approved-policy-identifier
+    renderer: "1.26.0"
+    visual_settings:
+      dpi: 300
+      selection_mode: all_pages
+    read_workers: 2
+~~~
+
+The renderer version is an example, not a default or current version claim. Set it to the exact capture manifest identity.renderer. Use the exact semantic visual settings (including any raster/vector capture flags and budgets); runtime worker settings can differ. Strict retained mode will not access an original path or archive and does not silently change DPI. New OCR fingerprint prevents overwriting results from original-render mode. Reuse existing queue and quota mechanisms; avoid blindly re-enqueueing prior successful work. Requires approved storage and cloud transmission authorization, tested native geometry, and passing CI before proprietary execution. Existing legacy original PDF render remains unchanged and is not certified thread-safe.
+
 ## Vector evidence (opt-in pilot)
 
 Set capture_vectors=true with all_pages and approved derivative policy. Configurable max_vector_paths, max_vector_items, max_vector_json_bytes bound retained renderer-exposed path and clipping/group geometry in the existing manifest. Over-limit/unsupported geometry is explicitly marked as requiring retained PNG fallback. read_vectors retrieves checked path inventory and provenance without original PDF. No numeric interpretation or exact figure segmentation is implied. Default remains false. Full public rendered/region baseline fc97e8f passed 393/393 pages and 25/25 crops; latest vector gate pending.
