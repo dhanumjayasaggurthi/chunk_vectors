@@ -118,6 +118,21 @@ def _verify_page(root, capture_id, number):
     return record
 
 
+def _report(capture_id, first, last, source_count, total, started):
+    return {
+        "capture_id": capture_id, "source_pages": source_count,
+        "first_page": first, "last_page": last,
+        "verified_pages": last - first + 1, "image_bytes": total,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "local_content_verified": True, "durable_storage_verified": False,
+        "original_required_for_verification": False,
+        "original_copied": False, "database_writes": False,
+        "cloud_calls": False, "purge_safe": False,
+        "limitations": ["Rendered pixels only; not original raster/vector objects",
+                        "Native text/tables, visual detail and production durability require separate gates"],
+    }
+
+
 def verify(root, capture_id, first, last):
     """Verify a bounded range without opening or requiring the source PDF."""
     started = time.monotonic()
@@ -132,18 +147,7 @@ def verify(root, capture_id, first, last):
             raise ValueError("Inconsistent source page count")
         _validate_range(first, last, source_count)
         total += row["image_bytes"]
-    return {
-        "capture_id": capture_id, "source_pages": source_count,
-        "first_page": first, "last_page": last,
-        "verified_pages": last - first + 1, "image_bytes": total,
-        "elapsed_seconds": round(time.monotonic() - started, 3),
-        "local_content_verified": True, "durable_storage_verified": False,
-        "original_required_for_verification": False,
-        "original_copied": False, "database_writes": False,
-        "cloud_calls": False, "purge_safe": False,
-        "limitations": ["Rendered pixels only; not original raster/vector objects",
-                        "Native text/tables, visual detail and production durability require separate gates"],
-    }
+    return _report(capture_id, first, last, source_count, total, started)
 
 
 def capture(source, root, first, last, *, dpi=300, policy_id="",
@@ -172,13 +176,27 @@ def capture(source, root, first, last, *, dpi=300, policy_id="",
         "colorspace": "RGB", "alpha": False, "annotations": True,
     }
     cid = _capture_id(identity)
+    total = rendered = skipped = 0
     with fitz.open(source) as pdf:
         if pdf.is_encrypted:
             raise ValueError("Encrypted source PDF")
-        _validate_range(first, last, pdf.page_count)
+        source_count = pdf.page_count
+        _validate_range(first, last, source_count)
         for number in range(first, last + 1):
             if _source_state(source) != state:
                 raise RuntimeError("Source changed during evidence capture")
+            png, manifest = _paths(root, cid, number)
+            # A published manifest is a commit marker, never a mere existence
+            # check. Verify actual stored bytes before skipping a completed page.
+            if manifest.exists():
+                record = _verify_page(root, cid, number)
+                if record["source_page_count"] != source_count:
+                    raise ValueError("Existing derivative source page count mismatch")
+                total += record["image_bytes"]
+                skipped += 1
+                continue
+            # An orphan PNG from a crash before manifest publication is replayed
+            # and accepted only if its bytes agree with the new rendering.
             page = pdf[number - 1]
             predicted = (page.rect * fitz.Matrix(dpi / 72, dpi / 72)).irect
             if (predicted.width <= 0 or predicted.height <= 0
@@ -191,7 +209,6 @@ def capture(source, root, first, last, *, dpi=300, policy_id="",
             data = pix.tobytes("png")
             if not 0 < len(data) <= MAX_PNG_BYTES:
                 raise ValueError(f"PAGE_RENDER_BYTE_LIMIT: physical page {number}")
-            png, manifest = _paths(root, cid, number)
             record = {
                 "identity": identity, "capture_id": cid,
                 "source_page": number, "source_page_count": pdf.page_count,
@@ -209,12 +226,15 @@ def capture(source, root, first, last, *, dpi=300, policy_id="",
             _write_once(png, data)
             _write_once(manifest, _json_bytes(record))
             del pix, data
+            total += _verify_page(root, cid, number)["image_bytes"]
+            rendered += 1
     if _source_state(source) != state or digest_file(source) != source_hash:
         raise RuntimeError("Source changed during evidence capture; batch not accepted")
-    result = verify(root, cid, first, last)
+    result = _report(cid, first, last, source_count, total, started)
     result["source_pdf_sha256"] = source_hash
-    result["elapsed_seconds"] = round(time.monotonic() - started, 3)
-    result["derivative_writes"] = True
+    result["rendered_pages"] = rendered
+    result["skipped_verified_pages"] = skipped
+    result["derivative_writes"] = rendered > 0
     return result
 
 

@@ -295,6 +295,33 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_resume_skips_verified_pages_without_rendering_and_repairs_orphan(self):
+        import fitz
+        from unittest.mock import patch
+        from visual_evidence import capture, _paths
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = self._fixture(folder)
+            root = folder / "retained"
+            kw = dict(dpi=150, policy_id="test", authorized_page_derivatives=True)
+            first = capture(source, root, 1, 2, **kw)
+            self.assertEqual(first["rendered_pages"], 2)
+            self.assertEqual(first["skipped_verified_pages"], 0)
+            with patch.object(fitz.Page, "get_pixmap", side_effect=AssertionError("re-render")):
+                replay = capture(source, root, 1, 2, **kw)
+            self.assertEqual(replay["skipped_verified_pages"], 2)
+            self.assertEqual(replay["rendered_pages"], 0)
+            self.assertFalse(replay["derivative_writes"])
+            png, manifest = _paths(root, first["capture_id"], 2)
+            manifest.unlink()
+            recovered = capture(source, root, 1, 3, **kw)
+            self.assertEqual(recovered["rendered_pages"], 2)
+            self.assertEqual(recovered["skipped_verified_pages"], 1)
+            with png.open("ab") as stream:
+                stream.write(b"tamper")
+            with self.assertRaisesRegex(ValueError, "checksum/size"):
+                capture(source, root, 1, 3, **kw)
+
     def test_derivative_module_runs_without_archive_dependency(self):
         """Replicate the Windows validation folder containing only this module."""
         import shutil
