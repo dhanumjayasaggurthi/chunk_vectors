@@ -100,6 +100,12 @@ if ($LASTEXITCODE -ne 0) { throw "OCR status query failed" }
 
 Expect at most eight attempts, with text-ready / visual-pending / retry-wait / terminal-error outcomes determined by the real OCR results. OCR text is **not** an approved reconstruction of chart/table meaning. Do not automatically enqueue more assets or run all 323 until the first results and quotas are evaluated.
 
+## First real OCR pilot: eight immediate retries — STOP (2026-11-24)
+
+Original PBRER source-scoped run: **processed=8, RETRY_WAIT=8, duration=1.91 s, exit=0**; subsequent OCR queue: **315 PENDING + 8 RETRY_WAIT**. No successful OCR text or visual completion. Exit code 0 is currently misleading and cloud_calls_possible=true does not establish that Vision actually received calls.
+
+**Do not rerun the job or reset statuses.** Use a read-only query on the existing OCR table by document ID and OCR hash for grouped error_code, error_message, attempts and next_attempt_at. Avoid disclosing PDF text or credentials. Once the cause is identified and fixed, resume only a small bounded retry batch. OCR throughput and 15-day fleet OCR capacity are still unmeasured.
+
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
