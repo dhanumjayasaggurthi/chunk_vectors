@@ -320,5 +320,95 @@ class DeferredOcrPostgresTests(unittest.TestCase):
 
 
 
+    def test_z_large_enqueue_releases_reads_before_insert_under_pool_cap_2(self):
+        """Reproduce the user's 30-second pool exhaustion with 70 pages/140 assets.
+
+        The test enforces a hard two-lease cap even if CI runs with pooling
+        disabled. Keyset pagination (32 pages) and a full 128-asset upsert
+        must occur with no generator-suspended DB connections.
+        """
+        from db import get_conn as real_get_conn
+        from psycopg2.extras import execute_values
+
+        doc_id="c"*64
+        source="a"*64
+        version="b"*64
+        pages=[]
+        for page_no in range(1,71):
+            elements=[
+                {"type":"image","bbox":[45,50,200,190],
+                 "visual_asset":image_ref(page_no)},
+                {"type":"vector_region","bbox":[45,200,200,290],
+                 "unresolved_region":vector_ref(page_no)},
+            ]
+            pages.append((
+                doc_id,page_no,source,version,
+                "/tmp/unchanged-original.pdf",json.dumps(elements),
+            ))
+        conn=real_get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"INSERT INTO {self.n['docs']} VALUES (%s,%s,%s,%s)",
+                    (doc_id,source,version,70),
+                )
+                execute_values(cur,f"""
+                    INSERT INTO {self.n['published']}
+                      (doc_id,page_number,source_hash,extraction_hash,
+                       file_path,elements)
+                    VALUES %s
+                """,pages,template="(%s,%s,%s,%s,%s,%s::jsonb)",
+                page_size=70)
+            conn.commit()
+        finally:
+            conn.close()
+
+        leased=0
+        peak=0
+
+        class TrackedLease:
+            def __init__(self,lease):
+                self.lease=lease
+                self.closed=False
+
+            def __getattr__(self,key):
+                return getattr(self.lease,key)
+
+            def close(self):
+                nonlocal leased
+                if not self.closed:
+                    self.closed=True
+                    try:
+                        self.lease.close()
+                    finally:
+                        leased-=1
+
+        def tracked_get_conn():
+            nonlocal leased,peak
+            if leased>=2:
+                raise AssertionError(
+                    "OCR enqueue acquired a third PostgreSQL lease"
+                )
+            raw=real_get_conn()
+            leased+=1
+            peak=max(peak,leased)
+            return TrackedLease(raw)
+
+        with patch("db.get_conn",side_effect=tracked_get_conn):
+            result=ocr.enqueue(self.p,doc_id=doc_id,apply=True)
+            self.assertEqual(result["documents"],1)
+            self.assertEqual(result["candidates"],140)
+            self.assertEqual(result["inserted"],140)
+            self.assertEqual(
+                ocr.enqueue(self.p,doc_id=doc_id,apply=True)["inserted"],0
+            )
+        self.assertEqual(leased,0)
+        self.assertLessEqual(peak,1)
+        self.assertEqual(
+            ocr.status(self.p,doc_id=doc_id)["statuses"],{"PENDING":140}
+        )
+
+
+
 if __name__=="__main__":
     unittest.main()
