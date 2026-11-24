@@ -128,6 +128,7 @@ Write-Host 'OCR pilot exit code:' $PilotExitCode
 ~~~
 
 **This is a billable Vision API call against original regulatory content.** It must not run before the user verifies allowed data processing and configured project quota limits. Do not re-enqueue, clear statuses or rerun native extraction. If processed=0, check retry eligibility; never force queue state. Send the result and status counts for measured performance/accuracy.
+**SAFE RETRY-ONLY FIX TESTED** (2026-11-24): [Windows/Linux Python 3.11/3.13 and real disposable PostgreSQL CI 45343815239](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45343815239) **PASS**, and [rich-document CI 45343815324](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45343815324) **PASS**, commit 1d96adff. Specifically verified test_retry_only_claim_does_not_consume_pending_ocr_assets executed successfully in PostgreSQL CI. Production requirements.txt now explicitly lists google-cloud-vision, google-cloud-translate, and google-auth (commit 4b028a40). New retry-only CLI exists only in updated deferred_ocr.py; older local copies DO NOT support it. Real original PDF retry after package repair not yet executed.
 ## What to verify next
 
 1. CI for cloud-free unit tests, Windows/Linux and disposable PostgreSQL transactional tests.
