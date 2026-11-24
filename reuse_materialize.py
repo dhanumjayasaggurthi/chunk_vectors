@@ -176,6 +176,7 @@ def quality_summary(rows, policy):
     lengths=[]
     table_ids=set()
     multi_page_tables=set()
+    semantic=policy.get("boundary_mode","v1")=="semantic_v2"
     exceptional=collections.Counter()
     short_reasons=collections.Counter()
     issues=[]
@@ -197,10 +198,11 @@ def quality_summary(rows, policy):
             issues.append(f"invalid token budget chunk {index}")
         prev=ids[index-1] if index else None
         nxt=ids[index+1] if index+1<len(ids) else None
-        if meta.get("previous_chunk_id")!=prev or meta.get("next_chunk_id")!=nxt:
-            issues.append(f"broken neighbor links chunk {index}")
-        if not meta.get("section_id"):
-            issues.append(f"missing section_id chunk {index}")
+        if semantic:
+            if meta.get("previous_chunk_id")!=prev or meta.get("next_chunk_id")!=nxt:
+                issues.append(f"broken neighbor links chunk {index}")
+            if not meta.get("section_id"):
+                issues.append(f"missing section_id chunk {index}")
         if tid:=meta.get("table_id"):
             table_ids.add(tid)
             if meta.get("table_continuation_verified"):
@@ -502,6 +504,7 @@ def main(argv=None):
         info={"document_id":str(args.doc_id),"source_hash":source_hash,
               "prepared_chunks":len(rows),
               "first_chunk_input_characters":len(rows[0][7]),
+              "first_chunk_metadata_fields":list(json.loads(rows[0][12])),
               "first_chunk_document_metadata_fields":list(json.loads(rows[0][12])),
               "first_chunk_structural_metadata_fields":list(json.loads(rows[0][13])),
               "quality":summary,
