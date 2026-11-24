@@ -219,5 +219,19 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 
+    def test_inventory_reports_actual_physical_page_count_not_printed_labels(self):
+        from figure_recovery import main
+        with tempfile.TemporaryDirectory() as tmp:
+            path=self._fixture(Path(tmp))
+            with self.assertRaisesRegex(
+                ValueError,"requested physical pages 117-129 but this PDF has 1"
+            ):
+                main([
+                    "inventory","--file",str(path),
+                    "--page","117","--end-page","129",
+                ])
+
+
+
 if __name__ == "__main__":
     unittest.main()
