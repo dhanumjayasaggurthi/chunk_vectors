@@ -332,12 +332,16 @@ def _insert_assets(n,group):
         conn.close()
 
 
-def claim(profile,limit,max_attempts,lease_seconds,*,doc_id=None):
+def claim(profile,limit,max_attempts,lease_seconds,*,doc_id=None,retry_only=False):
     """Global SKIP LOCKED claim; no DB connection held during OCR RPCs."""
     from db import get_conn
     n=tables(profile)
     token=str(uuid.uuid4())
     ocr_hash=ocr_fingerprint(settings(profile))
+    if type(retry_only) is not bool:
+        raise ValueError("retry_only must be boolean")
+    if retry_only and not doc_id:
+        raise ValueError("Retry-only OCR requires an explicit document ID")
     if doc_id is not None and (not isinstance(doc_id,str) or len(doc_id)!=64
                                or any(c not in "0123456789abcdef" for c in doc_id)):
         raise ValueError("Invalid document ID for scoped OCR claim")
@@ -369,7 +373,8 @@ def claim(profile,limit,max_attempts,lease_seconds,*,doc_id=None):
                     AND d.source_hash=j.source_hash
                     AND d.extraction_hash=j.extraction_hash
                   WHERE j.ocr_hash=%s
-                    AND (%s IS NULL OR j.doc_id=%s) AND (
+                    AND (%s IS NULL OR j.doc_id=%s)
+                    AND (NOT %s::boolean OR j.status='RETRY_WAIT') AND (
                     (j.status IN ('PENDING','RETRY_WAIT')
                        AND j.next_attempt_at<=now())
                     OR (j.status='RUNNING' AND j.lease_until<now())
@@ -388,7 +393,7 @@ def claim(profile,limit,max_attempts,lease_seconds,*,doc_id=None):
                 RETURNING j.asset_id,j.doc_id,j.source_hash,
                   j.extraction_hash,j.page_number,j.kind,
                   j.bbox,j.attempts,j.lease_token
-            """,(ocr_hash,doc_id,doc_id,max_attempts,limit,token,lease_seconds))
+            """,(ocr_hash,doc_id,doc_id,retry_only,max_attempts,limit,token,lease_seconds))
             rows=cur.fetchall()
         conn.commit()
         return rows
@@ -667,7 +672,7 @@ def run_group(profile,group,cfg,limiter,verifier):
     return counts
 
 
-def run(profile,max_jobs=100,workers=None,*,doc_id=None):
+def run(profile,max_jobs=100,workers=None,*,doc_id=None,retry_only=False):
     from ocr_quota import (PostgresOcrLimiter,detect_project_id,init_quota)
     cfg=settings(profile)
     workers=cfg["workers"] if workers is None else workers
@@ -685,7 +690,7 @@ def run(profile,max_jobs=100,workers=None,*,doc_id=None):
             quota=min(max_jobs-sum(counters.values()),
                       workers*cfg["batch_images"])
             jobs=claim(profile,quota,cfg["max_attempts"],cfg["lease_seconds"],
-                       doc_id=doc_id)
+                       doc_id=doc_id,retry_only=retry_only)
             if not jobs:
                 break
             future=[
@@ -733,9 +738,14 @@ def main(argv=None):
     parser.add_argument("--max-docs",type=int,default=1)
     parser.add_argument("--max-jobs",type=int,default=100)
     parser.add_argument("--workers",type=int)
+    parser.add_argument("--retry-only",action="store_true",
+                        help="Run eligible RETRY_WAIT jobs only; requires --doc-id")
     parser.add_argument("--apply",action="store_true",
                         help="Required before any DDL, enqueue, or cloud OCR calls")
     args=parser.parse_args(argv)
+    if args.retry_only and (args.command!="run" or not args.doc_id
+                            or args.all_docs):
+        parser.error("--retry-only requires run --doc-id, never --all-docs")
     if not 1<=args.max_docs<=100000 or not 1<=args.max_jobs<=1000000:
         parser.error("Invalid bounded run limits")
     from processing_profile import load_profile
@@ -757,9 +767,11 @@ def main(argv=None):
         if bool(args.doc_id)==bool(args.all_docs):
             parser.error("OCR run requires exactly one of --doc-id or --all-docs")
         answer=run(profile,max_jobs=args.max_jobs,workers=args.workers,
-                   doc_id=args.doc_id)
+                   doc_id=args.doc_id,retry_only=args.retry_only)
     print(json.dumps(answer,indent=2,ensure_ascii=False))
-    return int(answer.get("statuses",{}).get("FAILED_TERMINAL",0)>0)
+    failed=answer.get("statuses",{})
+    return int(failed.get("FAILED_TERMINAL",0)>0
+               or (args.command=="run" and failed.get("RETRY_WAIT",0)>0))
 
 
 if __name__=="__main__":
