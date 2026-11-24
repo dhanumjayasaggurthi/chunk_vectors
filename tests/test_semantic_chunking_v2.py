@@ -188,6 +188,31 @@ class SemanticChunkV2Tests(unittest.TestCase):
         self.assertEqual(doc.pages[0].elements[0].text,first)
         self.assertEqual(doc.pages[1].elements[0].text,second)
 
+    def test_cross_page_paragraph_not_joined_without_page_edge_evidence(self):
+        from configurable_chunking import chunk_with_profile
+        doc=DocumentStructure(
+            file_path="x",file_name="x",doc_id="e"*64,page_count=2,
+            pages=[
+                PageContent(page_number=1,width=612,height=792,
+                    elements=[PageElement(ElementType.TEXT,BBox(50,70,500,250),
+                                          text="A study described a statistically meaningful")]),
+                PageContent(page_number=2,width=612,height=792,
+                    elements=[PageElement(ElementType.TEXT,BBox(50,200,500,350),
+                                          text="outcome after further observation.")]),
+            ],
+        )
+        chunks=chunk_with_profile(doc,config(
+            max_tokens=120,merge_cross_page_paragraphs=True,
+            page_join_edge_fraction=0.20,
+            table_row_mode="legacy",table_continuation="none",
+        ))
+        self.assertFalse(any(
+            c.chunk_metadata["cross_page_paragraph_joined"] for c in chunks
+        ))
+        self.assertFalse(any(
+            "meaningful outcome" in c.chunk_text for c in chunks
+        ))
+
     def test_long_indivisible_unicode_uses_lossless_character_fallback(self):
         from configurable_chunking import chunk_with_profile
         original="語"*800
