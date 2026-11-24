@@ -139,6 +139,13 @@ The original 778-page PBRER OCR queue was at PENDING=323 after successful enqueu
 
 **Current blocker: waiting for OCR error_code/error_message.** Retain retry state and source provenance; no blanket retries. Record the observed error, corrective commit, CI and retest outcome here.
 
+## 2026-11-24 — OCR root cause and credential boundary (USER-VERIFIED)
+
+The first eight-asset Vision OCR pilot returned RETRY_WAIT=8 in 1.91s. Read-only PostgreSQL error query isolated ModuleNotFoundError: No module named 'google' for all eight assets, one attempt each. This is a missing Python SDK in the local validation virtual environment, NOT evidence that Google Cloud rejected the credentials or that OCR inputs were invalid. Queue remains PENDING=315 and RETRY_WAIT=8; no retries yet.
+
+Actual permitted external scope: the user has one gcpkeys.json service account, and ONLY Google Cloud Vision OCR and Cloud Translation are eligible if the service account, project and enabled APIs allow them. Do NOT introduce Document AI, Vertex AI, Azure Document Intelligence, new API keys or assumed cloud providers. A key does not prove service enablement or quota.
+
+Next: install google-cloud-vision, google-cloud-translate and google-auth in the existing .venv-validation interpreter (requirements.txt already lists google-cloud-vision). Verify SDK imports and auth without transmitting any private PDFs; an optional tiny synthetic text/image call can establish API-level permissions, subject to minor possible charges. Never print private keys, access tokens or service-account email. Do not retry queued jobs before local SDK and access checks pass.
 ## What is NOT done
 
 - **Deferred OCR processing implementation exists**, with explicit source-referenced rendering, bounded batches, global quotas and durable retries. It has **not** been invoked against original sources/GCP. Enrichment output is not yet rejoined with retrieval chunks; reconcile duplicates and original page/table geometry before exposing derived text.
