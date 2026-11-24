@@ -24,6 +24,7 @@ on:
       - metadata_extractor.py
       - tests/test_db_pool.py
       - tests/test_semantic_chunking_v2.py
+      - tests/test_materialization_quality_summary.py
       - tests/test_native_process_workers.py
       - profiles/regulatory_semantic_v2_example.yml
       - tests/test_figure_recovery.py
@@ -80,6 +81,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_deferred_visual_native.py -v
       - run: python -m unittest discover -s tests -p test_empty_table_deferred.py -v
       - run: python -m unittest discover -s tests -p test_semantic_chunking_v2.py -v
+      - run: python -m unittest discover -s tests -p test_materialization_quality_summary.py -v
       - run: python -m unittest discover -s tests -p test_db_pool.py -v
       - run: python -m unittest discover -s tests -p test_native_process_workers.py -v
       - run: python -m unittest discover -s tests -p test_logger_encoding.py -v
