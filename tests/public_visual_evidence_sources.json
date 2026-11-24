@@ -108,6 +108,20 @@
       "max_observations": 32,
       "timeout_seconds": 120,
       "authorized_provider": false
+    },
+    "execution": {
+      "workers": 2,
+      "read_workers": 2,
+      "max_pages": 3,
+      "rpm": 60000,
+      "tpm": 10000000,
+      "estimated_input_tokens_per_page": 8000,
+      "max_request_bytes": 150000000,
+      "quota_wait_seconds": 120,
+      "max_attempts": 3,
+      "retry_base_seconds": 1,
+      "max_retry_delay_seconds": 60,
+      "authorized_result_storage": false
     }
   }
 }

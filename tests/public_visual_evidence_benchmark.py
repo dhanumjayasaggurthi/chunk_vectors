@@ -282,6 +282,25 @@ def check(spec, config):
                 result=validate_response(mock,pkt,enrichment_config["settings"])
                 assert result["requires_review"] and not result["source_facts_verified"]
                 enrichment_pages+=1
+        cached_enrichment_pages=0
+        if enrichment_config and enrichment_config.get("execution"):
+            from visual_enrichment import run_pages
+            mock_config={**enrichment_config["settings"],"authorized_provider":True}
+            run_config={**enrichment_config["execution"],"authorized_result_storage":True}
+            selected=[(cid,i) for i in sample]
+            raw=json.dumps({"observations":[{"target":"page","observation":"Visual evidence requires review",
+                            "caption_quote":"","uncertainty":"limited"}],"limitations":["Mock response only"]})
+            with patch("azure_client.call_visual_structured",return_value=(raw,{})) as api:
+                done=list(run_pages(retained,selected,visual_settings=config["visual_evidence"],
+                                   config=mock_config,execution=run_config))
+                assert len(done)==len(selected)
+                assert all(x["status"]=="COMPLETED_UNVERIFIED" for x in done), done
+                assert api.call_count==len(selected)
+                replay=list(run_pages(retained,selected,visual_settings=config["visual_evidence"],
+                                     config=mock_config,execution=run_config))
+                assert all(x["status"]=="SKIPPED_VERIFIED" for x in replay), replay
+                assert api.call_count==len(selected)
+                cached_enrichment_pages=len(replay)
         for vid,i,status,digest,path_count in vector_refs:
             inv,meta=read_vectors(root/"vectors",vid,i,settings=vector_settings)
             assert inv["status"]==status and not meta["original_required"]
@@ -342,6 +361,7 @@ def check(spec, config):
             "post_source_figure_crop_reads":figure_crops,"figure_detector_fallback_pages":figure_fallback_pages,
             "figure_anchor_ids":sorted(figure_ids),
             "mock_enrichment_contract_pages":enrichment_pages,
+            "mock_enrichment_cache_replay_pages":cached_enrichment_pages,
         }
 
 

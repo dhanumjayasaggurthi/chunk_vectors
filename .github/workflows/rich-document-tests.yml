@@ -18,6 +18,7 @@ on:
       - azure_client.py
       - tests/test_visual_enrichment.py
       - profiles/visual_enrichment_example.json
+      - profiles/visual_enrichment_execution_example.json
       - tests/public_visual_evidence_benchmark.py
       - tests/public_visual_evidence_sources.json
       - profiles/visual_evidence_example.json

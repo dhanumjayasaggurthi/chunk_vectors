@@ -76,6 +76,84 @@ class VisualEnrichmentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"checksum"):
                 prepare_page(root/"retained",cid,1,visual_settings=vs,config=cfg)
 
+    def test_bounded_run_reuse_retry_and_corrupt_cache(self):
+        import fitz
+        import requests
+        from visual_enrichment import run_pages,prepare_page,_cache_path,_local_run_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            source=root/"source.pdf"
+            with fitz.open() as doc:
+                for _ in range(2):
+                    p=doc.new_page(width=100,height=100)
+                    p.draw_rect((10,10,80,80))
+                doc.save(source)
+            vs={"dpi":150}
+            retained=root/"retained"
+            cap=capture(source,retained,1,2,settings=vs,policy_id="test",
+                        authorized_page_derivatives=True)
+            cid=cap["capture_id"]
+            source.unlink()
+            cfg={**configuration(),"authorized_provider":True}
+            exec_cfg=json.loads((Path(__file__).resolve().parents[1]/"profiles"/
+                       "visual_enrichment_execution_example.json").read_text(encoding="utf-8"))
+            exec_cfg.update(workers=2,read_workers=2,rpm=60000,tpm=10000000,
+                            authorized_result_storage=True,max_pages=3)
+            raw=json.dumps({"observations":[{"target":"page","observation":"A shape is visible",
+                       "caption_quote":"","uncertainty":"limited"}],"limitations":[]})
+            # The first request throttles, then succeeds. Duplicate page inputs
+            # share a cache lock; there must be only two successful API calls.
+            throttled=requests.Response()
+            throttled.status_code=429
+            throttled.headers["retry-after-ms"]="1"
+            error=requests.HTTPError(response=throttled)
+            pages=[(cid,1),(cid,1),(cid,2)]
+            with patch("azure_client.call_visual_structured",
+                       side_effect=[error,(raw,{}),(raw,{})]) as api:
+                outcomes=list(run_pages(retained,pages,visual_settings=vs,config=cfg,execution=exec_cfg))
+                self.assertEqual(sorted(x["status"] for x in outcomes),
+                                 ["COMPLETED_UNVERIFIED","COMPLETED_UNVERIFIED","SKIPPED_VERIFIED"])
+                self.assertEqual(api.call_count,3)
+                replay=list(run_pages(retained,pages,visual_settings=vs,config=cfg,execution=exec_cfg))
+                self.assertTrue(all(x["status"]=="SKIPPED_VERIFIED" for x in replay))
+                self.assertEqual(api.call_count,3)
+                pkt=prepare_page(retained,cid,1,visual_settings=vs,config=cfg)
+                path=_cache_path(retained,pkt)
+                row=json.loads(path.read_text(encoding="utf-8"))
+                row["result"]["result"]["observations"][0]["observation"]="fabricated"
+                path.write_text(json.dumps(row),encoding="utf-8")
+                bad=list(run_pages(retained,[(cid,1)],visual_settings=vs,config=cfg,execution=exec_cfg))
+                self.assertEqual(bad[0]["status"],"FAILED")
+                self.assertEqual(api.call_count,3)
+            with _local_run_lock(retained):
+                with self.assertRaises(RuntimeError):
+                    list(run_pages(retained,[(cid,1)],visual_settings=vs,config=cfg,execution=exec_cfg))
+            with self.assertRaises(PermissionError):
+                list(run_pages(retained,[(cid,1)],visual_settings=vs,config=cfg,
+                               execution={**exec_cfg,"authorized_result_storage":False}))
+
+    def test_retry_limits_and_quota_budget(self):
+        import requests
+        from visual_enrichment import LocalQuota,_retry_delay
+        cfg={"rpm":60,"tpm":100,"estimated_input_tokens_per_page":80,
+             "max_request_bytes":1024,"quota_wait_seconds":1,
+             "retry_base_seconds":1,"max_retry_delay_seconds":10}
+        quota=LocalQuota(cfg)
+        with self.assertRaisesRegex(ValueError,"byte budget"):
+            quota.reserve("x",1025,10)
+        quota.reserve("x",1024,10)
+        with self.assertRaises(TimeoutError):
+            quota.reserve("y",1024,10)
+        response=requests.Response()
+        response.status_code=429
+        response.headers["retry-after-ms"]="20000"
+        self.assertIsNone(_retry_delay(requests.HTTPError(response=response),1,cfg))
+        response.headers["retry-after-ms"]="250"
+        self.assertEqual(_retry_delay(requests.HTTPError(response=response),1,cfg),.25)
+        response.status_code=401
+        self.assertIsNone(_retry_delay(requests.HTTPError(response=response),1,cfg))
+        self.assertIsNone(_retry_delay(ValueError("invalid model output"),1,cfg))
+
     def test_adapter_payload_and_truncated_response(self):
         from azure_client import call_visual_structured
         from visual_enrichment import RESPONSE_SCHEMA
