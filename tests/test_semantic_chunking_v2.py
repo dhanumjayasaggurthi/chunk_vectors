@@ -100,6 +100,26 @@ class SemanticChunkV2Tests(unittest.TestCase):
                  if "table_id" in c.chunk_metadata}
             self.assertGreater(len(ids),1)
 
+    def test_persisted_profile_versioned_chunk_ids_resolve_neighbors(self):
+        from processing_profile import load_profile
+        from reuse_materialize import prepare_document,quality_summary
+        p=load_profile("profiles/regulatory_page_stage_example.yml")
+        p["chunking"].update(config(max_tokens=94))
+        rows=prepare_document(document_with_continued_table(),p)
+        self.assertGreater(len(rows),4)
+        for i,row in enumerate(rows):
+            metadata=json.loads(row[13])
+            self.assertEqual(
+                metadata["previous_chunk_id"],
+                rows[i-1][0] if i else None,
+            )
+            self.assertEqual(
+                metadata["next_chunk_id"],
+                rows[i+1][0] if i+1<len(rows) else None,
+            )
+        report=quality_summary(rows,p["chunking"])
+        self.assertEqual(report["structural_errors"],0)
+
     def test_no_header_separator_prevents_cross_page_false_positive(self):
         from configurable_chunking import chunk_with_profile
         doc=document_with_continued_table()
