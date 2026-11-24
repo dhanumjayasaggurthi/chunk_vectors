@@ -118,6 +118,28 @@ class SemanticChunkV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"fragment count"):
             list(iter_logical_table_rows(source[:2]))
 
+    def test_semantic_implementation_version_rotates_profile_identity(self):
+        import hashlib
+        import json
+        from processing_profile import load_profile
+        v2=load_profile("profiles/regulatory_semantic_v2_example.yml")
+        same=load_profile("profiles/regulatory_semantic_v2_example.yml")
+        self.assertEqual(v2["_fingerprint"],same["_fingerprint"])
+        legacy_source=dict(v2)
+        legacy_source.pop("_fingerprint")
+        old_hash=hashlib.sha256(json.dumps(
+            legacy_source,sort_keys=True,separators=(",",":"),
+            ensure_ascii=False,
+        ).encode("utf-8")).hexdigest()
+        self.assertNotEqual(v2["_fingerprint"],old_hash)
+        old=load_profile("profiles/regulatory_page_stage_example.yml")
+        old_source=dict(old)
+        old_source.pop("_fingerprint")
+        self.assertEqual(old["_fingerprint"],hashlib.sha256(json.dumps(
+            old_source,sort_keys=True,separators=(",",":"),
+            ensure_ascii=False,
+        ).encode("utf-8")).hexdigest())
+
     def test_persisted_profile_versioned_chunk_ids_resolve_neighbors(self):
         from processing_profile import load_profile
         from reuse_materialize import prepare_document,quality_summary
