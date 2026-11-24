@@ -10,6 +10,10 @@ Determine whether the purge agreement permits retaining a **byte-identical immut
 
 **If original-byte retention is prohibited:** before purge, extract a bounded versioned evidence bundle of all authoritatively preservable content—native text with page spans/bboxes, exact table source-cell grids and continuity, figures containing raster **and vector** graphics, page renderings of every chart/diagram/microscopy panel at suitable resolution with scale and units, OCR word evidence, figure captions, their narratives and stable section/page linkages. Keep evidence as source-backed artifacts, not compressed descriptions alone. **A derivative-only representation cannot guarantee support for every conceivable future use case.** Record what was irretrievably excluded and prevent false claims of lossless future recovery. Even derivatives may be subject to deletion requirements.
 
+## Evidence caution from original 10-page scientific article (2026-11-24)
+
+A user-verified 10-physical-page article (first printed page 1340) yielded 28 *caption candidates* in the initial native figure inventory. The raw geometric hints repeatedly assigned a full-page embedded image to unrelated figures; this is NOT independently verified figure coverage. Figure inventory now marks spanning page images as page-level evidence instead of attributing them to every caption. **A full-page background image may contain all plotted graph pixels and annotations; it must remain archivable even when no individual figure bbox is verified.** Its existence cannot replace preserving readable rendered source page/figure bytes before purge if exact originals cannot be legally retained. Caption-only discovery misses scanned captions and uncaptioned figures; inventory quality gates must count those separately. No source PDF has been archived or deemed PURGE_SAFE by this code.
+
 ## Evidence manifest, per document and version
 
 Minimum source-faithful fields:
