@@ -39,6 +39,13 @@ def _candidate(prev_page, prev, page, nxt, *, edge_fraction, x_tolerance):
         return False
     if (_header(prev) != _header(nxt) or not _header(prev)):
         return False
+    # A nonempty first row is not proof of a column header. Require an
+    # explicitly rendered source-table Markdown separator on BOTH pages.
+    # This avoids joining unrelated tables which happen to share first data
+    # values and column geometry.
+    sep=re.compile(r"(?m)^\|\s*-{3,}")
+    if not sep.search(str(prev.text)) or not sep.search(str(nxt.text)):
+        return False
     if (abs(prev.bbox.x0/prev_page.width - nxt.bbox.x0/page.width) > x_tolerance
             or abs(prev.bbox.x1/prev_page.width - nxt.bbox.x1/page.width) > x_tolerance):
         return False
