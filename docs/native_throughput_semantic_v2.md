@@ -1,5 +1,7 @@
 # Native throughput and semantic chunking v2
 
+**Always start from the [living project state and handoff](PIPELINE_PROJECT_STATE.md).** That file records verified original-PDF evidence, code changes, passing CI, 15-day capacity targets, outstanding OCR/streaming work and the next safe action.
+
 ## Scope and compatibility
 
 Implemented as **explicit opt-in settings inside the existing Python pipeline**.
