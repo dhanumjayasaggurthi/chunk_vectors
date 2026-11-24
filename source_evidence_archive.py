@@ -134,7 +134,7 @@ def capture(source,root,*,authorized_retention=False):
         try:
             copy_hash=hashlib.sha256()
             copied=0
-            with source.open("rb") as reader,os.fdopen(descriptor,"wb") as writer:
+            with os.fdopen(descriptor,"wb") as writer,source.open("rb") as reader:
                 for data in iter(lambda:reader.read(CHUNK_BYTES),b""):
                     writer.write(data)
                     copy_hash.update(data)
@@ -153,6 +153,11 @@ def capture(source,root,*,authorized_retention=False):
                     raise RuntimeError("Concurrent archive source differs")
         finally:
             Path(temp).unlink(missing_ok=True)
+    final_state=source.stat()
+    if ((final_state.st_size,final_state.st_mtime_ns)
+            !=(state.st_size,state.st_mtime_ns)
+            or digest_file(source)!=source_hash):
+        raise RuntimeError("Original source changed during archive verification")
     record={
         "schema":MANIFEST_SCHEMA,
         "source_sha256":source_hash,
