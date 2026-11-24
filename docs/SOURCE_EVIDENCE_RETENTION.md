@@ -1,0 +1,56 @@
+# Regulatory evidence retention: 15-day irreversible-source window
+
+**Priority: P0 release blocker.** The intake PDFs/DOCXs are available for 15 days and may then be purged. A native-page checkpoint, populated OCR queue, text chunk, translation, or chart summary is **not** proof that all source evidence is safely preserved. If an item depends on an original file path after purge, it is *not recoverable*. The original published 778-page PBRER currently has 219 unprocessed OCR source assets and 26 VISUAL_PENDING assets (last user report); this is explicitly **NOT retention ready**.
+
+## First policy decision (not optional)
+
+Determine whether the purge agreement permits retaining a **byte-identical immutable copy** in the authorized output storage after the intake system deletes its copy. The legal/contractual retention rules apply to any copies, backups, rendered images, source text and derived artifacts as applicable. Do not copy an original or create persistent image snapshots until permitted storage and deletion terms are established.
+
+**If authorized: preserve source bytes before purge.** The best future-proof evidence is a content-addressed immutable PDF/DOCX archive with SHA-256, size, URI, verified retrieval, encrypted access, retention/deletion policy and backup/replication. Keep original source doc_id (path-derived in current extractor) distinct from SHA-256 of source *bytes*. Store the source file locator in protected metadata; do not use local intake paths as durable URLs. Reparse/derivation in later months can operate on the archive. Archive storage must be durable, accessible to OCR/figure workers, and backed up; a file copied to a temporary local directory is not a production archive. Four TB of source bytes is the minimum raw storage budget, excluding replication, indexes, and generated assets.
+
+**If original-byte retention is prohibited:** before purge, extract a bounded versioned evidence bundle of all authoritatively preservable content—native text with page spans/bboxes, exact table source-cell grids and continuity, figures containing raster **and vector** graphics, page renderings of every chart/diagram/microscopy panel at suitable resolution with scale and units, OCR word evidence, figure captions, their narratives and stable section/page linkages. Keep evidence as source-backed artifacts, not compressed descriptions alone. **A derivative-only representation cannot guarantee support for every conceivable future use case.** Record what was irretrievably excluded and prevent false claims of lossless future recovery. Even derivatives may be subject to deletion requirements.
+
+## Evidence manifest, per document and version
+
+Minimum source-faithful fields:
+
+| Artifact | Requirements before purge |
+| --- | --- |
+| Source identity | original document identifier, byte hash, format, ingestion timestamp and authorized retention policy ID |
+| Reparse capability | verified archive URI for byte-identical source **if allowed**; else explicit source-unavailable flag and derivative fidelity limitations |
+| All pages | complete physical page count; exact native text including reading order, language, text spans, coordinates and page size/rotation; original page-vs-printed labels mapping |
+| Original tables | full raw cell grids, row/column indices, multi-page continuation evidence, headers, footnotes and table caption/section links, including null values |
+| Figures | every caption-driven figure plus image-only and vector-only candidates, stable figure and panel IDs, source page+bbox, original pixel evidence or full-page/high-resolution diagram snapshot and graph-path evidence |
+| Figure content | axes, units, legends, error/confidence interval conventions, panel labels, experimental conditions, source image crop/hash and nearby native caption/discussion; no inferred values without grounded evidence |
+| Enrichments | raw GCP Vision OCR text/word polygons/confidence and state (TEXT_READY, VISUAL_PENDING etc.), source page/asset IDs and processing profile/model version; optional Google Translation with source/target language, original text retained |
+| Derived insights | independently versioned per-figure and full-table summaries; evidence-linked assertions and explicit unresolved gaps, not ungrounded numerical readings |
+| RAG retrieval | searchable text/caption/narrative linked by figure ID, original page, table ID, source artifact URI/hash, section; actual images/graphs must be accessible at query time |
+| Integrity | per-artifact byte SHA-256 and durable-storage existence verification; source byte hash; replay-safe IDs; no missing pages, figures, or ambiguous table parts without explicit exceptions |
+
+A **clinical/scientific chart** with a one-word OCR label is not "summarized". An image with no OCR does not imply a blank figure. A native-text caption and the associated plotted image are **distinct evidence** that must remain linked.
+
+## Retention release gate: fail closed
+
+For each document, track three independent readiness states rather than a misleading single "extracted" boolean:
+
+1. **NATIVE_COMPLETE**: every page published under consistent source/extraction version, source table grids intact, sections and IDs reconciled; no silent page skips.
+2. **EVIDENCE_DURABLE**: authorized bytes or complete permitted source-faithful artifact package stored in approved, replicated durable storage; every blob verified by checksum, retrieval-tested, and linked to original source version; no unresolved source-location dependencies. **This is mandatory before any deletion.**
+3. **ENRICHMENT_COMPLETE**: all expected OCR jobs processed or explicitly pending with recoverable **durable** image evidence; figures inventoried including vector paths and panels; full-table/figure summaries available or explicitly deferred to a post-purge worker that can read the archived evidence. Rich text + OCR-only is not enough.
+
+An overall **PURGE_SAFE** decision requires native and evidence durability, plus enrichment either complete or demonstrably reconstructible from retained authorized evidence. If no original/reconstructible evidence is retained, enrichment must finish *before* purge and the remaining gaps must be reported. Never call an all-vector chart complete merely because an embedded-image OCR count reconciles.
+
+Recommended machine-readable gate output: source/hash/document/page counts; native status; archived URI/bytes/hash/verification; figure inventory count and gaps; expected/processed/pending OCR counts; table counts/headers/continuation integrity; summary coverage by source content type; last successful checksum verification; boolean PURGE_SAFE and list of **blocking reasons**. This report must be an independently verified production artifact, not a guess derived from queue counts.
+
+## Implementation sequencing — smallest safe architecture
+
+- **Immediately:** clarify authorized retention boundary and choose an approved persistent blob store (object storage/shared durable filesystem). Never presume the available gcpkeys.json has Google Cloud Storage permissions—it has only proven Vision OCR and Translation.
+- **Before expanding the 219 remaining OCR assets:** configure a durable byte/source-evidence capture path and test restore after moving the original aside in a disposable validation fixture. Verify retries and full pages/figures can be reproduced from the captured bytes/evidence.
+- **During 15-day intake:** native extraction and evidence archive/capture on the critical path; OCR/figure/translation in bounded independent queues with durable source access; page and visual inventories reconcile automatically. Avoid blocking the fast native worker on network OCR, but block deletion readiness on durable evidence completion.
+- **After source purge:** freely evolve prompt versions, embedding models and RAG presentation **only to the extent the retained source evidence permits**. Version derived chunks and summaries; do not overwrite original raw text/table/visual evidence.
+- **Throughput:** 3.2M/15 days requires ~2.47 documents/sec fleet-wide, or 148/minute. Source ingest size 4 TB /15 days is ~3.1 MB/sec average before replication; per-page rendered figures and table evidence will expand the storage and processing envelope. Benchmark page-level variability, copy verification overhead, and downstream OCR quotas; don't plan purely on average file size.
+
+## Observed engineering baseline (2026-11-24)
+
+Original 778-page PBRER source OCR candidates: 323; cumulative 104 processed = 78 TEXT_READY + 26 VISUAL_PENDING; 219 not yet attempted. The observed 64-asset OCR batch took 6.51s at four workers; a tiny sample, not sustained fleet evidence. User examples include Topiramate figures 1–3 with error bars, regression bands, clinical narrative, and glass durability figures with SEM images, multi-panel vector plots, logarithmic depth profiles and legends. Current embedded-image-only native visual discovery does **not** ensure vector-only figure recall. Read-only caption/vector candidate inventory exists in figure_recovery.py but is not the production retention index or complete figure summary stage.
+
+**User action pending:** decide whether byte-identical originals can be archived as part of the permitted extraction output. Until that legal/storage decision and actual evidence-durability verification, do not mark the corpus purge-safe.
