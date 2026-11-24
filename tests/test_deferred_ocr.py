@@ -320,6 +320,50 @@ class DeferredOcrPostgresTests(unittest.TestCase):
 
 
 
+    def test_retained_source_bytes_support_ocr_after_original_purge(self):
+        """Regression: an independently verified archive outlives intake."""
+        import os
+        from source_evidence_archive import capture
+        from db import get_conn
+
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            path=make_pdf(folder)
+            contents=path.read_bytes()
+            source_sha=hashlib.sha256(contents).hexdigest()
+            doc_id=hashlib.sha256(str(path).encode("utf-8")).hexdigest()
+            version="b"*64
+            storage=root/"authorized-archive"
+            result=capture(path,storage,authorized_retention=True)
+            self.assertTrue(result["content_verified"])
+            conn=get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"""
+                        INSERT INTO {self.n['docs']}
+                          (doc_id,source_hash,extraction_hash,page_count)
+                        VALUES (%s,%s,%s,1)
+                    """,(doc_id,source_sha,version))
+                    cur.execute(f"""
+                        INSERT INTO {self.n['published']}
+                          (doc_id,page_number,source_hash,extraction_hash,
+                           file_path,elements)
+                        VALUES (%s,1,%s,%s,%s,'[]'::jsonb)
+                    """,(doc_id,source_sha,version,str(path)))
+                conn.commit()
+            finally:
+                conn.close()
+            path.unlink()
+            with patch.dict(os.environ,{"SOURCE_EVIDENCE_ARCHIVE_ROOT":str(storage)}):
+                recovered=ocr._file_path(self.p,doc_id,source_sha,version)
+                self.assertEqual(Path(recovered).read_bytes(),contents)
+                verifier=ocr._SourceVerifier()
+                state=verifier.verify(recovered,doc_id,source_sha)
+                verifier.ensure_unchanged(recovered,state)
+            with patch.dict(os.environ,{"SOURCE_EVIDENCE_ARCHIVE_ROOT":""}):
+                with self.assertRaisesRegex(FileNotFoundError,"authorized"):
+                    ocr._file_path(self.p,doc_id,source_sha,version)
+
     def test_retry_only_claim_does_not_consume_pending_ocr_assets(self):
         """An eight-asset recovery pilot must not claim eight new PDFs/assets."""
         from db import get_conn
