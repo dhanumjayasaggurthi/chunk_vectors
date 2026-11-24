@@ -12,7 +12,7 @@ Extract **3.2 million regulatory PDFs/DOCXs, approximately 4 TB, within 15 calen
 
 Non-negotiables: **no silent data loss, no fabricated numbers/table cells, no per-document manual approval, no gratuitous services/tables**. Native extraction must not wait on cloud OCR, translation or vector DB. Source file/version and extraction profile hashes must stay traceable.
 
-Math: 3.2M/(15*86400) = **2.47 docs/sec sustained** fleet-wide. Plan >=5 docs/sec aggregate headroom; this is NOT measured performance. Average 4TB/3.2M = approximately 1.25 MB/file; measure actual document page-count distribution, % scanned, tables, retries, CPU/RAM and GCP quotas before sizing hardware.
+Math: 3.2M/(15*86400) = **2.47 docs/sec sustained** fleet-wide. Plan >=5 docs/sec aggregate headroom; this is NOT measured performance. Average 4TB/3.2M = approximately 1.25 MB/file; measure actual document page-count distribution, % scanned, tables, retries, CPU/RAM and GCP quotas before sizing hardware. For separate OCR capacity, 3.2M/15d is approximately **148 documents/minute**, so required Vision image quota is approximately **148 × average OCR image-candidates per document images/minute** before retries/headroom; actual fraction needing OCR, per-asset size and quota must be measured.
 
 ## Environment
 
@@ -109,7 +109,7 @@ $Python = ".\.venv-validation\Scripts\python.exe"
 
 Published pages remain immutable. Source file doc-id and SHA-256 must match original; current published document version is enforced on claim. Asset IDs incorporate source/extraction hash plus OCR semantic render/model fingerprint (DPI, min confidence, word/block bbox). No-text or low-confidence OCR => VISUAL_PENDING; it is NOT a reconstructed table or chart. Original OCR text/word polygons and confidence stored only in OCR output rows. DB lease renewal before each sub-batch, expired/terminal attempts recovered by the claim handler. **Full chart description, native/OCR text reconciliation, OCR overlay into semantic materialization and actual GCP pilot remain outstanding**.
 
-CI: cloud-free tests on Windows/Linux and disposable PostgreSQL. Check latest [ingestion workflow](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/workflows/ingestion-reuse-tests.yml) and [rich-document workflow](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/workflows/rich-document-tests.yml). Do not claim original private PDF OCR has run; **NO GCP CLOUD CALLS HAVE BEEN MADE**.
+CI: **PASS** [cross-platform ingestion and disposable PostgreSQL workflow 45338875585](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875585) and [rich-document/100 synthetic PDF workflow 45338875427](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875427). Cloud-free tests cover source hash/geometry, Vision fake-response mapping, retry/terminal states, idempotent PostgreSQL enqueue/claim, lease renewal and output versioning. Do not claim original private PDF OCR has run; **NO GCP CLOUD CALLS HAVE BEEN MADE**.
 
 Next immediate action: once CI green, create a COPY of the existing native preserve_defer YAML with optional deferred_ocr settings, then run deferred_ocr.py validate and discover for the verified 778-page doc ID (read-only, no DDL). Reconcile expected ~323 previously deferred visual candidates. Ask for explicit approval before any cloud OCR calls, even in the staging environment. Do not rerun the native extractor or packed chunk audits.
 
