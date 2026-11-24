@@ -295,6 +295,24 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_derivative_module_runs_without_archive_dependency(self):
+        """Replicate the Windows validation folder containing only this module."""
+        import shutil
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            module = Path(__file__).resolve().parents[1] / "visual_evidence.py"
+            isolated = folder / module.name
+            shutil.copyfile(module, isolated)
+            result = subprocess.run(
+                [sys.executable, "-I", str(isolated), "--help"],
+                cwd=folder, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--authorized-page-derivatives", result.stdout)
+            self.assertFalse((folder / "source_evidence_archive.py").exists())
+
     def _fixture(self, folder):
         import fitz
         from PIL import Image, ImageDraw

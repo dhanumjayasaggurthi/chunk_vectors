@@ -11,6 +11,26 @@ The real corrected 10-page inventory now returns 15 distinct numbered caption ca
 
 `visual_evidence.py` is a bounded PDF derivative pilot. It captures RGB PNG and source-linked manifest per physical page with explicit permission (`--authorized-page-derivatives`, `--policy-id`), 150–400 DPI, 50 pages/call, pixel and byte bounds; original files are never copied. `verify` reads only retained derivatives by capture ID; missing or corrupt pages fail. It does not replace native text/table extraction or native-resolution raster/vector retention. It does not write PostgreSQL, invoke any LLM, assert durable storage or authorize purge. Synthetic source-removal, tamper, rotation and policy tests are included in figure recovery tests. A verified local pilot does not establish fleet readiness.
 
+## Local validation runbook — derivative-only pilot
+
+The 2026-11-24 Windows validation run reported 9 passed/3 import errors (optional source_evidence_archive module not copied). The derivative pilot is now self-contained apart from PyMuPDF and the Python standard library. Transfer visual_evidence.py and tests/test_figure_recovery.py from the latest feature branch ZIP; do not enable original archiving. Expected updated regression count: 13, including isolated module launch. Verify current CI and local tests before any real-document derivative capture.
+
+~~~powershell
+$Python = ".\.venv-validation\Scripts\python.exe"
+& $Python visual_evidence.py --help
+& $Python -m unittest discover -s tests -p "test_figure_recovery.py" -v
+~~~
+
+Only after explicit organizational approval for full-page derivatives and a permitted persistent storage root, set $OriginalPdf to the previously verified 10-page article and set $EvidenceRoot and $PolicyId to the actual approved path and identifier:
+
+~~~powershell
+$Capture = & $Python visual_evidence.py capture --file $OriginalPdf --root $EvidenceRoot --page 1 --end-page 10 --dpi 300 --policy-id $PolicyId --authorized-page-derivatives | ConvertFrom-Json
+$Capture | Format-List
+& $Python visual_evidence.py verify --root $EvidenceRoot --capture-id $Capture.capture_id --page 1 --end-page 10
+~~~
+
+Expected: verified_pages=10, local_content_verified=true, original_copied=false, original_required_for_verification=false, durable_storage_verified=false, purge_safe=false. Do not delete the original manually; synthetic tests cover removal. The deadline remains mandatory. Real capture, storage approval and complete figure-level evidence are still pending.
+
 ## First policy decision (not optional)
 
 Determine whether the purge agreement permits retaining a **byte-identical immutable copy** in the authorized output storage after the intake system deletes its copy. The legal/contractual retention rules apply to any copies, backups, rendered images, source text and derived artifacts as applicable. Do not copy an original or create persistent image snapshots until permitted storage and deletion terms are established.

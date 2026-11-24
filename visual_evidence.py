@@ -10,16 +10,47 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
-
-from source_evidence_archive import digest_file, _write_once
 
 SCHEMA = "rendered-page-evidence-v1"
 MAX_PAGES = 50
 MAX_PIXELS = 40_000_000
 MAX_PNG_BYTES = 100_000_000
+
+
+# Keep this derivative-only module deployable without the optional original-
+# source archive module. Both use atomic create-if-absent filesystem semantics.
+def digest_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_once(destination, data):
+    """Publish without overwriting; replay accepts only identical bytes."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        dir=destination.parent, prefix="." + destination.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if (destination.stat().st_size != len(data)
+                    or digest_file(destination) != hashlib.sha256(data).hexdigest()):
+                raise RuntimeError("Existing derivative evidence differs: " + destination.name)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def _json_bytes(value):

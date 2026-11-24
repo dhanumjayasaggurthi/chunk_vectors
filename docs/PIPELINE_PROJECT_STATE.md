@@ -7,6 +7,17 @@
 **This is the canonical handoff link for a new conversation.** Read this document and [native_throughput_semantic_v2.md](native_throughput_semantic_v2.md), inspect branch HEAD, then work from the P0 section below. Update this document whenever implementation, validation, benchmarks or priorities change.
 
 
+
+## P0 latest checkpoint — Windows derivative pilot import error (2026-11-24)
+
+User-provided local unittest screenshot: **12 tests executed in 0.771s; 9 existing figure tests passed; 3 derivative tests ERROR at import**, all `ModuleNotFoundError: No module named 'source_evidence_archive'` at visual_evidence.py line 17. No derivative capture/verification executed successfully; PyMuPDF SWIG DeprecationWarnings are non-blocking. The GitHub checkout had the optional archive helper, while the manually transferred validation folder did not. This is a deployment dependency issue, not proof of a rendering defect.
+
+Previous implementation 2451ee9 passed [rich-document CI 45352337336](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45352337336) and [cross-platform CI 45352337367](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45352337367). Corrective implementation removes the optional original archive import from visual_evidence.py, keeping streaming SHA-256 and atomic no-overwrite filesystem publication local to the derivative pilot. Existing render manifest schema, IDs, CLI, limits and authorization remain unchanged. Added an isolated interpreter regression with only visual_evidence.py present; **13 tests expected** after updating both files. New commit CI and local results must be independently verified.
+
+**Next action:** download latest feature-branch ZIP and replace ONLY visual_evidence.py and tests/test_figure_recovery.py in chunk_vectors_validation. No source_evidence_archive.py required for this pilot; do not run original archive capture. Use existing $Python or ./.venv-validation/Scripts/python.exe. Run `& $Python visual_evidence.py --help` and `& $Python -m unittest discover -s tests -p "test_figure_recovery.py" -v`. Share final test output. Only after 13/13 pass and explicit full-page derivative permission/approved output root/policy ID, run the 10-page capture and source-independent verify commands in the retention runbook. Do not delete real source for testing, rerun native extraction, OCR or chunk materialization. The 15-day purge is mandatory, not extendable by this gate.
+
+**Handoff requirement (user explicit):** maintain this canonical GitHub document at each development response/checkpoint, recording observed local results, changes, CI evidence or pending state, unresolved blockers and the exact next commands. On a new conversation, read this section first and verify branch HEAD/CI. Never treat historical archive-option discussions as permission to retain original PDFs/DOCXs.
+
 ## P0 UPDATE — derivative-only retention confirmed; 15-candidate real-document baseline
 
 User explicitly confirmed originals must be purged after 15 days: **do not retain original PDF/DOCX copies or rely on source-archive fallback**. Only policy-permitted extracted/stored content remains. Full-page rendered derivatives can be sensitive substitutes and require separate explicit policy approval; no original archives have been authorized. Prior archive-option discussion below is historical, not the selected design.
