@@ -313,6 +313,23 @@ def claim(profile,limit,max_attempts,lease_seconds):
     conn=get_conn()
     try:
         with conn.cursor() as cur:
+            # Without this, a worker crash on its final allowed attempt
+            # leaves a RUNNING row forever after its lease expires.
+            cur.execute(f"""
+                UPDATE {n['ocr']} AS j
+                SET status='FAILED_TERMINAL',lease_token=NULL,
+                    lease_until=NULL,error_code='OCR_ATTEMPT_LIMIT',
+                    error_message='Retry allowance exhausted after expired lease',
+                    updated_at=now()
+                WHERE j.attempts >= %s
+                  AND (j.status IN ('PENDING','RETRY_WAIT')
+                       OR (j.status='RUNNING' AND j.lease_until<now()))
+                  AND EXISTS (
+                    SELECT 1 FROM {n['docs']} AS d WHERE d.doc_id=j.doc_id
+                    AND d.source_hash=j.source_hash
+                    AND d.extraction_hash=j.extraction_hash
+                  )
+            """,(max_attempts,))
             cur.execute(f"""
                 WITH picked AS (
                   SELECT j.asset_id FROM {n['ocr']} AS j
@@ -474,84 +491,105 @@ def _mark_failure(profile,job,cfg,exc,terminal=False):
 
 
 def run_group(profile,group,cfg,limiter,verifier):
+    """Own one PDF handle per thread and complete every claimed asset.
+
+    The cloud batch and each persisted result are handled separately. A DB
+    failure cannot be turned into a successful job by a generic exception
+    handler; a crashed worker's lease remains recoverable.
+    """
     from vision_ocr import batch_document_text_detection
     import fitz
     counts=Counter()
+    finished=set()
+
+    def fail(job,exc,terminal=False):
+        if job[0] in finished:
+            return
+        status=_mark_failure(profile,job,cfg,exc,terminal=terminal)
+        finished.add(job[0])
+        counts[status]+=1
+
+    def finalize(job,result):
+        if job[0] in finished:
+            return
+        if (result.success and result.text.strip()
+                and not result.error):
+            complete(profile,job,status="TEXT_READY",text=result.text,
+                     regions=result.regions,confidence=result.confidence,
+                     language=result.language)
+            status="TEXT_READY"
+        elif result.success and (
+                not result.text.strip() or result.error.startswith((
+                    "low_confidence_","missing_word_confidence"))):
+            # OCR transcription is not evidence of successful chart/table
+            # interpretation. Keep its complete, unchanged response.
+            complete(profile,job,status="VISUAL_PENDING",text=result.text,
+                     regions=result.regions,confidence=result.confidence,
+                     language=result.language,
+                     error_code=result.error or "NO_OCR_TEXT")
+            status="VISUAL_PENDING"
+        else:
+            fail(job,RuntimeError(result.error or "OCR unsuccessful"))
+            return
+        finished.add(job[0])
+        counts[status]+=1
+
     try:
         path=_file_path(profile,group[0][1],group[0][2],group[0][3])
         state=verifier.verify(path,group[0][1],group[0][2])
         with fitz.open(str(path)) as pdf:
             current=[]
-            size=0
+            byte_count=0
+
             def flush():
-                nonlocal current,size
+                nonlocal current,byte_count
                 if not current:
                     return
-                inputs=[png for job,png in current]
+                batch=current
+                current=[]
+                byte_count=0
+                verifier.ensure_unchanged(path,state)
                 try:
                     responses=batch_document_text_detection(
-                        inputs,limiter=limiter,
+                        [png for _job,png in batch],
+                        limiter=limiter,
                         max_retries=cfg["max_api_retries"],
                         timeout_seconds=cfg["timeout_seconds"],
                         min_confidence=cfg["confidence_min"],
                         bbox_detail=cfg["bbox_detail"],
                     )
-                    if len(responses)!=len(current):
+                    if len(responses)!=len(batch):
                         raise RuntimeError("OCR response count mismatch")
-                    for (job,_png),result in zip(current,responses):
-                        if result.success and not result.error and result.text.strip():
-                            complete(profile,job,status="TEXT_READY",text=result.text,
-                                     regions=result.regions,confidence=result.confidence,
-                                     language=result.language)
-                            counts["TEXT_READY"]+=1
-                        elif result.success and (not result.text.strip()
-                                                 or result.error.startswith(("low_confidence_",
-                                                                             "missing_word_confidence"))):
-                            # OCR completed, but visual semantics are still
-                            # unresolved. Do not invent or approve a value.
-                            complete(profile,job,status="VISUAL_PENDING",
-                                     text=result.text,regions=result.regions,
-                                     confidence=result.confidence,language=result.language,
-                                     error_code=result.error or "NO_OCR_TEXT")
-                            counts["VISUAL_PENDING"]+=1
-                        else:
-                            status=_mark_failure(
-                                profile,job,cfg,RuntimeError(result.error or
-                                                              "OCR unsuccessful"))
-                            counts[status]+=1
                 except Exception as exc:
-                    for job,_ in current:
-                        status=_mark_failure(profile,job,cfg,exc)
-                        counts[status]+=1
-                finally:
-                    current=[]
-                    size=0
+                    for job,_ in batch:
+                        fail(job,exc)
+                    return
+                for (job,_),result in zip(batch,responses):
+                    # Persist each response under its own lease token.
+                    # Do NOT convert database failures to OCR failures.
+                    finalize(job,result)
 
             for job in group:
                 try:
                     png=render_clipped(pdf,job[4],job[6],cfg)
                     if len(png)>cfg["max_batch_bytes"]:
-                        raise ValueError("OCR PNG exceeds configured request byte budget")
-                    if current and size+len(png)>cfg["max_batch_bytes"]:
+                        raise ValueError("OCR PNG exceeds request byte budget")
+                    if current and byte_count+len(png)>cfg["max_batch_bytes"]:
                         flush()
                     current.append((job,png))
-                    size+=len(png)
+                    byte_count+=len(png)
+                except ValueError as exc:
+                    fail(job,exc,terminal=True)
                 except Exception as exc:
-                    counts[_mark_failure(profile,job,cfg,exc,terminal=True)]+=1
-            verifier.ensure_unchanged(path,state)
+                    fail(job,exc)
             flush()
     except Exception as exc:
-        # No job silently disappears if a PDF is stale or unreadable.
+        # Persist failures only for leases not already completed. If DB
+        # persistence itself is down this must propagate to the caller.
         for job in group:
-            # A completed lease may have been cleared by the earlier flush.
-            # Ignore only that documented stale lease mismatch; never swallow
-            # other PostgreSQL failures.
-            try:
-                counts[_mark_failure(profile,job,cfg,exc,terminal=
-                    isinstance(exc,(ValueError,FileNotFoundError)))]+=1
-            except RuntimeError as stale:
-                if "lease ownership lost" not in str(stale):
-                    raise
+            if job[0] not in finished:
+                fail(job,exc,terminal=isinstance(
+                    exc,(ValueError,FileNotFoundError)))
     return counts
 
 
