@@ -295,6 +295,46 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_native_raster_retention_dedup_mask_and_source_removal(self):
+        import fitz
+        from PIL import Image
+        from visual_evidence import capture, verify, read_raster, _paths, _raster_path
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp)
+            source=folder/"raster.pdf"
+            buffer=io.BytesIO()
+            image=Image.new("RGBA",(320,240),(200,10,30,120))
+            image.save(buffer,format="PNG")
+            with fitz.open() as doc:
+                p=doc.new_page(width=180,height=180)
+                xref=p.insert_image(fitz.Rect(10,10,70,60),stream=buffer.getvalue())
+                p.insert_image(fitz.Rect(80,10,140,60),xref=xref)
+                p=doc.new_page(width=180,height=180)
+                p.insert_image(fitz.Rect(10,10,70,60),xref=xref)
+                doc.save(source)
+            with fitz.open(source) as doc:
+                expected=doc.extract_image(xref)
+                mask=doc.extract_image(expected["smask"])["image"]
+            settings=dict(dpi=150,workers=2,batch_pages=1,max_in_flight=2,capture_rasters=True)
+            kw=dict(settings=settings,policy_id="test",authorized_page_derivatives=True)
+            root=folder/"out"
+            result=capture(source,root,1,2,**kw)
+            cid=result["capture_id"]
+            self.assertEqual(len(list(root.rglob("*.bin"))),2)
+            self.assertEqual(capture(source,root,1,2,**kw)["skipped_verified_pages"],2)
+            source.unlink()
+            self.assertEqual(verify(root,cid,1,2,settings=settings)["verified_pages"],2)
+            for number,index in ((1,0),(1,1),(2,0)):
+                data,meta=read_raster(root,cid,number,index,settings=settings)
+                self.assertEqual(data,expected["image"])
+                self.assertEqual(meta["asset"]["width"],320)
+                self.assertEqual(read_raster(root,cid,number,index,mask=True,settings=settings)[0],mask)
+            _,meta=read_raster(root,cid,1,0,settings=settings)
+            with _raster_path(root,cid,meta["asset"]["sha256"]).open("ab") as stream:
+                stream.write(b"bad")
+            with self.assertRaisesRegex(ValueError,"Raster asset checksum"):
+                verify(root,cid,1,2,settings=settings)
+
     def test_retained_region_exact_pixels_rotation_and_source_removal(self):
         import fitz
         import hashlib

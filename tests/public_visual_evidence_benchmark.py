@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from visual_evidence import capture, verify, _paths, digest_file, read_region
+from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster
 
 
 def check(spec, config):
@@ -155,7 +155,45 @@ def check(spec, config):
                                   for y in range(y0,y1))
                 import hashlib
                 region_references.append((i,list(box),x1-x0,y1-y0,hashlib.sha256(expected).hexdigest()))
+        raster_refs, raster_ranges, raster_occurrences, raster_fallbacks = [], [], 0, 0
+        raster_config = config.get("raster_validation")
+        if raster_config:
+            raster_settings = {**kw["settings"],**raster_config["settings"],"capture_rasters":True}
+            with fitz.open(source) as doc:
+                # Select actual raster-containing pages rather than arbitrary positions.
+                raster_pages = (i for i in range(first,last+1) if doc[i-1].get_image_info())
+                import itertools
+                for i in itertools.islice(raster_pages,raster_config["max_pages"]):
+                    report=capture(source,root/"rasters",i,i,**{**kw,"settings":raster_settings})
+                    rid=report["capture_id"]
+                    raster_ranges.append((rid,i))
+                    _,mp=_paths(root/"rasters",rid,i)
+                    inventory=json.loads(mp.read_text(encoding="utf-8"))["raster_inventory"]
+                    original=doc[i-1].get_image_info(xrefs=True)
+                    assert inventory["reported_occurrences"]==len(original)
+                    raster_occurrences += len(original)
+                    if not inventory["occurrences"]:
+                        raster_fallbacks += len(original)
+                    for index,entry in enumerate(inventory["occurrences"]):
+                        assert entry["bbox"]==list(original[index]["bbox"])
+                        if "asset" not in entry:
+                            raster_fallbacks += 1
+                            continue
+                        for is_mask,key in ((False,"asset"),(True,"mask")):
+                            item=entry.get(key)
+                            if item is not None:
+                                import hashlib
+                                expected=doc.extract_image(item["xref"])
+                                assert item["width"]==expected["width"] and item["height"]==expected["height"]
+                                raster_refs.append((rid,i,index,is_mask,hashlib.sha256(expected["image"]).hexdigest()))
         source.unlink()
+        for rid,i in raster_ranges:
+            assert verify(root/"rasters",rid,i,i,settings=raster_settings)["verified_pages"]==1
+        for rid,i,index,is_mask,digest in raster_refs:
+            import hashlib
+            data,meta=read_raster(root/"rasters",rid,i,index,mask=is_mask,settings=raster_settings)
+            assert hashlib.sha256(data).hexdigest()==digest
+            assert not meta["original_required"]
         for i,box,w,h,digest in region_references:
             output,meta=read_region(retained,cid,i,box,settings=config["visual_evidence"])
             pix=fitz.Pixmap(output)
@@ -192,6 +230,8 @@ def check(spec, config):
             "verified_after_source_removal": restored["verified_pages"],
             "tamper_rejected": True, "selective":selective_result,
             "post_source_region_pixel_matches":len(region_references),
+            "raster_sample_pages":len(raster_ranges),"raster_occurrences":raster_occurrences,
+            "raster_fallbacks":raster_fallbacks,"post_source_raster_asset_matches":len(raster_refs),
         }
 
 

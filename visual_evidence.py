@@ -97,6 +97,129 @@ def _source_state(path):
     return (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
 
 
+
+def _raster_path(root, cid, digest):
+    _hash_id(digest)
+    _, manifest = _paths(root, cid, 1)
+    return manifest.parent / "raster" / digest[:2] / (digest + ".bin")
+
+
+def _store_raster(root, cid, pdf, xref, settings):
+    image = pdf.extract_image(xref)
+    if not image or not image.get("image"):
+        raise ValueError("RASTER_EXTRACT_UNAVAILABLE")
+    width, height, data = image["width"], image["height"], image["image"]
+    if (width <= 0 or height <= 0 or width*height > settings["max_raster_pixels"]
+            or len(data) > settings["max_raster_bytes"]):
+        raise ValueError("RASTER_ASSET_LIMIT")
+    digest = _sha(data)
+    path = _raster_path(root, cid, digest)
+    if path.exists():
+        if path.stat().st_size != len(data) or digest_file(path) != digest:
+            raise RuntimeError("Existing raster evidence checksum mismatch")
+    else:
+        _write_once(path, data)
+    return {"sha256":digest,"bytes":len(data),"width":width,"height":height,
+            "format":image["ext"],"xref":xref,"smask_xref":int(image.get("smask") or 0)}
+
+
+def _capture_rasters(root, cid, page, pdf, settings):
+    """Retain extract_image bytes, not a reconstruction of final compositing."""
+    info = page.get_image_info(xrefs=True)
+    if len(info) > settings["max_raster_occurrences"]:
+        return {"reported_occurrences":len(info),"occurrences":[],
+                "status":"OCCURRENCE_LIMIT_RENDER_FALLBACK"}
+    records, cache = [], {}
+    for obj in info:
+        xref = int(obj.get("xref") or 0)
+        entry = {"xref":xref,"bbox":list(obj["bbox"]),"transform":list(obj["transform"]),
+                 "source_width":obj["width"],"source_height":obj["height"]}
+        if xref <= 0:
+            entry["status"] = "INLINE_OR_UNKNOWN_RENDER_FALLBACK"
+        elif obj["width"]*obj["height"] > settings["max_raster_pixels"]:
+            entry["status"] = "PIXEL_LIMIT_RENDER_FALLBACK"
+        else:
+            if xref not in cache:
+                try:
+                    asset = _store_raster(root,cid,pdf,xref,settings)
+                    mask = _store_raster(root,cid,pdf,asset["smask_xref"],settings) if asset["smask_xref"] else None
+                    cache[xref] = {"asset":asset,"mask":mask,
+                                   "status":"EXTRACTED_WITH_MASK" if mask else "EXTRACTED"}
+                except ValueError as exc:
+                    if str(exc) not in ("RASTER_EXTRACT_UNAVAILABLE","RASTER_ASSET_LIMIT"):
+                        raise
+                    cache[xref] = {"status":str(exc)+"_RENDER_FALLBACK"}
+            entry.update(cache[xref])
+        records.append(entry)
+    return {"reported_occurrences":len(info),"occurrences":records,
+            "status":"INVENTORY_WITH_EXPLICIT_FALLBACKS"}
+
+
+def _verify_rasters(root, cid, record):
+    inventory = record.get("raster_inventory")
+    if not record["identity"].get("raster_capture"):
+        if inventory is not None:
+            raise ValueError("Unexpected raster inventory")
+        return
+    if not isinstance(inventory,dict) or _sha(_json_bytes(inventory)) != record.get("raster_inventory_sha256"):
+        raise ValueError("Raster inventory checksum mismatch")
+    entries, count = inventory["occurrences"], inventory["reported_occurrences"]
+    if (type(count) is not int or count < 0 or not isinstance(entries,list)
+            or len(entries)>1024
+            or (inventory["status"]=="OCCURRENCE_LIMIT_RENDER_FALLBACK" and entries)
+            or (inventory["status"]!="OCCURRENCE_LIMIT_RENDER_FALLBACK" and len(entries)!=count)):
+        raise ValueError("Raster occurrence reconciliation mismatch")
+    checked = {}
+    for entry in entries:
+        if entry["status"] not in ("EXTRACTED","EXTRACTED_WITH_MASK"):
+            if "asset" in entry or "mask" in entry:
+                raise ValueError("Unexpected fallback raster asset")
+            continue
+        asset, mask = entry["asset"], entry["mask"]
+        if (asset["xref"]!=entry["xref"] or bool(mask)!=(entry["status"]=="EXTRACTED_WITH_MASK")
+                or (mask is None and asset["smask_xref"])
+                or (mask is not None and mask["xref"]!=asset["smask_xref"])):
+            raise ValueError("Raster mask or placement identity mismatch")
+        for item in (asset,mask):
+            if item is None:
+                continue
+            digest,size = item["sha256"],item["bytes"]
+            path = _raster_path(root,cid,digest)
+            if type(size) is not int or not 0<size<=MAX_PNG_BYTES:
+                raise ValueError("Invalid raster asset size")
+            if digest not in checked:
+                if path.stat().st_size!=size or digest_file(path)!=digest:
+                    raise ValueError("Raster asset checksum/size mismatch")
+                checked[digest]=size
+            elif checked[digest]!=size:
+                raise ValueError("Inconsistent raster asset size")
+
+
+def read_raster(root, capture_id, number, occurrence, *, mask=False, settings=None):
+    """Return checked asset bytes and placement. Soft masks are separate."""
+    settings = _settings({} if settings is None else settings)
+    _full_range(number,number)
+    record = _verify_page(root,capture_id,number,max_pixels=settings["max_pixels"],
+                          max_png_bytes=settings["max_png_bytes"])
+    entries = record.get("raster_inventory",{}).get("occurrences",[])
+    if type(occurrence) is not int or not 0<=occurrence<len(entries):
+        raise ValueError("Invalid retained raster occurrence index")
+    entry = entries[occurrence]
+    item = entry.get("mask" if mask else "asset")
+    if item is None:
+        raise ValueError("NO_RETAINED_RASTER_ASSET: use rendered page fallback")
+    if item["bytes"]>settings["max_raster_bytes"]:
+        raise ValueError("Raster read byte limit exceeded")
+    with _raster_path(root,capture_id,item["sha256"]).open("rb") as stream:
+        data=stream.read(item["bytes"]+1)
+    if len(data)!=item["bytes"] or _sha(data)!=item["sha256"]:
+        raise ValueError("Raster asset checksum/size mismatch")
+    return data,{"source_pdf_sha256":record["identity"]["source_pdf_sha256"],
+                 "capture_id":capture_id,"source_page":number,"occurrence":occurrence,
+                 "bbox":entry["bbox"],"transform":entry["transform"],"asset":item,
+                 "is_mask":mask,"original_required":False,"writes":False}
+
+
 def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_bytes=MAX_PNG_BYTES):
     png, manifest = _paths(root, capture_id, number)
     record = json.loads(manifest.read_text(encoding="utf-8"))
@@ -119,6 +242,7 @@ def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_byt
         if (len(payload) > MAX_NATIVE_BYTES or not isinstance(native, dict)
                 or not native.get("blocks") or _sha(payload) != record.get("native_page_sha256")):
             raise ValueError("Native-only evidence checksum/structure mismatch")
+        _verify_rasters(root, capture_id, record)
         return record
     if record.get("image_file") != png.name or record.get("representation") not in (None, "rendered_page"):
         raise ValueError("Invalid rendered evidence manifest")
@@ -134,6 +258,7 @@ def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_byt
     if (pix.width != record["pixel_width"] or pix.height != record["pixel_height"]
             or pix.width * pix.height > max_pixels):
         raise ValueError("Page evidence image geometry mismatch")
+    _verify_rasters(root, capture_id, record)
     return record
 
 
@@ -263,12 +388,16 @@ _DEFAULT_SETTINGS = {
     "max_pixels": MAX_PIXELS, "max_png_bytes": MAX_PNG_BYTES,
     "selection_mode": "all_pages", "min_native_chars": 100,
     "max_native_json_bytes": MAX_NATIVE_BYTES,
+    "capture_rasters": False, "max_raster_occurrences": 256,
+    "max_raster_pixels": MAX_PIXELS, "max_raster_bytes": MAX_PNG_BYTES,
 }
 _LIMITS = {
     "dpi": (150, 400), "workers": (1, 32), "batch_pages": (1, MAX_PAGES),
     "max_in_flight": (1, 128), "max_pixels": (100_000, MAX_PIXELS),
     "max_png_bytes": (1024, MAX_PNG_BYTES),
     "min_native_chars": (1, 1_000_000), "max_native_json_bytes": (1024, MAX_NATIVE_BYTES),
+    "max_raster_occurrences": (1, 1024),
+    "max_raster_pixels": (1, MAX_PIXELS), "max_raster_bytes": (1024, MAX_PNG_BYTES),
 }
 
 
@@ -280,6 +409,10 @@ def _settings(value):
         v = result[key]
         if type(v) is not int or not low <= v <= high:
             raise ValueError(f"Invalid visual evidence setting {key}: expected {low}..{high}")
+    if type(result["capture_rasters"]) is not bool:
+        raise ValueError("capture_rasters must be boolean")
+    if result["capture_rasters"] and result["selection_mode"] != "all_pages":
+        raise ValueError("Raster pilot requires all_pages to retain compositing fallback")
     if result["selection_mode"] not in ("all_pages", "native_text_or_render"):
         raise ValueError("Unsupported visual evidence selection_mode")
     if result["max_in_flight"] < result["workers"]:
@@ -426,11 +559,16 @@ def _capture_batch(source, root, first, last, identity, state, source_count, set
                 "image_sha256": _sha(data),
                 "interpretation_status": "NOT_PERFORMED",
             }
+            del pix
+            if settings["capture_rasters"]:
+                inventory = _capture_rasters(root, cid, page, pdf, settings)
+                record.update(raster_inventory=inventory,
+                              raster_inventory_sha256=_sha(_json_bytes(inventory)))
             if _source_state(source) != state:
                 raise RuntimeError("Source changed during page rendering")
             _write_once(png, data)
             _write_once(manifest, _json_bytes(record))
-            del pix, data
+            del data
             total += _verify_page(root, cid, number, max_pixels=max_pixels, max_png_bytes=max_png_bytes)["image_bytes"]
             rendered += 1
     if _source_state(source) != state:
@@ -501,6 +639,11 @@ def capture(source, root, first, last, *, dpi=None, policy_id="",
         identity.update(selection_mode="native_text_or_render_v1",
                         min_native_chars=settings["min_native_chars"],
                         max_native_json_bytes=settings["max_native_json_bytes"])
+    if settings["capture_rasters"]:
+        identity.update(raster_capture="xref_extracted_bytes_v1",
+                        max_raster_occurrences=settings["max_raster_occurrences"],
+                        max_raster_pixels=settings["max_raster_pixels"],
+                        max_raster_bytes=settings["max_raster_bytes"])
     cid = _capture_id(identity)
     with fitz.open(source) as pdf:
         if pdf.is_encrypted:

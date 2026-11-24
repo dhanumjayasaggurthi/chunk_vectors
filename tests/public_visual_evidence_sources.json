@@ -60,5 +60,14 @@
     "min_native_chars": 100,
     "max_native_json_bytes": 8000000
   },
-  "region_validation_pages": 5
+  "region_validation_pages": 5,
+  "raster_validation": {
+    "max_pages": 3,
+    "settings": {
+      "workers": 1,
+      "max_raster_occurrences": 256,
+      "max_raster_pixels": 40000000,
+      "max_raster_bytes": 100000000
+    }
+  }
 }
