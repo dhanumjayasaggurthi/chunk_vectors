@@ -434,7 +434,7 @@ def _visuals_near_caption(page, caption, *, max_distance=450):
     }
 
 
-def inventory_page(pdf,page_number,*,include_caption=False):
+def inventory_page(pdf,page_number,*,source_hash,include_caption=False):
     """Read-only figure candidate evidence with source-stable identities.
 
     A caption without any image/path evidence is still emitted as a
@@ -443,6 +443,9 @@ def inventory_page(pdf,page_number,*,include_caption=False):
     """
     if type(page_number) is not int or not 1<=page_number<=pdf.page_count:
         raise ValueError("Invalid source PDF page")
+    if (not isinstance(source_hash,str) or len(source_hash)!=64
+            or any(v not in "0123456789abcdef" for v in source_hash)):
+        raise ValueError("Inventory requires a full original source PDF SHA-256")
     page=pdf[page_number-1]
     out=[]
     for caption in _figure_caption_candidates(page):
@@ -458,6 +461,7 @@ def inventory_page(pdf,page_number,*,include_caption=False):
         else:
             kind="caption_only_or_unlinked"
         identity={
+            "source_pdf_sha256":source_hash,
             "source_page":page_number,
             "caption_sha256":caption["caption_sha256"],
             "caption_bbox":caption["caption_bbox"],
@@ -465,6 +469,7 @@ def inventory_page(pdf,page_number,*,include_caption=False):
         record={
             "figure_candidate_id":hashlib.sha256(
                 _canonical_bytes(identity)).hexdigest(),
+            "source_pdf_sha256":source_hash,
             "source_page":page_number,
             "figure_number":caption["figure_number"],
             "caption_bbox":caption["caption_bbox"],
@@ -528,15 +533,17 @@ def main(argv=None):
         last=args.end_page or args.page
         if last<args.page or last-args.page>=50:
             parser.error("Inventory range must span 1..50 consecutive pages")
+        source_hash=_hash_file(Path(args.file))
         with fitz.open(args.file) as pdf:
             if pdf.is_encrypted or not 1<=args.page<=last<=pdf.page_count:
                 raise ValueError("Encrypted PDF or invalid inventory page range")
             findings=[]
             for number in range(args.page,last+1):
                 findings.extend(inventory_page(
-                    pdf,number,include_caption=args.include_caption))
+                    pdf,number,source_hash=source_hash,
+                    include_caption=args.include_caption))
         answer={
-            "source_file_sha256":_hash_file(Path(args.file)),
+            "source_file_sha256":source_hash,
             "first_page":args.page,
             "last_page":last,
             "figure_candidates":len(findings),
