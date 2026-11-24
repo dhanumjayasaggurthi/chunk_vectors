@@ -41,6 +41,24 @@ An overall **PURGE_SAFE** decision requires native and evidence durability, plus
 
 Recommended machine-readable gate output: source/hash/document/page counts; native status; archived URI/bytes/hash/verification; figure inventory count and gaps; expected/processed/pending OCR counts; table counts/headers/continuation integrity; summary coverage by source content type; last successful checksum verification; boolean PURGE_SAFE and list of **blocking reasons**. This report must be an independently verified production artifact, not a guess derived from queue counts.
 
+## Opt-in integrity primitive implemented (not automatically enabled)
+
+`source_evidence_archive.py` provides explicit, byte-exact PDF/DOCX capture and independent full-SHA256 verification on an authorized filesystem. Its actions are deliberately restricted: `capture` needs `--authorized-retention`, `--file` and `--root`; `verify` takes a source SHA-256 and the archive root. Blob locations are content addressed. Manifest creation is atomic; archived content is not overwritten on retries. The current implementation does not use GCP Storage or any cloud credential. The result always reports `durable_storage_verified=false` and `purge_safe=false`: an intact local file is **not** proof of a production backup, replicated object store, authorized retention or complete semantic evidence.
+
+If and only if the organization permits retaining original bytes after the intake copy is deleted, evaluate in an approved storage path (never an ephemeral Downloads/temp folder):
+
+~~~powershell
+$Python = '.\.venv-validation\Scripts\python.exe'
+$Source = 'C:\path\to\approved\original.pdf'
+$ArchiveRoot = 'D:\approved-persistent-evidence'
+& $Python source_evidence_archive.py capture --file $Source --root $ArchiveRoot --authorized-retention
+# To prove bytes remain identical after intake deletion, use the printed source_sha256:
+& $Python source_evidence_archive.py verify --root $ArchiveRoot --sha256 '<actual sha256 from capture>'
+~~~
+
+**Production archive is not yet implemented**: current helper supports an explicitly chosen filesystem only. Production requires an approved durable storage adapter/volume, encryption, backup/replication, access controls, retention rules, audit, per-doc original path + SHA mapping, full restoration tests, and an external purge-safe gate. Do not treat this CLI as automatically operational at 3.2M documents.
+
+`deferred_ocr.py` now has an opt-in restoration path: if the original source path no longer exists and `SOURCE_EVIDENCE_ARCHIVE_ROOT` is explicitly configured, it resolves a verified SHA-matching PDF from this content-addressed archive; otherwise it fails closed. A disposable PostgreSQL regression proves the adapter can find the correct bytes after the original source file is removed. This is a local-archive capability, not GCS permission or an authorization to retain files.
 ## Implementation sequencing — smallest safe architecture
 
 - **Immediately:** clarify authorized retention boundary and choose an approved persistent blob store (object storage/shared durable filesystem). Never presume the available gcpkeys.json has Google Cloud Storage permissions—it has only proven Vision OCR and Translation.
