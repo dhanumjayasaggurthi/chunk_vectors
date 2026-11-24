@@ -381,6 +381,43 @@ def claim(profile,limit,max_attempts,lease_seconds):
         conn.close()
 
 
+def renew_leases(profile,jobs,lease_seconds):
+    """Refresh only still-owned, unexpired claims before a cloud batch.
+
+    When a bounded job group needs multiple sequential Vision requests, this
+    prevents the next subgroup from expiring while the previous one waits for
+    shared quota. An overwritten/expired lease fails closed.
+    """
+    if not jobs:
+        return
+    token=jobs[0][8]
+    if any(job[8]!=token for job in jobs):
+        raise RuntimeError("OCR claim group has mixed lease owners")
+    ids=[job[0] for job in jobs]
+    from db import get_conn
+    n=tables(profile)
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                UPDATE {n['ocr']}
+                SET lease_until=now()+(%s*interval '1 second'),
+                    updated_at=now()
+                WHERE asset_id=ANY(%s) AND lease_token=%s
+                  AND status='RUNNING' AND lease_until>now()
+                RETURNING asset_id
+            """,(lease_seconds,ids,token))
+            updated={row[0] for row in cur.fetchall()}
+            if updated!=set(ids):
+                raise RuntimeError("OCR lease expired or stolen before cloud call")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def complete(profile,job,*,status,text="",regions=None,confidence=None,
              language="",error_code=None,error_message="",delay_seconds=60):
     from db import get_conn
@@ -564,6 +601,10 @@ def run_group(profile,group,cfg,limiter,verifier):
                 current=[]
                 byte_count=0
                 verifier.ensure_unchanged(path,state)
+                renew_leases(
+                    profile,[j for j in group if j[0] not in finished],
+                    cfg["lease_seconds"],
+                )
                 try:
                     responses=batch_document_text_detection(
                         [png for _job,png in batch],
