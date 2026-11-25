@@ -189,6 +189,49 @@ class NativeProcessWorkerTests(unittest.TestCase):
                         self.assertEqual(cur.fetchone(),(5,3))
                 finally:
                     conn.close()
+                # Mixed-format scheduler reuses the same existing native stage
+                # and checks deadline/source version before admission.
+                import json
+                import zipfile
+                from datetime import datetime,timezone,timedelta
+                from retention_batch import run_batch
+                from docx_evidence import W
+                word=root/"word.docx"
+                with zipfile.ZipFile(word,"w") as z:
+                    z.writestr("[Content_Types].xml","<Types/>")
+                    z.writestr("word/document.xml",f'<w:document xmlns:w="{W}"><w:body><w:p><w:r><w:t>Native Word text</w:t></w:r></w:p></w:body></w:document>')
+                expired=root/"expired.pdf"
+                wrong=root/"wrong.docx"
+                wrong.write_bytes(word.read_bytes())
+                now=datetime.now(timezone.utc)
+                fmt=lambda dt:dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                deadline=fmt(now+timedelta(days=1))
+                inventory=root/"intake.jsonl"
+                rows=[{"path":str(expired),"source_sha256":"0"*64,"purge_at_utc":fmt(now-timedelta(days=1))},
+                      {"path":str(new),"source_sha256":digest_file(new),"purge_at_utc":deadline},
+                      {"path":str(word),"source_sha256":digest_file(word),"purge_at_utc":deadline},
+                      {"path":str(wrong),"source_sha256":"0"*64,"purge_at_utc":deadline}]
+                rows.sort(key=lambda item:(item["purge_at_utc"],item["path"]))
+                inventory.write_text("".join(json.dumps(row)+"\n" for row in rows),encoding="utf-8")
+                batch=json.loads(Path("profiles/retention_batch_example.json").read_text())
+                batch.update(workers=2,admission_margin_seconds=0,authorized_receipt_storage=True,
+                             authorized_docx_derivatives=True)
+                docx_cfg=json.loads(Path("profiles/docx_evidence_example.json").read_text())
+                for i in range(2):
+                    receipt=root/f"receipt-{i}.jsonl"
+                    result=run_batch(inventory,receipt,profile,docx_config=docx_cfg,config=batch)
+                    self.assertEqual(result["outcomes"],{"LOCAL_CAPTURE_VERIFIED":2,
+                                     "NOT_ADMITTED_DEADLINE":1,"FAILED":1})
+                    self.assertEqual(result["receipts"],4)
+                    self.assertLessEqual(result["max_in_flight_observed"],2)
+                    self.assertFalse(result["purge_safe"])
+                    records=[json.loads(line) for line in receipt.read_text().splitlines()]
+                    self.assertEqual(len({item["task_id"] for item in records}),4)
+                    self.assertTrue(all("path" not in item for item in records))
+                    ok=[item for item in records if item["status"]=="LOCAL_CAPTURE_VERIFIED"]
+                    self.assertTrue(next(item for item in ok if item["format"]=="pdf")["native_status"]=="SKIPPED")
+                    self.assertEqual(next(item for item in ok if item["format"]=="docx")["skipped_verified"],bool(i))
+                    self.assertEqual(next(item for item in ok if item["format"]=="pdf")["rendered_pages"],0)
                 profile["extraction"].pop("retained_evidence")
                 profile["extraction"]["ocr_enabled"]=True
                 with self.assertRaisesRegex(ValueError,"Process workers require"):

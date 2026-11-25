@@ -15,6 +15,9 @@ on:
       - figure_recovery.py
       - visual_evidence.py
       - docx_evidence.py
+      - retention_batch.py
+      - tests/test_retention_batch.py
+      - profiles/retention_batch_example.json
       - reuse_materialize.py
       - tests/test_reuse_materialize.py
       - tests/test_docx_evidence.py
@@ -100,6 +103,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_figure_recovery.py -v
       - run: python -m unittest discover -s tests -p test_visual_enrichment.py -v
       - run: python -m unittest discover -s tests -p test_docx_evidence.py -v
+      - run: python -m unittest discover -s tests -p test_retention_batch.py -v
       - run: python -m unittest discover -s tests -p test_source_evidence_archive.py -v
       - run: python -m unittest discover -s tests -p test_deferred_visual_native.py -v
       - run: python -m unittest discover -s tests -p test_empty_table_deferred.py -v
@@ -147,6 +151,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_figure_recovery.py -v
       - run: python -m unittest discover -s tests -p test_visual_enrichment.py -v
       - run: python -m unittest discover -s tests -p test_docx_evidence.py -v
+      - run: python -m unittest discover -s tests -p test_retention_batch.py -v
 
   public-visual-evidence:
     runs-on: ubuntu-latest

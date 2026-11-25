@@ -201,7 +201,7 @@ def read_evidence(root,capture_id,*,config):
     return _read_record(_folder(root,capture_id)/"manifest.json",settings(config))
 
 
-def capture(source,root,*,policy_id,authorized_derivatives,config):
+def capture(source,root,*,policy_id,authorized_derivatives,config,expected_source_sha256=None):
     cfg=settings(config)
     if authorized_derivatives is not True:
         raise PermissionError("Explicit DOCX extracted evidence authorization required")
@@ -215,6 +215,8 @@ def capture(source,root,*,policy_id,authorized_derivatives,config):
     if state[2]>cfg["max_package_bytes"]:
         raise ValueError("DOCX package byte limit exceeded")
     sha=digest_file(source)
+    if expected_source_sha256 is not None and sha!=expected_source_sha256:
+        raise ValueError('Intake DOCX source version mismatch')
     if _source_state(source)!=state:
         raise RuntimeError("DOCX source changed during hashing")
     identity={"schema":SCHEMA,"source_docx_sha256":sha,"policy_id":policy_id}

@@ -729,7 +729,7 @@ def _tables(pages, path, cfg):
 
 def stage_one(
     file_path, profile, n, limiter=None, *,
-    doc_id=None, ocr_gate=None, chart_gate=None,
+    doc_id=None, ocr_gate=None, chart_gate=None, expected_source_sha256=None,
 ):
     from pdf_processor import PDFProcessor
     cfg=settings(profile)
@@ -744,6 +744,8 @@ def stage_one(
     evidence_state=(before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)
     source_hash_started=time.monotonic()
     source=source_hash(str(path))
+    if expected_source_sha256 is not None and source!=expected_source_sha256:
+        raise ValueError('Intake PDF source version mismatch')
     initial_hash_seconds=time.monotonic()-source_hash_started
     fingerprint=extraction_fingerprint(profile)
     from approved_images import read_approved_image_manifest
@@ -871,6 +873,7 @@ def stage_one(
                 "new_pages":pages_processed,"failed_pages":errors_total,
                 "ocr_images":images_processed,
                 "elapsed_seconds":round(time.monotonic()-started,2),
+                **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
             }
         try:
             publication_started=time.monotonic()
@@ -886,6 +889,7 @@ def stage_one(
                 "pages":page_count, "review_pages":pending.review_pages,
                 "new_pages":pages_processed, "reused_pages":len(done),
                 "elapsed_seconds":round(time.monotonic()-started,2),
+                **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
             }
         elapsed=max(0.001,time.monotonic()-started)
         return {
