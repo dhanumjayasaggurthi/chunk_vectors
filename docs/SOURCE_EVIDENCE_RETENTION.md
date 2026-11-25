@@ -11,7 +11,11 @@ The real corrected 10-page inventory now returns 15 distinct numbered caption ca
 
 `visual_evidence.py` is a bounded PDF derivative pilot. It captures RGB PNG and source-linked manifest per physical page with explicit permission (`--authorized-page-derivatives`, `--policy-id`), 150–400 DPI, 50 pages/call, pixel and byte bounds; original files are never copied. `verify` reads only retained derivatives by capture ID; missing or corrupt pages fail. It does not replace native text/table extraction or native-resolution raster/vector retention. It does not write PostgreSQL, invoke any LLM, assert durable storage or authorize purge. Synthetic source-removal, tamper, rotation and policy tests are included in figure recovery tests. A verified local pilot does not establish fleet readiness.
 
-## Deadline-ordered mixed-format capture (single-host pilot, CI pending)
+## Immediate rollout — tested release c9b0991
+
+Use [IMMEDIATE_CAPTURE_ROLLOUT.md](IMMEDIATE_CAPTURE_ROLLOUT.md) for the frozen release, exact operational startup, approved storage and deadline prerequisites. All latest public and PostgreSQL gates passed. No claim of production storage durability or fleet throughput; do not delay authorized capture for optional AI enrichment.
+
+## Deadline-ordered mixed-format capture (single-host pilot, public/DB CI passed at c9b0991)
 
 retention_batch.py uses an authoritative sorted JSONL intake shard with absolute source path, source_sha256 and explicit purge_at_utc (UTC seconds). Shard membership, uniqueness and deadlines must come from authoritative intake inventory, not mtime. Configure profiles/retention_batch_example.json and existing approved native extraction/evidence and DOCX profiles; --apply required. New exclusive receipt path per attempt, no original copies/deletion or new DB tables. Existing process-local PDF native/evidence capture and DOCX derivative capture run in one bounded process pool. Source hash is fenced before writes, expired or insufficient-margin tasks not admitted, late completion recorded. Receipts are local audit outcomes only, not purge authorization; in-flight work is not forcibly canceled, distributed scheduling and global reconciliation remain pending. The mandatory purge is not delayed. Do not run proprietary sources until approved storage and latest acceptance.
 
