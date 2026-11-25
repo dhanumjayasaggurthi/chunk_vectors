@@ -37,6 +37,9 @@ on:
       - source_evidence_archive.py
       - tests/test_source_evidence_archive.py
       - page_stage.py
+      - retention_batch.py
+      - resource_guard.py
+      - profiles/retention_batch_linux_8core_30gb.example.json
       - ocr_quota.py
       - pdf_processor.py
       - vision_ocr.py

@@ -11,6 +11,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import logging
 import multiprocessing
 import os
 import re
@@ -26,7 +27,7 @@ FIELDS=set(LIMITS)|{"authorized_receipt_storage","authorized_docx_derivatives"}
 
 
 def settings(value):
-    if not isinstance(value,dict) or set(value)!=FIELDS:
+    if not isinstance(value,dict) or not FIELDS<=set(value) or set(value)-FIELDS-{"resource_guard"}:
         raise ValueError("Expected complete retention batch profile")
     for key,(low,high) in LIMITS.items():
         if type(value[key]) is not int or not low<=value[key]<=high:
@@ -34,7 +35,11 @@ def settings(value):
     for key in ("authorized_receipt_storage","authorized_docx_derivatives"):
         if type(value[key]) is not bool:
             raise ValueError(key+" must be boolean")
-    return dict(value)
+    result=dict(value)
+    if result.get("resource_guard") is not None:
+        from resource_guard import settings as guard_settings
+        result["resource_guard"]=guard_settings(result["resource_guard"],result["workers"])
+    return result
 
 
 def _utc():
@@ -166,8 +171,8 @@ def run_batch(inventory,receipt_path,profile,*,docx_config,config):
     reuse their checkpoints. Receipt loss does not invalidate those artifacts.
     """
     cfg=settings(config)
-    if not cfg["authorized_receipt_storage"] or not cfg["authorized_docx_derivatives"]:
-        raise PermissionError("Explicit receipt and DOCX derivative storage approval required")
+    if not cfg["authorized_receipt_storage"]:
+        raise PermissionError("Explicit receipt storage approval required")
     from page_stage import settings as native_settings,require_initialized
     from docx_evidence import settings as docx_settings
     native=native_settings(profile)
@@ -177,10 +182,21 @@ def run_batch(inventory,receipt_path,profile,*,docx_config,config):
     # No nested pools: native settings already require visual workers=1.
     n=require_initialized(profile)
     counters=Counter()
+    guard=None
+    if cfg.get("resource_guard") is not None:
+        from resource_guard import ResourceGuard
+        guard=ResourceGuard(cfg["resource_guard"],cfg["workers"])
+    log=logging.getLogger(__name__)
     start=time.monotonic()
     with Path(inventory).open("rb") as stream:
         initial=_state(stream)
-        total=sum(1 for _ in iter_inventory(stream,cfg))
+        total=0
+        has_docx=False
+        for item in iter_inventory(stream,cfg):
+            total+=1
+            has_docx|=Path(item["path"]).suffix.lower()==".docx"
+        if has_docx and not cfg["authorized_docx_derivatives"]:
+            raise PermissionError("Explicit DOCX derivative storage approval required")
         if not total or _state(stream)!=initial:
             raise ValueError("Empty or modified intake inventory")
         stream.seek(0)
@@ -205,8 +221,9 @@ def run_batch(inventory,receipt_path,profile,*,docx_config,config):
             try:
                 with concurrent.futures.ProcessPoolExecutor(
                         max_workers=cfg["workers"],mp_context=multiprocessing.get_context("spawn")) as pool:
-                    def collect():
-                        done,_=concurrent.futures.wait(pending,return_when=concurrent.futures.FIRST_COMPLETED)
+                    def collect(timeout=None):
+                        done,_=concurrent.futures.wait(pending,timeout=timeout,
+                            return_when=concurrent.futures.FIRST_COMPLETED)
                         for future in done:
                             row=pending.pop(future)
                             try:
@@ -214,14 +231,46 @@ def run_batch(inventory,receipt_path,profile,*,docx_config,config):
                             except Exception as exc:
                                 result=_receipt(row,"FAILED",error_type=type(exc).__name__)
                             append(result)
+                    resource_aborted=False
+                    last_limit=None
                     for row in iter_inventory(stream,cfg):
                         if _state(stream)!=initial:
                             raise RuntimeError("Intake inventory changed after preflight")
                         if _expired(row,cfg):
                             append(_receipt(row,"NOT_ADMITTED_DEADLINE"))
                             continue
-                        while len(pending)>=cfg["workers"]:
-                            collect()
+                        if resource_aborted:
+                            append(_receipt(row,"NOT_ADMITTED_RESOURCE"))
+                            continue
+                        paused_since=None
+                        rejected=False
+                        while True:
+                            limit=guard.poll() if guard is not None else cfg["workers"]
+                            if limit!=last_limit:
+                                log.warning("retention admission_limit=%s active=%s reason=%s",
+                                    limit,len(pending),guard.last_reason if guard else "FIXED")
+                                last_limit=limit
+                            if _expired(row,cfg):
+                                append(_receipt(row,"NOT_ADMITTED_DEADLINE"))
+                                rejected=True
+                                break
+                            if limit>0 and len(pending)<limit:
+                                break
+                            if limit==0:
+                                if paused_since is None:
+                                    paused_since=time.monotonic()
+                                if time.monotonic()-paused_since>=cfg["resource_guard"]["max_pause_seconds"]:
+                                    resource_aborted=True
+                                    append(_receipt(row,"NOT_ADMITTED_RESOURCE"))
+                                    break
+                            else:
+                                paused_since=None
+                            if pending:
+                                collect(cfg["resource_guard"]["poll_seconds"] if guard else None)
+                            else:
+                                time.sleep(cfg["resource_guard"]["poll_seconds"])
+                        if resource_aborted or rejected:
+                            continue
                         future=pool.submit(capture_one,row,profile,n,docx_config,cfg)
                         pending[future]=row
                         max_pending=max(max_pending,len(pending))
@@ -234,6 +283,7 @@ def run_batch(inventory,receipt_path,profile,*,docx_config,config):
                 os.fsync(output.fileno())
     return {"inventory_documents":total,"receipts":written,"outcomes":dict(counters),
             "max_in_flight_observed":max_pending,"elapsed_seconds":round(time.monotonic()-start,3),
+            **({"resource_guard":guard.report()} if guard else {}),
             "all_local_capture_verified":counters["LOCAL_CAPTURE_VERIFIED"]==total,
             "purge_safe":False,"durable_storage_verified":False}
 

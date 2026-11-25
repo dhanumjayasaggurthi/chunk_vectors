@@ -16,6 +16,9 @@ on:
       - visual_evidence.py
       - docx_evidence.py
       - retention_batch.py
+      - resource_guard.py
+      - profiles/retention_batch_linux_8core_30gb.example.json
+      - profiles/regulatory_metadata_api.example.yml
       - tests/test_retention_batch.py
       - profiles/retention_batch_example.json
       - reuse_materialize.py

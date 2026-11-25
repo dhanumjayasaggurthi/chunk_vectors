@@ -86,3 +86,7 @@ Approved evidence policy/path/capacity; remaining count and actual earliest dead
 ## Large-document and database concurrency clarification
 
 See the top production clarification in [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) for the actual 3,000-page handling, document-only advisory locks, per-window and final publication transactions, connection budget, OCR/translation evidence and accuracy limits. Keep one active native profile per target/document; assign disjoint long-document lane and monitor DB waits, storage and real throughput. Do not bypass document locks or disable durability to increase speed. No claim of full automatic OCR/translation/LLM semantic publication. Frozen c9b0991 remains the code release.
+
+## Linux fleet and SmartHub
+
+See [LINUX_FLEET_SMARTHUB.md](LINUX_FLEET_SMARTHUB.md) for new opt-in Linux resource guard (CI pending), per-host profiles, systemd/nohup rollout, metadata rules and SmartHub mapping. Frozen code c9b0991 remains previously verified.

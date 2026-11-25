@@ -36,5 +36,62 @@ class RetentionBatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             settings({**CFG,"authorized_receipt_storage":1})
 
+
+class ResourceGuardTests(unittest.TestCase):
+    def test_adaptive_admission_hysteresis(self):
+        from resource_guard import ResourceGuard
+        cfg=json.loads((Path(__file__).resolve().parents[1]/"profiles/retention_batch_linux_8core_30gb.example.json").read_text())
+        g=1024**3
+        now=[0]
+        sample=[50,12*g,12*g]
+        guard=ResourceGuard(cfg["resource_guard"],cfg["workers"],
+                            metrics=lambda:tuple(sample),clock=lambda:now[0])
+        self.assertEqual(guard.poll(),4)
+        now[0]=30
+        self.assertEqual(guard.poll(),5)
+        now[0]=60
+        self.assertEqual(guard.poll(),6)
+        sample[0]=96
+        now[0]=65
+        self.assertEqual(guard.poll(),5)
+        # Poll faster than interval cannot repeatedly lower the limit.
+        self.assertEqual(guard.poll(),5)
+        sample[1]=4*g
+        now[0]=70
+        self.assertEqual(guard.poll(),0)
+        sample[:]=[40,7*g,16*g]
+        now[0]=100
+        self.assertEqual(guard.poll(),0)
+        sample[1]=9*g
+        now[0]=105
+        self.assertEqual(guard.poll(),0)
+        now[0]=135
+        self.assertEqual(guard.poll(),1)
+        now[0]=165
+        self.assertEqual(guard.poll(),2)
+        sample[2]=21*g
+        now[0]=170
+        self.assertEqual(guard.poll(),0)
+        self.assertEqual(guard.report()["memory_pauses"],2)
+        self.assertEqual(guard.report()["cpu_reductions"],1)
+
+    def test_guard_config_validation_and_legacy(self):
+        cfg=json.loads((Path(__file__).resolve().parents[1]/"profiles/retention_batch_linux_8core_30gb.example.json").read_text())
+        self.assertEqual(settings(cfg)["workers"],6)
+        self.assertEqual(settings(CFG),CFG)
+        with self.assertRaises(ValueError):
+            settings({**cfg,"workers":2})
+        with self.assertRaises(ValueError):
+            settings({**cfg,"resource_guard":{**cfg["resource_guard"],"host_resume_available_gib":5}})
+
+    @unittest.skipUnless(__import__("sys").platform.startswith("linux"),"Linux metrics")
+    def test_live_linux_metrics(self):
+        from resource_guard import LinuxMetrics
+        sample=LinuxMetrics()
+        _,available,group=sample()
+        self.assertGreater(available,0)
+        self.assertTrue(group is None or group>=0)
+
+
 if __name__=="__main__":
     unittest.main()
