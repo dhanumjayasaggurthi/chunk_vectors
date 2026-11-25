@@ -38,6 +38,11 @@ on:
       - tests/test_source_evidence_archive.py
       - page_stage.py
       - retention_batch.py
+      - production.py
+      - config.ini.example
+      - profiles/deployment_policy.example.yml
+      - profiles/visual_evidence_native.example.json
+      - tests/test_production.py
       - resource_guard.py
       - profiles/retention_batch_linux_8core_30gb.example.json
       - ocr_quota.py
@@ -155,6 +160,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_db_pool.py' -v
       - name: Verify safe spawn-process native extraction and replay
         run: python -m unittest discover -s tests -p 'test_native_process_workers.py' -v
+      - name: Unified deployment preflight and actual table mapping
+        run: python -m unittest discover -s tests -p 'test_production.py' -v
       - name: Verify semantic-v2 table reconstruction with disposable data
         run: python -m unittest discover -s tests -p 'test_semantic_chunking_v2.py' -v
       - name: Test bounded PDF staging, resume and full rechunk handoff

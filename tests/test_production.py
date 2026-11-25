@@ -85,5 +85,69 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 resolve_configuration(path)
 
+
+@unittest.skipUnless(
+    __import__("os").getenv("INGESTION_REUSE_TEST_DB")=="1"
+    and __import__("os").getenv("PGDATABASE")=="embedding_test",
+    "Only disposable PostgreSQL integration")
+class DeploymentPostgresTests(unittest.TestCase):
+    def test_config_to_preflight_capture_replay_and_chunk_publication(self):
+        from production import _database
+        from page_stage import init
+        from reuse_materialize import init_output,run_one,verify_output
+        from retention_batch import run_batch
+        from db import get_conn
+        from profile_store import _safe_identifier
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            path,c=fixture(root)
+            d=resolve_configuration(path)
+            p,q=d["capture"],d["retrieval"]
+            conn=get_conn()
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT current_database()")
+                        self.assertEqual(cur.fetchone()[0],"embedding_test")
+                        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                        for schema,table in reversed(d["relations"]):
+                            cur.execute("DROP TABLE IF EXISTS "+_safe_identifier(schema)+"."+_safe_identifier(table))
+            finally:
+                conn.close()
+            try:
+                before=_database(d,before_init=True)
+                self.assertFalse(before["native_tables_ready"])
+                self.assertFalse(before["retrieval_tables_ready"])
+                with self.assertRaisesRegex(ValueError,"absent"):
+                    _database(d)
+                init(p,apply=True)
+                init_output(q,apply=True)
+                ready=_database(d)
+                self.assertTrue(ready["native_tables_ready"])
+                self.assertTrue(ready["retrieval_tables_ready"])
+                for i in range(2):
+                    receipt=d["receipts"]/f"run-{i}.jsonl"
+                    report=run_batch(d["inventory"],receipt,p,docx_config=d["docx"],config=d["batch"])
+                    self.assertEqual(report["outcomes"],{"LOCAL_CAPTURE_VERIFIED":1},report)
+                    record=json.loads(receipt.read_text())
+                    self.assertEqual(record["native_status"],"SUCCESS" if i==0 else "SKIPPED")
+                    self.assertEqual(record["rendered_pages"],1 if i==0 else 0)
+                import hashlib
+                doc_id=hashlib.sha256(str((d["source"]/"doc.pdf").resolve()).encode()).hexdigest()
+                n=verify_output(q)
+                result=run_one(doc_id,q,n)
+                self.assertEqual(result["status"],"SUCCESS",result)
+                self.assertEqual(run_one(doc_id,q,n)["status"],"SKIPPED")
+            finally:
+                conn=get_conn()
+                try:
+                    with conn:
+                        with conn.cursor() as cur:
+                            for schema,table in reversed(d["relations"]):
+                                cur.execute("DROP TABLE IF EXISTS "+_safe_identifier(schema)+"."+_safe_identifier(table))
+                finally:
+                    conn.close()
+
+
 if __name__=="__main__":
     unittest.main()

@@ -112,6 +112,8 @@ def resolve_configuration(path="config.ini"):
         ("materialize_max_docs",1,10000000),("ocr_max_docs",1,100000),
         ("ocr_max_jobs",1,1000000),("embedding_workers",1,128),
         ("embedding_max_chunks",0,1000000000))}
+    if retrieval["embedding"]["enabled"] is not False:
+        raise ValueError("Deployment policy embedding.enabled must remain false; use explicit embed command")
     return {"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
             "evidence":evidence,"source":source,"receipts":receipts,"inventory":inventory,
             "limits":limits,"relations":relations,
@@ -164,7 +166,7 @@ def _storage_and_inventory(d):
         for row in iter_inventory(f,d["batch"]):
             total+=1
             path=Path(row["path"])
-            if not path.is_relative_to(d["source"]):
+            if ".." in path.parts or not path.is_relative_to(d["source"]):
                 raise ValueError("Inventory path outside configured source root")
             if path.suffix.lower()==".docx":
                 docx_count+=1
@@ -250,6 +252,12 @@ def preflight(d,*,before_init=False):
     if d["pool_enabled"] and d["pool_max_connections"]<2*d["limits"]["materialize_workers"]+1:
         raise ValueError("Shared materialization pool needs 2*workers+1 connections; lower materialize_workers or raise pool limit")
     report=plan(d)
+    report["host"]={"cpu_count":os.cpu_count(),"resource_guard_enabled":bool(d["batch"].get("resource_guard"))}
+    if sys.platform.startswith("linux"):
+        from resource_guard import LinuxMetrics
+        _,available,group=LinuxMetrics()()
+        report["host"].update(available_memory_gib=round(available/1024**3,2),
+                              current_cgroup_memory_gib=round(group/1024**3,2) if group is not None else None)
     report.update(storage=_storage_and_inventory(d),database=_database(d,before_init=before_init),
                   status="PREFLIGHT_PASSED",purge_safe=False)
     return report
@@ -257,17 +265,24 @@ def preflight(d,*,before_init=False):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command",choices=("plan","preflight","init","capture","materialize",
+    parser.add_argument("command",choices=("plan","preflight","init","capture","materialize","docx-preview","docx-publish",
                                            "ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status",
                                            "embed-preview","embed"))
     parser.add_argument("--before-init",action="store_true")
     parser.add_argument("--apply",action="store_true")
     parser.add_argument("--doc-id")
     parser.add_argument("--all-docs",action="store_true")
+    parser.add_argument("--capture-id")
+    parser.add_argument("--file-name")
+    parser.add_argument("--allow-logical-locators",action="store_true")
+    parser.add_argument("--retry-failed",action="store_true")
+    parser.add_argument("--rescan-source",action="store_true")
     args=parser.parse_args(argv)
     if args.before_init and args.command!="preflight":
         parser.error("--before-init applies only to preflight")
-    writes={"init","capture","materialize","ocr-init","ocr-enqueue","ocr-run","embed"}
+    if (args.retry_failed or args.rescan_source) and args.command!="embed":
+        parser.error("Embedding retry/rescan options apply only to embed")
+    writes={"init","capture","materialize","docx-publish","ocr-init","ocr-enqueue","ocr-run","embed"}
     if args.command in writes and not args.apply:
         parser.error("Explicit --apply required for writes or provider calls")
     # All existing modules and spawned workers read config.ini in the working
@@ -310,6 +325,19 @@ def main(argv=None):
                 parser.error("materialize requires --doc-id or --all-docs")
             result=run(q,max_docs=lim["materialize_max_docs"],workers=lim["materialize_workers"])
             code=int(bool(result.get("FAILED") or result.get("BUSY")))
+    elif cmd in ("docx-preview","docx-publish"):
+        if not all((args.doc_id,args.capture_id,args.file_name)):
+            parser.error("DOCX commands require --doc-id, --capture-id, --file-name")
+        from reuse_materialize import prepare_docx_document,run_docx
+        kw=dict(config=d["docx"],doc_id=args.doc_id,file_name=args.file_name)
+        if cmd=="docx-preview":
+            _,result=prepare_docx_document(d["evidence"],args.capture_id,q,**kw)
+        else:
+            if not args.allow_logical_locators:
+                parser.error("DOCX publication requires --allow-logical-locators")
+            _database(d)
+            result=run_docx(d["evidence"],args.capture_id,q,allow_logical_locators=True,**kw)
+            code=int(result["status"] not in ("SUCCESS","SKIPPED"))
     elif cmd.startswith("ocr-"):
         import deferred_ocr as ocr
         _database(d)
@@ -339,7 +367,8 @@ def main(argv=None):
         ep["embedding"]["enabled"]=True
         result=embed_existing(ep,dry_run=cmd=="embed-preview",
                               max_chunks=lim["embedding_max_chunks"] or None,
-                              workers=lim["embedding_workers"])
+                              workers=lim["embedding_workers"],retry_failed=args.retry_failed,
+                              rescan_source=args.rescan_source)
     print(json.dumps(result,indent=2,ensure_ascii=True,default=str))
     return code
 

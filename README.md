@@ -169,6 +169,10 @@ One coordinator per shared chunk target is preferred. Native capture P0.
 # Full target (bounded by materialize_max_docs in INI).
 .venv/bin/python production.py materialize --all-docs --apply
 
+# Optional DOCX: explicit retained capture, stable docx: ID and approved logical citations.
+.venv/bin/python production.py docx-preview --capture-id ACTUAL_CAPTURE_ID --doc-id docx:ACTUAL_ID --file-name report.docx
+.venv/bin/python production.py docx-publish --capture-id ACTUAL_CAPTURE_ID --doc-id docx:ACTUAL_ID --file-name report.docx --allow-logical-locators --apply
+
 # Optional OCR: existing queue; strict retained-evidence source, no original fallback.
 .venv/bin/python production.py ocr-init --apply
 .venv/bin/python production.py ocr-discover --doc-id ACTUAL_DOC_ID
@@ -187,8 +191,8 @@ For embeddings use authorized_embedding and real Azure config/quota, matching
 dimensions/model. Preview validates existing embedding job without writes or
 provider calls (requires provider config). Use --all-docs on OCR only if all
 selected retained captures accessible. DOCX logical publication remains opt-in
-via reuse_materialize.py docx-preview/docx-run; not integrated in wrapper
-materialize (which reads native PDF pages). Translation/vision LLM components
+via explicit docx-preview/docx-publish; not integrated in bulk materialize
+(which reads native PDF pages). Translation/vision LLM components
 have no production CLI integration here. Deferred OCR/translation/LLM outputs
 are not automatically fused into retrieval chunks. No claim of complete
 enriched RAG or scientific accuracy. Never wait for optional AI to capture.
@@ -198,7 +202,10 @@ a moving cursor across separate invocations. For a full target set cap >=
 actual corpus count (OCR has existing 100000 CLI scope ceiling here; use
 explicit doc IDs/controlled cohorts for larger targets); repeated same cap
 revisits prefix. embedding_max_chunks=0 means full target; limited pilot
-has distinct existing job identity, not a rolling cursor. Existing checkpoints
+has distinct existing job identity, not a rolling cursor. For an existing embedding
+job use embed --rescan-source --apply when new chunks arrive, and --retry-failed
+only after diagnosing failures. Keep model and dimension identity consistent.
+Existing checkpoints
 prevent successful rewrites but do not imply complete fleet coverage.
 
 ## 6. SmartHub and final table
