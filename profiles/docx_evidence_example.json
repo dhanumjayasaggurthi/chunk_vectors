@@ -1,0 +1,10 @@
+{
+  "max_package_bytes": 500000000,
+  "max_uncompressed_bytes": 1000000000,
+  "max_parts": 10000,
+  "max_xml_bytes": 50000000,
+  "max_asset_bytes": 50000000,
+  "max_manifest_bytes": 100000000,
+  "max_xml_nodes": 1000000,
+  "max_depth": 96
+}

@@ -296,11 +296,11 @@ def check(spec, config):
                 assert len(done)==len(selected)
                 assert all(x["status"]=="COMPLETED_UNVERIFIED" for x in done), done
                 assert api.call_count==len(selected)
-                replay=list(run_pages(retained,selected,visual_settings=config["visual_evidence"],
+                enrichment_replay=list(run_pages(retained,selected,visual_settings=config["visual_evidence"],
                                      config=mock_config,execution=run_config))
-                assert all(x["status"]=="SKIPPED_VERIFIED" for x in replay), replay
+                assert all(x["status"]=="SKIPPED_VERIFIED" for x in enrichment_replay), enrichment_replay
                 assert api.call_count==len(selected)
-                cached_enrichment_pages=len(replay)
+                cached_enrichment_pages=len(enrichment_replay)
         for vid,i,status,digest,path_count in vector_refs:
             inv,meta=read_vectors(root/"vectors",vid,i,settings=vector_settings)
             assert inv["status"]==status and not meta["original_required"]
