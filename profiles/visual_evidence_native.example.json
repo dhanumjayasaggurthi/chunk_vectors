@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "visual_evidence": {
+    "dpi": 300,
+    "workers": 1,
+    "selection_mode": "all_pages",
+    "capture_rasters": true,
+    "capture_vectors": true,
+    "capture_figures": true,
+    "max_pixels": 40000000,
+    "max_png_bytes": 100000000
+  }
+}

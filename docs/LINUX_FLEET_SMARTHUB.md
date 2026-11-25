@@ -1,5 +1,9 @@
 # Linux fleet and SmartHub contract — 8 cores / 30 GB
 
+## Unified production entrypoint
+
+See [production README](../README.md) and [config.ini.example](../config.ini.example) for single-config table mapping, preflight and managed execution. Prior resource-guard release 5c52815 passed CI; wrapper acceptance pending. The older direct commands below remain reference/compatibility paths.
+
 ## Start production capture on frozen release; qualify new guard independently
 
 Frozen c9b0991 remains the tested capture release. The optional new Linux resource guard is not a fleet throughput certificate; new CI pending. No modifications to SmartHub itself. Inspected SmartHub main commit 90d28013fef9192b421871fdc74f9f7d5572e34e: backend/data_api.py, data_api_retrieval.py, data_api_runtime.py, data_api_store.py, data_api_search.example.json, tests/test_data_api_retrieval_pg.py. Actual portal endpoints store versioned contracts/model registration/alias settings in SmartHub's own metadata database. The old search JSON is useful as an example but do not assume automatic import; use existing admin portal or API bodies.

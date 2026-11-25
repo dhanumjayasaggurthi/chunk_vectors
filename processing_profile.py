@@ -88,6 +88,9 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "embedding.batch_tokens", "embedding.rpm", "embedding.tpm",
             "embedding.max_attempts", "embedding.timeout_seconds",
             "embedding.lease_seconds", "embedding.enqueue_page_size",
+            "extraction.schema", "extraction.table", "extraction.retained_evidence",
+            "output.schema", "output.table", "embedding.dimensions",
+            "deferred_ocr.render_dpi", "deferred_ocr.retained_evidence",
             "extracted_content.schema", "extracted_content.table",
             "extracted_content.doc_id_column", "extracted_content.text_column",
             "extracted_content.page_column", "extracted_content.position_column",
@@ -100,7 +103,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             parsed = json.loads(value)
         except json.JSONDecodeError:
             parsed = value
-        result[section][field] = parsed
+        result.setdefault(section,{})[field] = parsed
     validate_profile(result)
     # Keep legacy profiles byte-for-byte fingerprint compatible. Semantic-v2
     # output must change identity when implementation semantics change, even

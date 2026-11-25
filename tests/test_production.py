@@ -1,0 +1,89 @@
+"""Deployment mapping tests; no real provider credentials or DDL in unit tests."""
+import configparser
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from production import resolve_configuration,plan,_storage_and_inventory,preflight
+
+REPO=Path(__file__).resolve().parents[1]
+
+def fixture(root):
+    import fitz
+    from datetime import datetime,timezone,timedelta
+    from visual_evidence import digest_file
+    c=configparser.ConfigParser()
+    c.read(REPO/"config.ini.example")
+    c["POSTGRES"].update(host="localhost",database="embedding_test",user="postgres",password="test",
+                         schema="intake_ci",native_table="cv_deploy_pages",chunk_table="cv_deploy_chunks")
+    dep=c["DEPLOYMENT"]
+    for key in ("policy","batch_profile","docx_profile"):
+        dep[key]=str(REPO/dep[key])
+    dep.update(source_root=str(root/"source"),inventory=str(root/"inventory.jsonl"),
+               receipt_dir=str(root/"receipts"),preflight_min_free_gib="1")
+    # Fixed profile exercises Windows preflight path, no adaptive guard needed.
+    dep["batch_profile"]=str(REPO/"profiles/retention_batch_example.json")
+    c["RETENTION"].update(root=str(root/"evidence"),policy_id="ci-test",
+                          renderer=str(fitz.VersionBind),authorized_page_derivatives="true",
+                          authorized_receipt_storage="true",
+                          visual_profile=str(REPO/"profiles/visual_evidence_native.example.json"))
+    for key in ("source","receipts","evidence"):
+        (root/key).mkdir()
+    src=root/"source"/"doc.pdf"
+    with fitz.open() as pdf:
+        pdf.new_page().insert_text((20,40),"Title: Test document")
+        pdf.save(src)
+    row={"path":str(src),"source_sha256":digest_file(src),
+         "purge_at_utc":(datetime.now(timezone.utc)+timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    (root/"inventory.jsonl").write_text(json.dumps(row)+"\n",encoding="utf-8")
+    path=root/"config.ini"
+    with path.open("w") as f:c.write(f)
+    return path,c
+
+def save(path,c):
+    with path.open("w") as f:c.write(f)
+
+class DeploymentTests(unittest.TestCase):
+    def test_one_table_mapping_and_host_independent_retrieval_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            path,c=fixture(root)
+            d=resolve_configuration(path)
+            self.assertEqual(d["capture"]["extraction"]["table"],"cv_deploy_pages")
+            self.assertEqual(d["retrieval"]["extracted_content"]["table"],"cv_deploy_pages")
+            self.assertEqual(d["retrieval"]["output"]["table"],"cv_deploy_chunks")
+            self.assertEqual(d["retrieval"]["existing_chunks"]["table"],"cv_deploy_chunks")
+            self.assertEqual(d["capture"]["deferred_ocr"]["render_dpi"],300)
+            self.assertEqual(d["capture"]["deferred_ocr"]["retained_evidence"]["root"],str(root/"evidence"))
+            c["RETENTION"]["root"]=str(root/"other_mount")
+            save(path,c)
+            other=resolve_configuration(path)
+            self.assertEqual(d["retrieval"]["_fingerprint"],other["retrieval"]["_fingerprint"])
+            self.assertNotEqual(d["capture"]["_fingerprint"],other["capture"]["_fingerprint"])
+            c["POSTGRES"]["chunk_table"]="cv_deploy_pages_docs"
+            save(path,c)
+            with self.assertRaisesRegex(ValueError,"collide"):
+                resolve_configuration(path)
+
+    def test_preflight_read_only_storage_and_authorization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path,c=fixture(Path(tmp))
+            d=resolve_configuration(path)
+            # Avoid dependence on CI disk free space while checking source and
+            # inventory handling. No output file may be created.
+            usage=type("Usage",(),{"free":20*1024**3})()
+            with patch("production.shutil.disk_usage",return_value=usage),patch("production._database",return_value={"ready":True}):
+                report=preflight(d)
+            self.assertEqual(report["storage"]["sampled_readable_sources"],1)
+            self.assertFalse(report["writes"])
+            self.assertEqual(list(d["receipts"].iterdir()),[])
+            self.assertEqual(list(d["evidence"].iterdir()),[])
+            c["RETENTION"]["authorized_page_derivatives"]="false"
+            save(path,c)
+            with self.assertRaises(PermissionError):
+                resolve_configuration(path)
+
+if __name__=="__main__":
+    unittest.main()

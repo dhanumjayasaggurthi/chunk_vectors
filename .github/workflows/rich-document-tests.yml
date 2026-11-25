@@ -16,6 +16,11 @@ on:
       - visual_evidence.py
       - docx_evidence.py
       - retention_batch.py
+      - production.py
+      - config.ini.example
+      - profiles/deployment_policy.example.yml
+      - profiles/visual_evidence_native.example.json
+      - tests/test_production.py
       - resource_guard.py
       - profiles/retention_batch_linux_8core_30gb.example.json
       - profiles/regulatory_metadata_api.example.yml
@@ -107,6 +112,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_visual_enrichment.py -v
       - run: python -m unittest discover -s tests -p test_docx_evidence.py -v
       - run: python -m unittest discover -s tests -p test_retention_batch.py -v
+      - run: python -m unittest discover -s tests -p test_production.py -v
       - run: python -m unittest discover -s tests -p test_source_evidence_archive.py -v
       - run: python -m unittest discover -s tests -p test_deferred_visual_native.py -v
       - run: python -m unittest discover -s tests -p test_empty_table_deferred.py -v
@@ -155,6 +161,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_visual_enrichment.py -v
       - run: python -m unittest discover -s tests -p test_docx_evidence.py -v
       - run: python -m unittest discover -s tests -p test_retention_batch.py -v
+      - run: python -m unittest discover -s tests -p test_production.py -v
 
   public-visual-evidence:
     runs-on: ubuntu-latest

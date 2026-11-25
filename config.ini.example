@@ -1,0 +1,71 @@
+; Copy to config.ini only for a NEW install. Otherwise merge sections with your existing file.
+; Never commit config.ini or provider keys. Example paths, credentials and names are NOT production values.
+[POSTGRES]
+host = REPLACE_WITH_DB_HOST
+port = 5432
+database = REPLACE_WITH_DATABASE
+user = REPLACE_WITH_DB_USER
+password = REPLACE_WITH_DB_PASSWORD
+schema = regulatory_example
+native_table = regulatory_pages
+chunk_table = regulatory_chunks
+; Optional different retrieval schema. If omitted, schema above is used.
+; chunk_schema = retrieval_example
+folder = legacy_unused
+connect_timeout_seconds = 10
+pool_enabled = true
+pool_min_connections = 1
+; Six native processes normally lease <=2 connections each; materializer threads share this pool.
+pool_max_connections = 5
+pool_acquire_timeout_seconds = 30
+
+[DEPLOYMENT]
+policy = profiles/deployment_policy.example.yml
+inventory = /approved/intake/server01-shard001.jsonl
+source_root = /approved/input/server01
+receipt_dir = /approved/receipts
+batch_profile = profiles/retention_batch_linux_8core_30gb.example.json
+docx_profile = profiles/docx_evidence_example.json
+preflight_sample_files = 3
+preflight_min_free_gib = 10
+preflight_statement_timeout_ms = 15000
+materialize_workers = 2
+materialize_max_docs = 10000
+ocr_max_docs = 1000
+ocr_max_jobs = 10000
+ocr_read_workers = 2
+embedding_workers = 4
+; 0 means full target for embedding (only after explicit approval).
+embedding_max_chunks = 10000
+authorized_ocr = false
+authorized_embedding = false
+
+[RETENTION]
+root = /approved/evidence
+policy_id = REPLACE_WITH_APPROVED_POLICY
+; Run python -c "import fitz; print(fitz.VersionBind)" and enter the exact version.
+renderer = REPLACE_WITH_INSTALLED_VERSION
+visual_profile = profiles/visual_evidence_native.example.json
+authorized_page_derivatives = false
+authorized_receipt_storage = false
+authorized_docx_derivatives = false
+
+[GCP]
+gcp_key_path = /approved/secrets/gcpkeys.json
+
+[AZURE_OPENAI_EMBEDDING]
+api_base = https://REPLACE_WITH_APPROVED_ENDPOINT
+api_key = REPLACE_WITH_KEY
+api_version = REPLACE_WITH_API_VERSION
+deployment = REPLACE_WITH_DEPLOYMENT
+model = REPLACE_WITH_MODEL
+dimensions = 1536
+
+[PATHS]
+source_type = nas
+; legacy main.py only; production.py uses authoritative inventory and DEPLOYMENT.source_root.
+docs_root = /approved/input/server01
+
+[PIPELINE]
+enable_embeddings = false
+table_summaries_enabled = false
