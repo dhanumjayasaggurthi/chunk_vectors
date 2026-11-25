@@ -11,6 +11,9 @@ on:
       - metadata_extractor.py
       - processing_profile.py
       - reuse_materialize.py
+      - docx_evidence.py
+      - visual_evidence.py
+      - profiles/docx_evidence_example.json
       - profiles/intake_reuse_immbot_example.yml
       - tests/test_reuse_materialize.py
       - tests/test_ingestion_hotpath.py

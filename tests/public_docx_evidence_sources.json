@@ -11,5 +11,24 @@
   ],
   "connect_timeout": 15,
   "read_timeout": 60,
-  "max_download_bytes": 104857600
+  "max_download_bytes": 104857600,
+  "materialization_profile": {
+    "_fingerprint": "public-docx-preview-fixture-v1",
+    "chunking": {
+      "tokenizer": "cl100k_base",
+      "max_tokens": 800,
+      "min_tokens": 120,
+      "boundary_mode": "semantic_v2"
+    },
+    "metadata": {
+      "document": {},
+      "chunk": {}
+    },
+    "embedding": {
+      "input_fields": [
+        "chunk_text"
+      ],
+      "input_max_tokens": 6000
+    }
+  }
 }

@@ -17,7 +17,56 @@ REPO=Path(__file__).resolve().parents[1]
 SAMPLE=REPO/"profiles"/"intake_reuse_immbot_example.yml"
 
 
+
+def retained_docx(root):
+    import zipfile
+    from docx_evidence import capture,W
+    src=root/"source.docx"
+    cfg=json.loads((REPO/"profiles/docx_evidence_example.json").read_text())
+    with zipfile.ZipFile(src,"w",zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml","<Types/>")
+        z.writestr("word/document.xml",f'<w:document xmlns:w="{W}"><w:body>'
+                   '<w:p><w:r><w:t>剂量 20 mg. '+("Clinical source text. "*250)+'</w:t></w:r></w:p>'
+                   '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>First cell</w:t></w:r></w:p></w:tc>'
+                   '<w:tc><w:p><w:r><w:t>Second cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+                   '<w:p><w:del><w:r><w:delText>Deleted claim</w:delText></w:r></w:del></w:p>'
+                   '</w:body></w:document>')
+    out=root/"retained"
+    cap=capture(src,out,policy_id="test",authorized_derivatives=True,config=cfg)
+    src.unlink()
+    return out,cap["capture_id"],cfg
+
+
 class TestConsumerIntake(unittest.TestCase):
+    def test_docx_preview_logical_spans_and_review_exclusion(self):
+        from reuse_materialize import prepare_docx_document
+        from docx_evidence import iter_logical_blocks
+        with tempfile.TemporaryDirectory() as tmp:
+            root,cid,cfg=retained_docx(Path(tmp))
+            profile=load_profile(str(SAMPLE))
+            args=dict(config=cfg,doc_id="docx:test",file_name="source.docx")
+            rows,report=prepare_docx_document(root,cid,profile,**args)
+            self.assertEqual(report["quality"]["structural_errors"],0)
+            self.assertEqual(report["withheld_review_blocks"],1)
+            self.assertIn("document.protocol_number",report["omitted_optional_pdf_metadata_rules"])
+            self.assertEqual(rows,prepare_docx_document(root,cid,profile,**args)[0])
+            self.assertTrue(all(row[8:10]==(None,None) for row in rows))
+            blocks={b["block_id"]:"".join(s["text"] for s in b["segments"])
+                    for b in iter_logical_blocks(root,cid,config=cfg)}
+            for row in rows:
+                meta=json.loads(row[13])
+                self.assertEqual(meta["source_format"],"docx")
+                parts=[blocks[s["block_id"]][s["char_start"]:s["char_end"]]
+                       for s in meta["logical_spans"]]
+                self.assertEqual("\n".join(parts),row[6])
+                self.assertNotIn("Deleted claim",row[6])
+                self.assertFalse("First cell" in row[6] and "Second cell" in row[6])
+            with self.assertRaisesRegex(ValueError,"namespaced"):
+                prepare_docx_document(root,cid,profile,**{**args,"doc_id":"pdf-id"})
+            profile["metadata"]["document"]["protocol_number"]["required"]=True
+            with self.assertRaisesRegex(ValueError,"Required PDF metadata"):
+                prepare_docx_document(root,cid,profile,**args)
+
     def test_yaml_input_fields_and_existing_source_mapping(self):
         profile=load_profile(str(SAMPLE))
         self.assertEqual(profile["chunking"]["max_tokens"],800)
@@ -216,6 +265,35 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
                     WHERE doc_id='doc_ok'""")
                 self.assertEqual(cur.fetchone()[0],3)
         conn.close()
+        # Use the SAME initialized output table, profile, and transaction;
+        # preserve physical PDF citations and publish NULL DOCX page values.
+        from reuse_materialize import run_docx
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root,cid,cfg=retained_docx(Path(tmp))
+            kw=dict(config=cfg,doc_id="docx:ci",file_name="source.docx")
+            with self.assertRaises(PermissionError):
+                run_docx(root,cid,p,**kw)
+            first=run_docx(root,cid,p,allow_logical_locators=True,**kw)
+            self.assertEqual(first["status"],"SUCCESS")
+            with patch("reuse_materialize.save_document",side_effect=AssertionError("unexpected rewrite")):
+                self.assertEqual(run_docx(root,cid,p,allow_logical_locators=True,**kw)["status"],"SKIPPED")
+            conn=self.connect()
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""SELECT count(*),bool_and(page_start IS NULL AND page_end IS NULL),
+                                       bool_and(chunk_metadata->>'source_format'='docx')
+                                       FROM intake_ci.out_chunks_v1 WHERE doc_id='docx:ci'""")
+                        self.assertEqual(cur.fetchone(),(first["prepared_chunks"],True,True))
+                        cur.execute("SELECT max(page_end) FROM intake_ci.out_chunks_v1 WHERE doc_id='doc_ok'")
+                        self.assertEqual(cur.fetchone()[0],3)
+                        cur.execute("""DELETE FROM intake_ci.out_chunks_v1 WHERE doc_id='docx:ci'
+                                       AND chunk_index=0""")
+                with self.assertRaisesRegex(ValueError,"reconciliation"):
+                    run_docx(root,cid,p,allow_logical_locators=True,**kw)
+            finally:
+                conn.close()
 
 
 if __name__=="__main__":

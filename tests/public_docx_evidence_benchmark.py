@@ -54,9 +54,11 @@ def check(item,cfg,download):
         observed={}
         block_counts={}
         block_ids=set()
+        logical_blocks={}
         for block in iter_logical_blocks(out,cid,config=cfg):
             assert block["block_id"] not in block_ids
             block_ids.add(block["block_id"])
+            logical_blocks[block["block_id"]]=block
             assert "page_start" not in block and "page_end" not in block
             kind=block["kind"]
             block_counts[kind]=block_counts.get(kind,0)+1
@@ -69,11 +71,42 @@ def check(item,cfg,download):
             assert actual==text, f"Logical text token mismatch in {part}"
         for kind,tag in (("paragraph","w:p"),("table","w:tbl"),("row","w:tr"),("cell","w:tc")):
             assert block_counts.get(kind,0)==expected.get(tag,0)
+        from reuse_materialize import prepare_docx_document
+        profile=download["materialization_profile"]
+        rows,prepared=prepare_docx_document(out,cid,profile,config=cfg,
+                                            doc_id="docx:"+item["name"],file_name=item["name"]+".docx")
+        expected_chars=sum(len("".join(s["text"] for s in b["segments"]))
+                           for b in logical_blocks.values() if b["kind"] in ("paragraph","unscoped_text")
+                           and not b["review_context"] and "".join(s["text"] for s in b["segments"]).strip())
+        seen={}
+        for row in rows:
+            assert row[8:10]==(None,None)
+            meta=json.loads(row[13])
+            parts=[]
+            for span in meta["logical_spans"]:
+                block=logical_blocks[span["block_id"]]
+                assert not block["review_context"]
+                value="".join(s["text"] for s in block["segments"])
+                start,end=span["char_start"],span["char_end"]
+                assert 0<=start<end<=len(value)
+                piece=value[start:end]
+                assert hashlib.sha256(piece.encode()).hexdigest()==span["text_sha256"]
+                parts.append(piece)
+                seen.setdefault(span["block_id"],[]).append((start,end))
+            assert "\n".join(parts)==row[6]
+        for ranges in seen.values():
+            ordered=sorted(ranges)
+            assert all(a[1]<=b[0] for a,b in zip(ordered,ordered[1:]))
+        assert sum(end-start for ranges in seen.values() for start,end in ranges)==prepared["indexed_source_characters"]
+        assert prepared["indexed_source_characters"]+prepared["withheld_split_whitespace_characters"]==expected_chars
+        assert prepared["quality"]["structural_errors"]==0
         for asset in data["assets"]:
             assert asset_sha[asset["part"]]==asset["sha256"]
         assert not list(out.rglob("*.docx"))
         assert not list(out.rglob("*.xml"))
         return {"source":item["name"],"source_bytes":size,"counts":expected,
+                "prepared_logical_chunks":len(rows),"logical_chunk_token_max":prepared["quality"]["token_max"],
+                "indexed_source_characters":prepared["indexed_source_characters"],"withheld_review_blocks":prepared["withheld_review_blocks"],
                 "logical_block_counts":block_counts,"exact_native_text_tokens":sum(map(len,expected_text.values())),
                 "asset_parts":post["asset_parts"],"unique_assets":post["unique_assets"],
                 "source_media_parts":len(asset_sha),"chart_parts":post["chart_parts"],
