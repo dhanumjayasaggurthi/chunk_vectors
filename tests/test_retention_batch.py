@@ -84,6 +84,18 @@ class ResourceGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             settings({**cfg,"resource_guard":{**cfg["resource_guard"],"host_resume_available_gib":5}})
 
+    def test_metadata_example_loads_and_extracts_real_values(self):
+        from processing_profile import load_profile
+        from metadata_extractor import _extract
+        p=load_profile(str(Path(__file__).resolve().parents[1]/"profiles/regulatory_metadata_api.example.yml"))
+        rules=p["metadata"]["document"]
+        self.assertEqual(_extract("Report Date: 2026-11-24",rules["report_date"]),"2026-11-24")
+        self.assertEqual(_extract("Title: Clinical Safety Report",rules["document_title"]),"Clinical Safety Report")
+        self.assertEqual(_extract("Application Number: 123/45",rules["application_number"]),"123/45")
+        self.assertIsNone(_extract("No protocol label present",rules["protocol_number"]))
+        self.assertEqual(p["output"]["table"],"regulatory_chunks")
+        self.assertFalse(p["embedding"]["enabled"])
+
     @unittest.skipUnless(__import__("sys").platform.startswith("linux"),"Linux metrics")
     def test_live_linux_metrics(self):
         from resource_guard import LinuxMetrics

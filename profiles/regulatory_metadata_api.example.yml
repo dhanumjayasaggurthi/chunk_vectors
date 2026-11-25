@@ -107,21 +107,7 @@ metadata:
       first_pages: 25
     report_date:
       method: regex
-      pattern: '(?im)^\s*Report\s+Date\s*:\s*(\d{4}-\d{2}-\d{2})\s*
-  enabled: false
-  reuse_existing: true
-  batch_size: 128
-  dimensions: 1536
-  input_max_tokens: 6000
-  input_fields:
-    - document.protocol_number
-    - section_title
-    - chunk_text
-
-output:
-  schema: example_schema
-  table: regulatory_chunks
-
+      pattern: '(?im)^\s*Report\s+Date\s*:\s*(\d{4}-\d{2}-\d{2})\s*$'
       type: date
       enabled: true
       required: false
