@@ -70,6 +70,54 @@ class DocxEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"checksum"):
                 verify(out,cid,config=CONFIG)
 
+    def test_logical_adapter_keeps_source_cells_and_exact_text_without_pages(self):
+        from docx_evidence import iter_logical_blocks,logical_summary
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            src=root/"source.docx"
+            fixture(src)
+            out=root/"out"
+            cap=capture(src,out,policy_id="test",authorized_derivatives=True,config=CONFIG)
+            cid=cap["capture_id"]
+            src.unlink()
+            blocks=list(iter_logical_blocks(out,cid,config=CONFIG))
+            self.assertEqual(len({b["block_id"] for b in blocks}),len(blocks))
+            self.assertEqual(blocks,list(iter_logical_blocks(out,cid,config=CONFIG)))
+            self.assertTrue(all("page_start" not in b and "page_end" not in b for b in blocks))
+            self.assertEqual(blocks[0]["locator"]["part"],"word/document.xml")
+            cells=[b for b in blocks if b["kind"]=="cell"]
+            self.assertEqual(len(cells),3)
+            self.assertEqual(cells[0]["source_properties"][0]["children"][0]["attributes"]["w:val"],"2")
+            nested=next(b for b in blocks if any(s["text"]=="Nested" for s in b["segments"]))
+            self.assertEqual(sum(a["tag"]=="w:tbl" for a in nested["table_ancestry"]),2)
+            first=blocks[0]
+            self.assertEqual("".join(s["text"] for s in first["segments"]),"剂量 20 mg\tResult")
+            self.assertEqual(sum(len(b["relationships"]) for b in blocks),4)
+            self.assertEqual(logical_summary(out,cid,config=CONFIG)["native_text_tokens"],cap["counts"]["w:t"])
+
+    def test_nested_paragraph_and_revision_text_not_duplicated(self):
+        from docx_evidence import iter_logical_blocks
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            src=root/"source.docx"
+            document=f'''<w:document xmlns:w="{W}"><w:body>
+            <w:p><w:r><w:t>Outer</w:t><w:drawing><w:txbxContent>
+            <w:p><w:r><w:t>Inner</w:t></w:r></w:p></w:txbxContent></w:drawing>
+            <w:t>After</w:t></w:r><w:del><w:r><w:delText>Deleted</w:delText></w:r></w:del>
+            <w:r><w:instrText>FIELD</w:instrText></w:r></w:p>
+            </w:body></w:document>'''
+            fixture(src,document=document)
+            cap=capture(src,root/"out",policy_id="test",authorized_derivatives=True,config=CONFIG)
+            src.unlink()
+            blocks=list(iter_logical_blocks(root/"out",cap["capture_id"],config=CONFIG))
+            main=[b for b in blocks if b["locator"]["part"]=="word/document.xml"]
+            self.assertEqual(len(main),2)
+            self.assertEqual([s["text"] for s in main[0]["segments"]],["Outer","After","Deleted","FIELD"])
+            self.assertEqual([s["text"] for s in main[1]["segments"]],["Inner"])
+            self.assertIn("w:del",main[0]["review_context"])
+            self.assertIn("w:txbxContent",main[1]["review_context"])
+            self.assertIn("w:instrText",main[0]["review_context"])
+
     def test_policy_and_unsafe_package(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)

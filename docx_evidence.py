@@ -286,9 +286,124 @@ def capture(source,root,*,policy_id,authorized_derivatives,config):
             "elapsed_seconds":round(time.monotonic()-started,3)}
 
 
+
+def _walk_tokens(nodes, prefix=(), ancestors=()):
+    """Iterate retained token paths, not XML XPath or rendered coordinates."""
+    for index,node in enumerate(nodes):
+        path=prefix+(index,)
+        yield node,path,ancestors
+        yield from _walk_tokens(node.get("children",()),path,ancestors+((node,path),))
+
+
+_LOGICAL_TEXT={"w:t","a:t","w:instrText","w:delText"}
+_LOGICAL_BREAKS={"w:tab":"\t","w:br":"\n","w:cr":"\n",
+                 "w:noBreakHyphen":"\u2011","w:softHyphen":"\u00ad"}
+_STRUCTURAL={"w:tbl","w:tr","w:tc"}
+_REVIEW_CONTEXT={"w:ins","w:del","w:moveFrom","w:moveTo","w:fldSimple",
+                 "w:txbxContent","w:pict","w:drawing","w:object"}
+
+
+def _locator(part,path):
+    return {"kind":"docx_retained_token_path","part":part,"token_path":list(path)}
+
+
+def iter_logical_blocks(root,capture_id,*,config):
+    """Yield verified logical source blocks with explicit non-page locators.
+
+    Paragraphs, physical table/row/cell anchors and unscoped text are emitted
+    once. Text belonging to nested paragraphs is NOT duplicated in the parent.
+    This is an adapter for future common ingestion, not a PDF page surrogate.
+    Text segments are evidence, not a claim of final rendered/visible text.
+    """
+    evidence=read_evidence(root,capture_id,config=config)
+    identity=evidence["identity"]
+    # Story order is logical only. Main document first; headers, footnotes etc.
+    # remain distinct parts, never interleaved into an invented page order.
+    stories=sorted(evidence["stories"],key=lambda s:(s["part"]!="word/document.xml",s["part"]))
+    for story in stories:
+        part=story["part"]
+        tokens=story["tokens"]
+        for node,path,ancestors in _walk_tokens(tokens):
+            tag=node["tag"]
+            table_context=[{"tag":a["tag"],"locator":_locator(part,p)}
+                           for a,p in ancestors if a["tag"] in _STRUCTURAL]
+            review=sorted({a["tag"] for a,_ in ancestors if a["tag"] in _REVIEW_CONTEXT})
+            if tag not in _STRUCTURAL|{"w:p"}|_LOGICAL_TEXT|set(_LOGICAL_BREAKS):
+                continue
+            if tag in _LOGICAL_TEXT or tag in _LOGICAL_BREAKS:
+                if any(a["tag"]=="w:p" for a,_ in ancestors):
+                    continue
+                kind="unscoped_text"
+                descendants=[(node,path,ancestors)]
+            elif tag=="w:p":
+                kind="paragraph"
+                # Descendant walk stops at nested paragraph. The outer block
+                # cannot claim the same source text as a text-box paragraph.
+                def own(children,prefix,parents):
+                    for i,child in enumerate(children):
+                        child_path=prefix+(i,)
+                        if child["tag"]=="w:p":
+                            continue
+                        yield child,child_path,parents
+                        yield from own(child.get("children",()),child_path,parents+((child,child_path),))
+                descendants=own(node.get("children",()),path,ancestors+((node,path),))
+            else:
+                kind={"w:tbl":"table","w:tr":"row","w:tc":"cell"}[tag]
+                descendants=()
+            segments=[]
+            flags=set(review)
+            references=[]
+            for child,child_path,parents in descendants:
+                ct=child["tag"]
+                attrs=child.get("attributes",{})
+                refs={k:v for k,v in attrs.items() if k.startswith("r:")}
+                if refs:
+                    references.append({"locator":_locator(part,child_path),
+                                       "relationships":refs})
+                if ct not in _LOGICAL_TEXT and ct not in _LOGICAL_BREAKS:
+                    continue
+                child_flags=sorted({a["tag"] for a,_ in parents if a["tag"] in _REVIEW_CONTEXT})
+                if ct in ("w:instrText","w:delText","a:t"):
+                    child_flags=sorted(set(child_flags)|{ct})
+                flags.update(child_flags)
+                segments.append({"tag":ct,"text":child.get("text","") if ct in _LOGICAL_TEXT else _LOGICAL_BREAKS[ct],
+                                 "locator":_locator(part,child_path),"review_context":child_flags})
+            # Never expand merge cells or invent a grid/header. All source
+            # geometry/formatting tokens remain in the checked manifest.
+            block_locator=_locator(part,path)
+            block={"block_id":_sha(_json_bytes({"capture_id":capture_id,"locator":block_locator})),
+                   "capture_id":capture_id,"source_docx_sha256":identity["source_docx_sha256"],
+                   "locator":block_locator,"kind":kind,"source_tag":tag,
+                   "table_ancestry":table_context,"segments":segments,
+                   "relationships":references,"review_context":sorted(flags),
+                   "pagination":"NOT_RENDERED","source_text_status":"NATIVE_TOKENS_NOT_RENDERED",
+                   "source_facts_verified":False}
+            if kind in ("table","row","cell"):
+                props={"table":("w:tblPr","w:tblGrid"),"row":("w:trPr",),"cell":("w:tcPr",)}[kind]
+                block["source_properties"]=[child for child in node.get("children",()) if child["tag"] in props]
+            yield block
+
+
+def logical_summary(root,capture_id,*,config):
+    """Bounded counters for logical adapter acceptance; no DB or cloud writes."""
+    counts={}
+    text_tokens=0
+    review_blocks=0
+    references=0
+    for block in iter_logical_blocks(root,capture_id,config=config):
+        kind=block["kind"]
+        counts[kind]=counts.get(kind,0)+1
+        text_tokens+=sum(s["tag"]=="w:t" for s in block["segments"])
+        review_blocks+=bool(block["review_context"])
+        references+=len(block["relationships"])
+    return {"capture_id":capture_id,"logical_block_counts":counts,"native_text_tokens":text_tokens,
+            "review_blocks":review_blocks,"relationship_occurrences":references,
+            "pagination":"NOT_RENDERED","purge_safe":False,"database_writes":False}
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser()
-    parser.add_argument("action",choices=("capture","verify"))
+    parser.add_argument("action",choices=("capture","verify","logical-summary"))
     parser.add_argument("--root",required=True)
     parser.add_argument("--profile",required=True)
     parser.add_argument("--file")
@@ -305,7 +420,8 @@ def main(argv=None):
     else:
         if not args.capture_id:
             parser.error("verify requires --capture-id")
-        result=verify(args.root,args.capture_id,config=cfg)
+        result=(logical_summary(args.root,args.capture_id,config=cfg)
+                if args.action=="logical-summary" else verify(args.root,args.capture_id,config=cfg))
     print(json.dumps(result,ensure_ascii=True,sort_keys=True))
 
 

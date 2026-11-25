@@ -9,7 +9,7 @@ import hashlib
 import requests
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from docx_evidence import capture,verify,read_evidence,W,STORY
+from docx_evidence import capture,verify,read_evidence,iter_logical_blocks,W,STORY
 
 def check(item,cfg,download):
     with tempfile.TemporaryDirectory() as tmp:
@@ -26,10 +26,12 @@ def check(item,cfg,download):
                     out.write(data)
         expected={}
         asset_sha={}
+        expected_text={}
         with zipfile.ZipFile(source) as z:
             for part in z.namelist():
                 if STORY.fullmatch(part):
                     xml=ET.fromstring(z.read(part))
+                    expected_text[part]=[node.text or "" for node in xml.iter(f"{{{W}}}t")]
                     for tag in ("p","tbl","tr","tc","t","gridSpan","vMerge"):
                         key="w:"+tag
                         expected[key]=expected.get(key,0)+sum(1 for _ in xml.iter(f"{{{W}}}{tag}"))
@@ -46,11 +48,33 @@ def check(item,cfg,download):
         source.unlink()
         post=verify(out,cid,config=cfg)
         data=read_evidence(out,cid,config=cfg)
+        # Compare every source text token, in original within-story order,
+        # not just aggregate counts or a substring match. A nested paragraph
+        # can be emitted separately, so reconcile via stable token paths.
+        observed={}
+        block_counts={}
+        block_ids=set()
+        for block in iter_logical_blocks(out,cid,config=cfg):
+            assert block["block_id"] not in block_ids
+            block_ids.add(block["block_id"])
+            assert "page_start" not in block and "page_end" not in block
+            kind=block["kind"]
+            block_counts[kind]=block_counts.get(kind,0)+1
+            for segment in block["segments"]:
+                if segment["tag"]=="w:t":
+                    loc=segment["locator"]
+                    observed.setdefault(loc["part"],[]).append((loc["token_path"],segment["text"]))
+        for part,text in expected_text.items():
+            actual=[value for _,value in sorted(observed.get(part,[]))]
+            assert actual==text, f"Logical text token mismatch in {part}"
+        for kind,tag in (("paragraph","w:p"),("table","w:tbl"),("row","w:tr"),("cell","w:tc")):
+            assert block_counts.get(kind,0)==expected.get(tag,0)
         for asset in data["assets"]:
             assert asset_sha[asset["part"]]==asset["sha256"]
         assert not list(out.rglob("*.docx"))
         assert not list(out.rglob("*.xml"))
         return {"source":item["name"],"source_bytes":size,"counts":expected,
+                "logical_block_counts":block_counts,"exact_native_text_tokens":sum(map(len,expected_text.values())),
                 "asset_parts":post["asset_parts"],"unique_assets":post["unique_assets"],
                 "source_media_parts":len(asset_sha),"chart_parts":post["chart_parts"],
                 "story_parts":post["story_parts"],"unresolved_count":len(post["unresolved"]),
