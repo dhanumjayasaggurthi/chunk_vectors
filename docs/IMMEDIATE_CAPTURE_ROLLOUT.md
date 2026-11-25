@@ -82,3 +82,7 @@ Use an approved log destination; page_stage logs paths, so protect access. Do no
 
 ## Return only operational facts
 Approved evidence policy/path/capacity; remaining count and actual earliest deadline; target native profile/schema/table; available hosts, cores and RAM; first shard final summary, receipt status counts, elapsed time, actual storage delta. Do not disclose source text, credentials or private document names. If policy/target unavailable, escalation is immediate; native-only capture may still be allowed but cannot recover lost visual evidence. No further feature work until rollout feedback unless a release-blocking defect appears.
+
+## Large-document and database concurrency clarification
+
+See the top production clarification in [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) for the actual 3,000-page handling, document-only advisory locks, per-window and final publication transactions, connection budget, OCR/translation evidence and accuracy limits. Keep one active native profile per target/document; assign disjoint long-document lane and monitor DB waits, storage and real throughput. Do not bypass document locks or disable durability to increase speed. No claim of full automatic OCR/translation/LLM semantic publication. Frozen c9b0991 remains the code release.
