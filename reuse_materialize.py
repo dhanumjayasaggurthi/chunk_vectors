@@ -368,7 +368,7 @@ def _docx_existing(doc_id,source_hash,profile,names,capture_id):
         conn.close()
 
 
-def run_docx(root,capture_id,profile,*,config,doc_id,file_name,allow_logical_locators=False):
+def run_docx(root,capture_id,profile,*,config,doc_id,file_name,allow_logical_locators=False,translator=None):
     """Explicit single-document publication using the existing DB transaction.
 
     Consumers must accept NULL physical page columns and logical span citations.
@@ -379,6 +379,8 @@ def run_docx(root,capture_id,profile,*,config,doc_id,file_name,allow_logical_loc
     from docx_evidence import verify
     from profile_store import profile_document_lock
     digest=_docx_identity(doc_id,file_name,capture_id)
+    if translator is not None:
+        digest=hashlib.sha256((digest+"\x00"+translator.identity).encode()).hexdigest()
     names=verify_output(profile,logical_locators=True)
     with profile_document_lock(doc_id,profile["_fingerprint"]) as acquired:
         if not acquired:
@@ -389,6 +391,10 @@ def run_docx(root,capture_id,profile,*,config,doc_id,file_name,allow_logical_loc
             return {"doc_id":doc_id,"status":"SKIPPED"}
         rows,report=prepare_docx_document(root,capture_id,profile,config=config,
                                          doc_id=doc_id,file_name=file_name)
+        if translator is not None:
+            rows=translator.apply_rows(rows,profile,{"source_file_name":file_name,"source_format":"docx"})
+        else:
+            _reject_translation_loss(doc_id,names)
         save_document(doc_id,digest,profile,names,rows)
         return {"doc_id":doc_id,"status":"SUCCESS",**report}
 
@@ -767,7 +773,21 @@ def append_enrichment_rows(struct,profile,rows,parts):
     return rows
 
 
-def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None):
+def _reject_translation_loss(doc_id,names):
+    from db import get_conn
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT 1 FROM {names['table']} WHERE doc_id=%s
+                          AND chunk_metadata ? 'translation' LIMIT 1""",(doc_id,))
+            if cur.fetchone():
+                raise ValueError("Refusing to replace translated output without translation enabled")
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None,translator=None):
     from profile_store import profile_document_lock
     from extracted_source import load_extracted_document
     try:
@@ -805,6 +825,10 @@ def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None):
             struct, digest = load_extracted_document(profile, doc_id)
             if enrichment is not None:
                 digest=hashlib.sha256((digest+"\x00enriched-v1\x00"+_safe_json(enrichment)).encode()).hexdigest()
+            if translator is not None:
+                digest=hashlib.sha256((digest+"\x00"+translator.identity).encode()).hexdigest()
+            else:
+                _reject_translation_loss(doc_id,names)
             if _current(str(doc_id),digest,profile,names):
                 return {"doc_id":str(doc_id),"status":"SKIPPED"}
             try:
@@ -815,6 +839,8 @@ def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None):
                 rows=[]
             if enrichment is not None:
                 rows=append_enrichment_rows(struct,profile,rows,enrichment)
+            if translator is not None:
+                rows=translator.apply_rows(rows,profile,getattr(struct,"source_metadata",{}))
             check_version()
             save_document(str(doc_id),digest,profile,names,rows)
             return {"doc_id":str(doc_id),"status":"SUCCESS","chunks":len(rows)}

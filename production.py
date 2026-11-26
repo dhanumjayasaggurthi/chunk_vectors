@@ -124,7 +124,16 @@ def resolve_configuration(path="config.ini"):
         model=model_settings(model)
         execution=execution_settings(execution,model)
         vision=(model,execution)
-    return {"visual_llm":vision,"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
+    translation=None
+    if dep.getboolean("authorized_translation",fallback=False):
+        from translation_stage import production_settings
+        translation=production_settings({
+            "model":dep.get("translation_model","nmt"),
+            "rpm":dep.getint("translation_rpm",30),
+            "max_chars":dep.getint("translation_max_chars",5000),
+            "timeout_seconds":dep.getint("translation_timeout_seconds",60),
+            "attempts":dep.getint("translation_attempts",3)})
+    return {"translation":translation,"visual_llm":vision,"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
             "evidence":evidence,"source":source,"receipts":receipts,"inventory":inventory,
             "limits":limits,"relations":relations,
             "authorized_ocr":dep.getboolean("authorized_ocr"),
@@ -178,7 +187,8 @@ def _storage_and_inventory(d):
         for row in rows:
             total+=1
             path=Path(row["path"])
-            if ".." in path.parts or not path.is_relative_to(d["source"]):
+            # Windows temp directories can have both short and long path aliases.
+            if ".." in path.parts or not path.resolve().is_relative_to(source):
                 raise ValueError("Inventory path outside configured source root")
             if path.suffix.lower()==".docx":
                 docx_count+=1
@@ -288,6 +298,8 @@ def finish_captured(d,receipt):
     p,q=d["capture"],d["retrieval"]
     quota=LocalQuota(d["visual_llm"][1]) if d["visual_llm"] else None
     names=verify_output(q)
+    from translation_stage import GoogleTranslation
+    translator=GoogleTranslation(d["gcp_key"],d["translation"]) if d.get("translation") else None
     counts=Counter()
     with Path(receipt).open(encoding="utf-8") as stream:
         for line in stream:
@@ -298,7 +310,7 @@ def finish_captured(d,receipt):
             try:
                 if row["format"]=="docx":
                     result=run_docx(d["evidence"],row["capture_id"],q,config=d["docx"],
-                                    doc_id=doc,file_name=row["file_name"],allow_logical_locators=True)
+                                    doc_id=doc,file_name=row["file_name"],allow_logical_locators=True,translator=translator)
                 else:
                     discovered=ocr.enqueue(p,doc_id=doc,max_docs=1,apply=True)
                     if discovered["candidates"]:
@@ -327,7 +339,7 @@ def finish_captured(d,receipt):
                                     "provenance":{"request_id":result["request_id"],"capture_id":row["capture_id"],
                                                   "source_facts_verified":False}})
                     parts.sort(key=lambda item:(item["page"],item["kind"],json.dumps(item["provenance"],sort_keys=True)))
-                    result=run_one(doc,q,names,enrichment=parts,expected_source_hash=row["source_sha256"])
+                    result=run_one(doc,q,names,enrichment=parts,expected_source_hash=row["source_sha256"],translator=translator)
                 counts[result["status"]]+=1
             except Exception as exc:
                 logging.getLogger(__name__).error("Post-capture document %s failed: %s",doc,type(exc).__name__)

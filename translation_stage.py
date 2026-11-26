@@ -220,3 +220,108 @@ def translate_claimed(rows, translator, *, workers=8):
             return row,None,f"{type(exc).__name__}: {exc}"[:1000]
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(work, rows))
+
+
+def production_settings(value):
+    """Small bounded local quota; allocate per host from the approved project quota."""
+    expected={"model","rpm","max_chars","timeout_seconds","attempts"}
+    if not isinstance(value,dict) or set(value)!=expected or value["model"] not in ("nmt","base"):
+        raise ValueError("Invalid Google Translation configuration")
+    for k,low,high in (("rpm",1,10000),("max_chars",100,30000),
+                       ("timeout_seconds",5,600),("attempts",1,5)):
+        if type(value[k]) is not int or not low<=value[k]<=high:
+            raise ValueError("Invalid translation "+k)
+    return dict(value)
+
+
+def _google_session(key_path):
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import AuthorizedSession
+    credentials=service_account.Credentials.from_service_account_file(
+        key_path,scopes=["https://www.googleapis.com/auth/cloud-translation"])
+    return AuthorizedSession(credentials)
+
+
+class GoogleTranslation:
+    """Auto-detect source language, preserve source, publish English separately.
+
+    No extra tables. A successfully published document skips on the same
+    source/enrichment/translation identity. A crash before publication can
+    repeat calls. Model/target are semantic, rate and batch limits operational.
+    """
+    def __init__(self,key_path,config,*,session=None):
+        self.cfg=production_settings(config)
+        self.key_path=key_path
+        self.session=session
+        self.next_request=0.0
+        self.identity=translation_fingerprint(provider="google-translate-v2",
+                                  model=self.cfg["model"],glossary_version="en-auto-source-v1")
+
+    def _batch(self,values):
+        if self.session is None:
+            self.session=_google_session(self.key_path)
+        for attempt in range(self.cfg["attempts"]):
+            delay=max(0,self.next_request-time.monotonic())
+            if delay:
+                time.sleep(delay)
+            self.next_request=time.monotonic()+60/self.cfg["rpm"]
+            response=self.session.post("https://translation.googleapis.com/language/translate/v2",
+                json={"q":values,"target":"en","format":"text","model":self.cfg["model"]},
+                timeout=self.cfg["timeout_seconds"])
+            if response.status_code in (429,500,502,503,504) and attempt+1<self.cfg["attempts"]:
+                self.next_request=max(self.next_request,time.monotonic()+min(60,2**attempt))
+                continue
+            response.raise_for_status()
+            items=response.json()["data"]["translations"]
+            if not isinstance(items,list) or len(items)!=len(values):
+                raise ValueError("Translation response count mismatch")
+            result=[]
+            for item in items:
+                lang=item.get("detectedSourceLanguage")
+                text=item.get("translatedText")
+                if not isinstance(lang,str) or not LANGUAGE.fullmatch(lang) or not isinstance(text,str) or not text.strip():
+                    raise ValueError("Invalid translation response")
+                result.append((lang,text))
+            return result
+        raise RuntimeError("Translation attempts exhausted")
+
+    def apply_rows(self,rows,profile,sources):
+        from types import SimpleNamespace
+        from reuse_materialize import compose_embedding_text
+        result=list(rows)
+        batch=[]
+        chars=0
+        def flush():
+            nonlocal batch,chars
+            if not batch:
+                return
+            values=[result[i][6] for i in batch]
+            for i,(language,english) in zip(batch,self._batch(values)):
+                row=result[i]
+                meta=json.loads(row[13])
+                meta["translation"]={"provider":"google-translate-v2","fingerprint":self.identity,
+                                     "source_language":language,"target_language":"en",
+                                     "source_text_sha256":hashlib.sha256(row[6].encode()).hexdigest(),
+                                     "status":"ENGLISH_SOURCE" if language=="en" else "MACHINE_TRANSLATION_UNVERIFIED"}
+                embedding=row[7]
+                if language!="en":
+                    meta["translation"]["text"]=english
+                    chunk=SimpleNamespace(chunk_text=english,section_title=row[10],file_name=row[5],
+                           file_path=row[4],document_metadata=json.loads(row[12]),chunk_metadata=meta)
+                    embedding=compose_embedding_text(chunk,profile["embedding"].get("input_fields",["chunk_text"]),
+                          sources,max_tokens=profile["embedding"].get("input_max_tokens",6000),
+                          tokenizer=profile["chunking"].get("tokenizer","cl100k_base"))
+                result[i]=row[:7]+(embedding,)+row[8:13]+(json.dumps(meta,ensure_ascii=False,sort_keys=True),)+row[14:]
+            batch=[]
+            chars=0
+        for i,row in enumerate(result):
+            if json.loads(row[13]).get("source_kind")=="visual_model":
+                continue
+            if len(row[6])>self.cfg["max_chars"]:
+                raise ValueError("Translation segment exceeds configured character budget")
+            if batch and (chars+len(row[6])>self.cfg["max_chars"] or len(batch)>=64):
+                flush()
+            batch.append(i)
+            chars+=len(row[6])
+        flush()
+        return result

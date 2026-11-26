@@ -43,6 +43,30 @@ class TestTranslationUnit(unittest.TestCase):
                             and result[2] is None for result in results))
         self.assertTrue(all(row[4].startswith("Texte") for row in rows))
 
+    def test_google_translation_preserves_original_and_builds_english_embedding(self):
+        import json
+        from unittest.mock import Mock
+        from translation_stage import GoogleTranslation
+        cfg={"model":"nmt","rpm":10000,"max_chars":5000,"timeout_seconds":60,"attempts":1}
+        session=Mock()
+        response=session.post.return_value
+        response.status_code=200
+        response.json.return_value={"data":{"translations":[
+            {"detectedSourceLanguage":"fr","translatedText":"Clinical report"},
+            {"detectedSourceLanguage":"en","translatedText":"Native English"}]}}
+        translator=GoogleTranslation("not-used",cfg,session=session)
+        rows=[("id"+str(i),"doc","profile",i,"source","source.pdf",text,text,1,1,"","[]","{}",meta,"[]","{}")
+              for i,(text,meta) in enumerate([("Rapport clinique","{}"),("Native English","{}"),
+                  ("Unverified model","{\"source_kind\":\"visual_model\"}")])]
+        profile={"chunking":{"tokenizer":"cl100k_base"},"embedding":{"input_fields":["chunk_text"]}}
+        translated=translator.apply_rows(rows,profile,{})
+        self.assertEqual([r[6] for r in translated],[r[6] for r in rows])
+        self.assertEqual(translated[0][7],"Clinical report")
+        self.assertEqual(json.loads(translated[0][13])["translation"]["text"],"Clinical report")
+        self.assertEqual(translated[1][7],"Native English")
+        self.assertEqual(translated[2],rows[2])
+        self.assertEqual(session.post.call_args.kwargs["json"]["q"],["Rapport clinique","Native English"])
+
     def test_invalid_language_refuses_translation(self):
         with self.assertRaises(ValueError):
             compose_language_input("texte","english",language="bad code")

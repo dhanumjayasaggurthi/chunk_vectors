@@ -44,6 +44,13 @@ authorized_visual_llm = false
 visual_llm_profile = profiles/visual_enrichment_example.json
 visual_llm_execution = profiles/visual_enrichment_execution_example.json
 authorized_embedding = false
+; Optional, uses the same approved GCP key; auto-detects native/OCR source language.
+authorized_translation = false
+translation_model = nmt
+translation_rpm = 30
+translation_max_chars = 30000
+translation_timeout_seconds = 60
+translation_attempts = 3
 
 [RETENTION]
 root = /approved/evidence
@@ -68,7 +75,7 @@ dimensions = 1536
 
 [PATHS]
 source_type = nas
-; legacy main.py only; production.py uses authoritative inventory and DEPLOYMENT.source_root.
+; Normal production source directory; DEPLOYMENT.source_root is an optional override.
 docs_root = /approved/input/server01
 
 [PIPELINE]

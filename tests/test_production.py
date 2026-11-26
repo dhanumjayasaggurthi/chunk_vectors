@@ -203,10 +203,16 @@ class DeploymentPostgresTests(unittest.TestCase):
                 execution=json.loads((REPO/"profiles/visual_enrichment_execution_example.json").read_text())
                 model["authorized_provider"]=True
                 execution.update(authorized_result_storage=True,workers=2,read_workers=1,rpm=60000,tpm=10000000)
-                d.update(authorized_ocr=True,visual_llm=(model,execution))
+                d.update(authorized_ocr=True,visual_llm=(model,execution),
+                         translation={"model":"nmt","rpm":10000,"max_chars":30000,"timeout_seconds":60,"attempts":1})
                 raw=json.dumps({"observations":[{"target":"page","observation":"A visual field is visible",
                     "caption_quote":"","uncertainty":"limited"}],"limitations":[]})
-                with (patch("ocr_quota.detect_project_id",return_value="ci-only"),
+                from unittest.mock import Mock
+                session=Mock()
+                session.post.return_value.status_code=200
+                session.post.return_value.json.return_value={"data":{"translations":[{"detectedSourceLanguage":"fr","translatedText":"Translated clinical document"}]}}
+                with (patch("translation_stage._google_session",return_value=session),
+                      patch("ocr_quota.detect_project_id",return_value="ci-only"),
                       patch("ocr_quota.init_quota",return_value="ci-only"),
                       patch("ocr_quota.PostgresOcrLimiter"),
                       patch("vision_ocr.batch_document_text_detection",
@@ -216,10 +222,11 @@ class DeploymentPostgresTests(unittest.TestCase):
                     self.assertEqual(first,{"SUCCESS":2},first)
                     self.assertGreater(vision.call_count,0)
                     self.assertEqual(llm.call_count,1)
-                    counts=vision.call_count,llm.call_count
+                    self.assertEqual(session.post.call_count,1)
+                    counts=vision.call_count,llm.call_count,session.post.call_count
                     second=finish_captured(d,receipt)
                     self.assertEqual(second,{"SKIPPED":2},second)
-                    self.assertEqual((vision.call_count,llm.call_count),counts)
+                    self.assertEqual((vision.call_count,llm.call_count,session.post.call_count),counts)
                 conn=get_conn()
                 try:
                     with conn.cursor() as cur:

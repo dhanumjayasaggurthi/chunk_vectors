@@ -6,7 +6,7 @@ legacy tables into the new schema contract.
 
 ## 1. Install and configure
 
-Use your existing virtual environment; install requirements (PyMuPDF 1.x
+Use your existing virtual environment; install requirements (PyMuPDF 1.28.2
 qualified by CI, not 2.2 yet).
 
 ~~~bash
@@ -51,8 +51,7 @@ labeled visual observation chunks in the same retrieval table; DOCX native
 logical publication also uses same output. Optional embedding backfill when
 authorized. Separate phases protect native capture throughput. Current
 post-capture orchestration is per document, with existing concurrent OCR and
-visual requests within that document; no measured fleet SLA. Translation
-and scanned table cell reconstruction are not integrated yet; real OCR/LLM
+visual requests within that document; no measured fleet SLA. Optional authorized GCP Translation auto-detects native/OCR text, preserves source, stores English in chunk_metadata.translation and uses English embedding input. Scanned table cell reconstruction remains unresolved; real OCR/LLM
 accuracy and automatic visual coverage still need qualification. Native-only
 capture remains available via capture --apply. Native-only materialize rejects documents with existing OCR/model chunks. The run fails or marks
 incomplete if selected enrichment fails, and does not silently publish a
