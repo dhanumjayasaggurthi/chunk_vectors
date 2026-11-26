@@ -3,10 +3,10 @@ logger.py
 =========
 Centralised logging for the EPOD ingestion pipeline.
 
-  - Rotating file log  → logs/epod_pipeline.log  (10 MB × 5 files)
+  - Rotating file log  → logs/<configured_destination>.log  (10 MB × 5 files)
   - Console output     → colour-coded by level
   - Per-document child loggers  → easy to filter by file name
-  - Machine-readable JSON lines → logs/epod_pipeline.jsonl  (for monitoring)
+  - Machine-readable JSON lines → logs/<configured_destination>.jsonl  (for monitoring)
 
 Usage:
     from logger import get_logger
@@ -18,19 +18,35 @@ Usage:
 import json
 import logging
 import logging.handlers
+import multiprocessing
 import os
 import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import LOG_DIR, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT
+from config import LOG_DIR, LOG_FILE, LOG_NAME, LOG_MAX_BYTES, LOG_BACKUP_COUNT
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ensure log directory exists
 # ─────────────────────────────────────────────────────────────────────────────
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_JSONL_FILE = LOG_DIR / "epod_pipeline.jsonl"
+LOG_JSONL_FILE = LOG_FILE.with_suffix(".jsonl")
+
+
+def _process_log_file(path, *, is_worker=None, pid=None):
+    # RotatingFileHandler is not safe when multiple processes rotate the same
+    # file. Keep the coordinator filename stable and isolate spawned workers.
+    if is_worker is None:
+        is_worker = multiprocessing.current_process().name != "MainProcess"
+    if not is_worker:
+        return path
+    return path.with_name(f"{path.stem}.worker-{pid if pid is not None else os.getpid()}{path.suffix}")
+
+
+def _display_logger_name(name):
+    # Preserve the existing internal namespace and handler routing.
+    return LOG_NAME + name[4:] if name == "epod" or name.startswith("epod.") else name
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -68,7 +84,7 @@ class _ColourFormatter(logging.Formatter):
             level=record.levelname[0],     # D / I / W / E / C
             reset=reset,
             time=time,
-            name=record.name,
+            name=_display_logger_name(record.name),
             message=msg,
         )
 
@@ -105,12 +121,12 @@ class _FileFormatter(logging.Formatter):
         msg = record.getMessage()
         if record.exc_info:
             msg += "\n" + "".join(traceback.format_exception(*record.exc_info)).rstrip()
-        return f"{ts} | {record.levelname:<8} | {record.name} | {msg}"
+        return f"{ts} | {record.levelname:<8} | {_display_logger_name(record.name)} | {msg}"
 
 
 class _JsonlHandler(logging.Handler):
     """
-    Appends one JSON object per log line to epod_pipeline.jsonl.
+    Appends one JSON object per log line to the destination JSONL log.
     Useful for parsing failures with jq or sending to a monitoring system.
     """
 
@@ -123,7 +139,7 @@ class _JsonlHandler(logging.Handler):
             entry = {
                 "ts":      datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
                 "level":   record.levelname,
-                "logger":  record.name,
+                "logger":  _display_logger_name(record.name),
                 "message": record.getMessage(),
             }
             # Attach any extra fields passed via extra={}
@@ -150,7 +166,7 @@ _initialised = False
 
 
 def _setup_root_logger():
-    global _initialised
+    global _initialised, LOG_JSONL_FILE
     if _initialised:
         return
     _initialised = True
@@ -159,8 +175,10 @@ def _setup_root_logger():
     root.setLevel(logging.DEBUG)          # handlers filter their own levels
 
     # 1. Rotating plain-text file  (DEBUG+)
+    process_file = _process_log_file(LOG_FILE)
+    LOG_JSONL_FILE = process_file.with_suffix(".jsonl")
     fh = logging.handlers.RotatingFileHandler(
-        LOG_FILE,
+        process_file,
         maxBytes=LOG_MAX_BYTES,
         backupCount=LOG_BACKUP_COUNT,
         encoding="utf-8",
@@ -181,7 +199,7 @@ def _setup_root_logger():
     root.addHandler(ch)
 
     root.propagate = False
-    root.info(f"Logger initialised → {LOG_FILE}")
+    root.info(f"Logger initialised → {process_file}")
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -286,7 +304,7 @@ class RunSummary:
 
         sep = "─" * 68
         log.info(sep)
-        log.info("  EPOD PIPELINE RUN SUMMARY")
+        log.info(f"  {LOG_NAME.upper()} PIPELINE RUN SUMMARY")
         log.info(sep)
         log.info(f"  Total files processed : {total}")
         for status, count in sorted(counts.items()):
@@ -307,7 +325,7 @@ class RunSummary:
         summary_entry = {
             "ts":      datetime.now(tz=timezone.utc).isoformat(),
             "level":   "INFO",
-            "logger":  "epod.summary",
+            "logger":  _display_logger_name("epod.summary"),
             "message": "run_complete",
             "counts":  counts,
             "elapsed": elapsed,

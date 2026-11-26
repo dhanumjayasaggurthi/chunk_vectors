@@ -8,6 +8,7 @@ All tuneable parameters live here — never scatter magic numbers across files.
 
 import configparser
 import os
+import re
 from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,8 +185,16 @@ DOC_MAX_RETRIES = 2
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
+def pipeline_log_name(chunk_table, folder):
+    """Safe filename/console label derived from the configured destination."""
+    name = (chunk_table or "").strip() or (folder or "").strip()
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_-")
+    return safe[:96] or "pipeline"
+
+
 LOG_DIR      = Path("logs")
-LOG_FILE     = LOG_DIR / "epod_pipeline.log"
+LOG_NAME     = pipeline_log_name(_get("POSTGRES", "chunk_table", ""), FOLDER)
+LOG_FILE     = LOG_DIR / (LOG_NAME + ".log")
 LOG_MAX_BYTES   = 10 * 1024 * 1024   # 10 MB per log file
 LOG_BACKUP_COUNT = 5                  # keep 5 rotated files
 

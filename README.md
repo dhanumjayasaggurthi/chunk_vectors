@@ -66,7 +66,7 @@ tail -f ingestlogs.log
 
 Use [systemd limits](docs/PRODUCTION_REFERENCE.md#4-capture-now-then-ramp-up)
 for hard OS-level protection; replace capture with run if authorized.
-No Docker. Only one coordinator per server. The application guard starts
+No Docker. Only one coordinator per server. Logs automatically use [POSTGRES] chunk_table (legacy fallback: folder): logs/<destination>.log and .jsonl. Spawned workers use separate .worker-<pid> files to avoid concurrent rotation; stdout/nohup remains the combined console stream. No separate log filename setting required. The application guard starts
 four workers, max six, stops new admission under memory pressure.
 Tested release 2826ad0 passed all public and regression workflows, including overlap and embedding switch tests. [CI](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45888915276) · [PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45888915322). For Windows preflight use profiles/retention_batch_example.json instead of the Linux resource profile. Restore the Linux adaptive profile on servers. Real provider quality and sustained fleet capacity remain to be measured. No Docker.
 
