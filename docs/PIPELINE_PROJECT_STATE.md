@@ -34,6 +34,10 @@
 
 
 
+## Windows path configuration correction (2026-11-26)
+
+User resolved missing dimensions, then plan stopped at RETENTION.root because Linux example /approved/evidence is not an absolute Windows path. Configuration excerpt confirms receipt_dir inside source tree, Linux adaptive batch profile on Windows, placeholder renderer and policy, source_type=s3 despite local folder pilot. Guide user to use approved sibling directories Downloads/cv_evidence and Downloads/cv_receipts outside Downloads/rich-document-multilingual_test_docs; fixed profiles/retention_batch_example.json on Windows, renderer=1.28.2, correct JSON filenames (no embedded spaces), source_type=nas for legacy local-folder consistency, real approved policy and authorization only. Keep approved cv_validation_v2 and cv_overlap_pages_v1/cv_overlap_chunk_v1 identifiers. Retest plan then preflight --before-init; do not initialize yet. No application changes, production DB writes or cloud calls in this checkpoint. Linux adaptive profile remains for server rollout. Prior code release 2826ad0 accepted; diagnostic fix 1e2bdef not required for these config corrections.
+
 ## Local preflight configuration correction (2026-11-26)
 
 User ran production.py plan, failed before DB or cloud calls in _integer for missing [AZURE_OPENAI_EMBEDDING] dimensions (ConfigParser.getint returned None). Actual config.py and existing embedding runtime default legacy dimension 1536; require explicit actual configured model dimension for the new vector table even when embeddings disabled, do not silently assume if deployment differs. User should add dimensions=1536 if using the legacy dimension, rerun plan then preflight --before-init, return redacted output, no initialization yet. Fixed _integer diagnostics for missing/blank/noninteger/out-of-range settings and added regression test, new CI pending; user need not download new code for config-only correction. No database or provider changes. Previous tested application 2826ad0 remains the accepted release.
