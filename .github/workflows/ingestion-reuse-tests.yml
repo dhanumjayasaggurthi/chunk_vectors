@@ -39,6 +39,9 @@ on:
       - page_stage.py
       - retention_batch.py
       - production.py
+      - config.py
+      - logger.py
+      - tests/test_logger_encoding.py
       - config.ini.example
       - profiles/deployment_policy.example.yml
       - profiles/visual_evidence_native.example.json
@@ -162,6 +165,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_native_process_workers.py' -v
       - name: Unified deployment preflight and actual table mapping
         run: python -m unittest discover -s tests -p 'test_production.py' -v
+      - name: Destination log naming and safe worker file rotation
+        run: python -m unittest discover -s tests -p 'test_logger_encoding.py' -v
       - name: Verify semantic-v2 table reconstruction with disposable data
         run: python -m unittest discover -s tests -p 'test_semantic_chunking_v2.py' -v
       - name: Test bounded PDF staging, resume and full rechunk handoff
