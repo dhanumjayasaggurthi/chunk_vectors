@@ -68,7 +68,7 @@ Use [systemd limits](docs/PRODUCTION_REFERENCE.md#4-capture-now-then-ramp-up)
 for hard OS-level protection; replace capture with run if authorized.
 No Docker. Only one coordinator per server. The application guard starts
 four workers, max six, stops new admission under memory pressure.
-English-contract release 617ad4f passed all public and regression gates. New overlap and independent embedding switch require latest CI acceptance. No Docker.
+Tested release 2826ad0 passed all public and regression workflows, including overlap and embedding switch tests. [CI](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45888915276) · [PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45888915322). For Windows preflight use profiles/retention_batch_example.json instead of the Linux resource profile. Restore the Linux adaptive profile on servers. Real provider quality and sustained fleet capacity remain to be measured. No Docker.
 
 [Reference](docs/PRODUCTION_REFERENCE.md) · [Canonical state](docs/PIPELINE_PROJECT_STATE.md) ·
 [SmartHub and metadata](docs/LINUX_FLEET_SMARTHUB.md) · [Legacy README](README_LEGACY.md)
