@@ -67,6 +67,36 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"collide"):
                 resolve_configuration(path)
 
+    def test_directory_mode_requires_no_inventory(self):
+        from retention_batch import iter_source_files
+        with tempfile.TemporaryDirectory() as tmp:
+            path,c=fixture(Path(tmp))
+            c["DEPLOYMENT"]["inventory"]=""
+            save(path,c)
+            d=resolve_configuration(path)
+            self.assertIsNone(d["inventory"])
+            self.assertEqual(len(list(iter_source_files(d["source"],100))),1)
+            usage=type("Usage",(),{"free":20*1024**3})()
+            with patch("production.shutil.disk_usage",return_value=usage),patch("production._database",return_value={"ready":True}):
+                report=preflight(d)
+            self.assertEqual(report["storage"]["source_mode"],"directory")
+
+    def test_enrichment_chunks_are_distinct_and_bounded(self):
+        from reuse_materialize import append_enrichment_rows,quality_summary
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            path,c=fixture(Path(tmp))
+            q=resolve_configuration(path)["retrieval"]
+            struct=SimpleNamespace(doc_id="d"*64,file_path="/example.pdf",file_name="example.pdf",page_count=2)
+            parts=[{"page":1,"kind":"ocr","text":"Detected label 20 mg. "*1000,
+                    "provenance":{"asset_id":"test"}},
+                   {"page":2,"kind":"visual_model","text":"[MODEL OBSERVATION — UNVERIFIED] Image shows a pattern.",
+                    "provenance":{"request_id":"test"}}]
+            rows=append_enrichment_rows(struct,q,[],parts)
+            self.assertEqual(quality_summary(rows,q["chunking"])["structural_errors"],0)
+            self.assertEqual("".join(row[6] for row in rows if row[8]==1),parts[0]["text"])
+            self.assertEqual(json.loads(rows[-1][13])["source_text_status"],"MODEL_OBSERVATIONS_UNVERIFIED")
+
     def test_preflight_read_only_storage_and_authorization(self):
         with tempfile.TemporaryDirectory() as tmp:
             path,c=fixture(Path(tmp))
@@ -132,6 +162,14 @@ class DeploymentPostgresTests(unittest.TestCase):
                     record=json.loads(receipt.read_text())
                     self.assertEqual(record["native_status"],"SUCCESS" if i==0 else "SKIPPED")
                     self.assertEqual(record["rendered_pages"],1 if i==0 else 0)
+                # Directory mode requires neither deadline nor input inventory.
+                from retention_batch import run_root
+                extra=d["receipts"]/"directory-replay.jsonl"
+                report=run_root(d["source"],extra,p,docx_config=d["docx"],config=d["batch"])
+                self.assertEqual(report["outcomes"],{"LOCAL_CAPTURE_VERIFIED":1})
+                record=json.loads(extra.read_text())
+                self.assertEqual(record["native_status"],"SKIPPED")
+                self.assertTrue(record["source_sha256"])
                 import hashlib
                 doc_id=hashlib.sha256(str((d["source"]/"doc.pdf").resolve()).encode()).hexdigest()
                 n=verify_output(q)

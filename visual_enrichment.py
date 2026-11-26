@@ -389,8 +389,8 @@ def _execute_page(root,prepared,config,cfg,quota,locks):
     path=_cache_path(root,prepared)
     with lock:
         if path.exists():
-            _read_cached(path,prepared,config)
-            return {"status":"SKIPPED_VERIFIED","request_id":rid,"provider_attempts":0}
+            checked=_read_cached(path,prepared,config)
+            return {"status":"SKIPPED_VERIFIED","request_id":rid,"provider_attempts":0,"verified_result":checked}
         for attempt in range(1,cfg["max_attempts"]+1):
             try:
                 result=call_prepared(prepared,config,reserve=quota.reserve)
@@ -408,12 +408,12 @@ def _execute_page(root,prepared,config,cfg,quota,locks):
             if len(encoded)>config["max_response_bytes"]+config["max_context_bytes"]+65536:
                 raise ValueError("Enrichment cache byte limit exceeded")
             _write_once(path,encoded)
-            _read_cached(path,prepared,config)
-            return {"status":"COMPLETED_UNVERIFIED","request_id":rid,"provider_attempts":attempt}
+            checked=_read_cached(path,prepared,config)
+            return {"status":"COMPLETED_UNVERIFIED","request_id":rid,"provider_attempts":attempt,"verified_result":checked}
     raise RuntimeError("Unreachable enrichment attempt state")
 
 
-def run_pages(root,pages,*,visual_settings,config,execution):
+def run_pages(root,pages,*,visual_settings,config,execution,include_result=False):
     """Bounded page enrichment for caller-selected (capture_id, physical_page).
 
     One local coordinator, one shared process pool for PyMuPDF, concurrent
@@ -471,4 +471,6 @@ def run_pages(root,pages,*,visual_settings,config,execution):
                         except Exception as exc:
                             # Do not include provider response bodies or source text.
                             outcome={"status":"FAILED","error_type":type(exc).__name__}
+                        if not include_result:
+                            outcome.pop("verified_result",None)
                         yield {"capture_id":cid,"source_page":number,**outcome}

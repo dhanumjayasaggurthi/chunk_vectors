@@ -16,6 +16,7 @@ import multiprocessing
 import os
 import re
 import time
+import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,19 +78,20 @@ def iter_inventory(stream,cfg):
         if count>cfg["max_documents"] or len(raw)>cfg["max_inventory_line_bytes"]:
             raise ValueError("Intake inventory exceeds configured limits")
         row=json.loads(raw,object_pairs_hook=_pairs)
-        if not isinstance(row,dict) or set(row)!={"path","source_sha256","purge_at_utc"}:
+        if not isinstance(row,dict) or set(row) not in ({"path"},{"path","source_sha256","purge_at_utc"}):
             raise ValueError("Invalid intake inventory record")
         path=row["path"]
-        sha=row["source_sha256"]
+        sha=row.get("source_sha256")
         if (not isinstance(path,str) or not Path(path).is_absolute()
                 or "\x00" in path or Path(path).suffix.lower() not in (".pdf",".docx")
-                or not isinstance(sha,str) or not re.fullmatch(r"[0-9a-f]{64}",sha)):
+                or ("source_sha256" in row and (not isinstance(sha,str) or not re.fullmatch(r"[0-9a-f]{64}",sha)))):
             raise ValueError("Expected absolute PDF/DOCX path and source SHA-256")
-        deadline=_deadline(row["purge_at_utc"])
-        key=(deadline,path)
-        if previous is not None and key<=previous:
-            raise ValueError("Intake shard must be strictly sorted by deadline and path")
-        previous=key
+        if "purge_at_utc" in row:
+            deadline=_deadline(row["purge_at_utc"])
+            key=(deadline,path)
+            if previous is not None and key<=previous:
+                raise ValueError("Intake shard must be strictly sorted by deadline and path")
+            previous=key
         yield row
 
 
@@ -104,13 +106,13 @@ def _task_id(row):
 
 
 def _expired(row,cfg):
-    return (_deadline(row["purge_at_utc"])-_utc()).total_seconds()<=cfg["admission_margin_seconds"]
+    return "purge_at_utc" in row and (_deadline(row["purge_at_utc"])-_utc()).total_seconds()<=cfg["admission_margin_seconds"]
 
 
 def _receipt(row,status,**fields):
-    return {"task_id":_task_id(row),"source_sha256":row["source_sha256"],
+    return {"task_id":_task_id(row),"source_sha256":row.get("source_sha256"),
             "format":Path(row["path"]).suffix.lower()[1:],
-            "purge_at_utc":row["purge_at_utc"],"status":status,
+            **({"purge_at_utc":row["purge_at_utc"]} if "purge_at_utc" in row else {}),"status":status,
             "finished_at_utc":_utc().isoformat(),"purge_safe":False,
             "durable_storage_verified":False,**fields}
 
@@ -125,13 +127,14 @@ def capture_one(row,profile,n,docx_config,cfg):
     try:
         if Path(path).suffix.lower()==".pdf":
             from page_stage import stage_one
-            report=stage_one(path,profile,n,None,expected_source_sha256=row["source_sha256"])
+            report=stage_one(path,profile,n,None,expected_source_sha256=row.get("source_sha256"))
             ev=report.get("retained_evidence")
             checked=bool(ev and ev.get("local_content_verified")
-                         and ev.get("source_pdf_sha256")==row["source_sha256"]
+                         and (not row.get("source_sha256") or ev.get("source_pdf_sha256")==row["source_sha256"])
                          and ev.get("verified_pages")==report.get("pages"))
             complete=checked and report["status"] in ("SUCCESS","SKIPPED")
-            fields={"native_status":report["status"],"pages":report.get("pages"),
+            fields={"doc_id":report.get("doc_id"),"source_sha256":ev.get("source_pdf_sha256") if ev else row.get("source_sha256"),
+                    "native_status":report["status"],"pages":report.get("pages"),
                     "capture_id":ev.get("capture_id") if ev else None,
                     "verified_pages":ev.get("verified_pages",0) if ev else 0,
                     "rendered_pages":ev.get("rendered_pages",0) if ev else 0,
@@ -144,13 +147,15 @@ def capture_one(row,profile,n,docx_config,cfg):
             ev_cfg=profile["extraction"]["retained_evidence"]
             report=capture(path,ev_cfg["root"],policy_id=ev_cfg["policy_id"],
                            authorized_derivatives=cfg["authorized_docx_derivatives"],
-                           config=docx_config,expected_source_sha256=row["source_sha256"])
-            checked=report["local_content_verified"] and report["source_docx_sha256"]==row["source_sha256"]
-            fields={"capture_id":report["capture_id"],"local_content_verified":checked,
+                           config=docx_config,expected_source_sha256=row.get("source_sha256"))
+            checked=report["local_content_verified"] and (not row.get("source_sha256") or report["source_docx_sha256"]==row["source_sha256"])
+            fields={"doc_id":"docx:"+hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest(),
+                    "file_name":Path(path).name,"source_sha256":report["source_docx_sha256"],
+                    "capture_id":report["capture_id"],"local_content_verified":checked,
                     "skipped_verified":report["skipped_verified"],
                     "unresolved_entries":len(report["unresolved"]),"story_parts":report["story_parts"]}
             status="LOCAL_CAPTURE_VERIFIED" if checked else "INCOMPLETE_OR_BUSY"
-        if _utc()>=_deadline(row["purge_at_utc"]):
+        if "purge_at_utc" in row and _utc()>=_deadline(row["purge_at_utc"]):
             fields["capture_status"]=status
             status="DEADLINE_OVERRUN"
         return _receipt(row,status,started_at_utc=started.isoformat(),
@@ -286,6 +291,51 @@ def run_batch(inventory,receipt_path,profile,*,docx_config,config):
             **({"resource_guard":guard.report()} if guard else {}),
             "all_local_capture_verified":counters["LOCAL_CAPTURE_VERIFIED"]==total,
             "purge_safe":False,"durable_storage_verified":False}
+
+
+def iter_source_files(root,limit):
+    """Like the legacy NAS crawler, stream a stable per-directory order.
+
+    No symlink traversal or inferred dates. Cap is a pilot prefix; a full run
+    must set max_documents to cover the assigned source directory.
+    """
+    root=Path(root).resolve(strict=True)
+    def fail(exc):
+        raise exc
+    count=0
+    for folder,dirs,files in os.walk(root,onerror=fail,followlinks=False):
+        dirs[:]=sorted(d for d in dirs if not (Path(folder)/d).is_symlink())
+        for name in sorted(files):
+            path=Path(folder)/name
+            if path.suffix.lower() not in (".pdf",".docx") or path.is_symlink():
+                continue
+            if not path.is_file():
+                raise ValueError("Source entry is not a regular file")
+            yield path
+            count+=1
+            if count>=limit:
+                return
+
+
+def run_root(root,receipt_path,profile,*,docx_config,config):
+    """Internal temporary path spool, no operator-supplied inventory."""
+    cfg=settings(config)
+    if not cfg["authorized_receipt_storage"]:
+        raise PermissionError("Explicit receipt storage approval required")
+    spool=None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w",encoding="utf-8",newline="\n",
+                prefix=".capture-paths-",suffix=".jsonl",dir=Path(receipt_path).parent,
+                delete=False) as out:
+            spool=Path(out.name)
+            for path in iter_source_files(root,cfg["max_documents"]):
+                if path.suffix.lower()==".docx" and not cfg["authorized_docx_derivatives"]:
+                    raise PermissionError("Explicit DOCX derivative storage approval required")
+                out.write(json.dumps({"path":str(path)},ensure_ascii=True)+"\n")
+        return run_batch(spool,receipt_path,profile,docx_config=docx_config,config=cfg)
+    finally:
+        if spool is not None:
+            spool.unlink(missing_ok=True)
 
 
 def main(argv=None):

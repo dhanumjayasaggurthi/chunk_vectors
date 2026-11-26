@@ -707,17 +707,95 @@ def record_failure(doc_id, profile, names, exc):
         conn.close()
 
 
-def run_one(doc_id, profile, names):
+def append_enrichment_rows(struct,profile,rows,parts):
+    """Same existing publication contract, independent source-linked text.
+
+    OCR is transcription, LLM observations are explicitly unverified. No
+    generated table cells or numeric interpretation. Native chunks unchanged.
+    """
+    from types import SimpleNamespace
+    import tiktoken
+    policy=profile["chunking"]
+    tokenizer=policy.get("tokenizer","cl100k_base")
+    encoder=tiktoken.get_encoding(tokenizer)
+    count=lambda text:len(encoder.encode(text,disallowed_special=()))
+    fingerprint=profile["_fingerprint"]
+    meta=json.loads(rows[0][12]) if rows else {}
+    evidence=json.loads(rows[0][15]) if rows else {}
+    sources=getattr(struct,"source_metadata",{})
+    for part in parts:
+        if part["kind"] not in ("ocr","visual_model") or not 1<=part["page"]<=struct.page_count:
+            raise ValueError("Invalid enriched source")
+        text=part["text"]
+        for start,end,piece in _exact_slices(text,policy["max_tokens"],count):
+            if not piece.strip():
+                continue
+            index=len(rows)
+            cid=hashlib.sha256((fingerprint+"\x00"+struct.doc_id+"\x00"+str(index)).encode()).hexdigest()
+            page=part["page"]
+            cm={"source_format":"pdf","source_kind":part["kind"],"source_facts_verified":False,
+                "section_id":hashlib.sha256((struct.doc_id+":"+str(page)).encode()).hexdigest(),
+                "source_provenance":part["provenance"],"char_start":start,"char_end":end}
+            if part["kind"]=="visual_model":
+                # Label every split, including continuations. The input
+                # model result is not a transcription of the original page.
+                cm["source_text_status"]="MODEL_OBSERVATIONS_UNVERIFIED"
+            else:
+                cm["source_text_status"]="OCR_TRANSCRIPTION_UNVERIFIED"
+            chunk=SimpleNamespace(chunk_text=piece,section_title="",file_name=struct.file_name,
+                                  file_path=struct.file_path,document_metadata=meta,chunk_metadata=cm)
+            composed=compose_embedding_text(chunk,profile["embedding"].get("input_fields",["chunk_text"]),
+                       sources,max_tokens=profile["embedding"].get("input_max_tokens",6000),tokenizer=tokenizer)
+            rows.append((cid,struct.doc_id,fingerprint,index,struct.file_path,struct.file_name,
+                         piece,composed,page,page,"","[]",_safe_json(meta),_safe_json(cm),
+                         _safe_json([part["kind"]]),_safe_json(evidence)))
+    for i,row in enumerate(rows):
+        cm=json.loads(row[13])
+        cm["previous_chunk_id"]=rows[i-1][0] if i else None
+        cm["next_chunk_id"]=rows[i+1][0] if i+1<len(rows) else None
+        rows[i]=row[:13]+(_safe_json(cm),)+row[14:]
+    if quality_summary(rows,policy)["structural_errors"]:
+        raise ValueError("Enriched publication structural integrity failed")
+    return rows
+
+
+def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None):
     from profile_store import profile_document_lock
     from extracted_source import load_extracted_document
     try:
         with profile_document_lock(str(doc_id), profile["_fingerprint"]) as acquired:
             if not acquired:
                 return {"doc_id":str(doc_id),"status":"BUSY"}
+            # A native version change invalidates any selected OCR/model output.
+            def check_version():
+                if expected_source_hash is None:
+                    return
+                from page_stage import names as stage_names
+                from db import get_conn
+                conn=get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(f"SELECT source_hash FROM {stage_names(profile)['docs']} WHERE doc_id=%s",(doc_id,))
+                        if cur.fetchone()!=(expected_source_hash,):
+                            raise ValueError("Native version changed during enrichment")
+                finally:
+                    conn.rollback()
+                    conn.close()
+            check_version()
             struct, digest = load_extracted_document(profile, doc_id)
+            if enrichment is not None:
+                digest=hashlib.sha256((digest+"\x00enriched-v1\x00"+_safe_json(enrichment)).encode()).hexdigest()
             if _current(str(doc_id),digest,profile,names):
                 return {"doc_id":str(doc_id),"status":"SKIPPED"}
-            rows=prepare_document(struct,profile)
+            try:
+                rows=prepare_document(struct,profile)
+            except ValueError as exc:
+                if not enrichment or str(exc)!="Document yielded no chunks; source remains unchanged":
+                    raise
+                rows=[]
+            if enrichment is not None:
+                rows=append_enrichment_rows(struct,profile,rows,enrichment)
+            check_version()
             save_document(str(doc_id),digest,profile,names,rows)
             return {"doc_id":str(doc_id),"status":"SUCCESS","chunks":len(rows)}
     except Exception as exc:

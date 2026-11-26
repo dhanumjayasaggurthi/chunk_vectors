@@ -490,7 +490,7 @@ def complete(profile,job,*,status,text="",regions=None,confidence=None,
                        THEN now()+(%s*interval '1 second') ELSE now() END,
                     updated_at=now()
                 WHERE asset_id=%s AND lease_token=%s
-                  AND status='RUNNING'
+                  AND status='RUNNING' AND lease_until>now()
             """,(status,text,_canonical(regions or []),confidence,language,
                  error_code,error_message[:500],status,delay_seconds,
                  asset_id,token))
@@ -794,6 +794,43 @@ def run(profile,max_jobs=100,workers=None,*,doc_id=None,retry_only=False):
                 counters.update(item.result())
     return {"processed":sum(counters.values()),"statuses":dict(counters),
             "cloud_calls_possible":True}
+
+
+def retrieval_results(profile,doc_id,source_hash,expected_candidates):
+    """Read only current completed OCR rows. Never convert OCR to table cells.
+
+    Return exact OCR transcriptions plus pages requiring visual interpretation.
+    No publication if any expected candidate is missing, pending or failed.
+    """
+    from db import get_conn
+    n=tables(profile)
+    fingerprint=ocr_fingerprint(settings(profile))
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT j.asset_id,j.page_number,j.kind,j.bbox,j.status,
+                    j.ocr_text,j.confidence,j.language,j.error_code
+                FROM {n['ocr']} j JOIN {n['docs']} d ON d.doc_id=j.doc_id
+                  AND d.source_hash=j.source_hash AND d.extraction_hash=j.extraction_hash
+                WHERE j.doc_id=%s AND j.source_hash=%s AND j.ocr_hash=%s
+                ORDER BY j.page_number,j.asset_id""",(doc_id,source_hash,fingerprint))
+            rows=cur.fetchall()
+    finally:
+        conn.rollback()
+        conn.close()
+    if len(rows)!=expected_candidates or any(x[4] not in ("TEXT_READY","VISUAL_PENDING") for x in rows):
+        raise ValueError("OCR coverage incomplete; retry before enriched publication")
+    parts=[]
+    visual=set()
+    for aid,page,kind,bbox,status,text,confidence,language,error in rows:
+        if kind in ("chart","vector_region") or status=="VISUAL_PENDING":
+            visual.add(page)
+        if status=="TEXT_READY" and text.strip():
+            parts.append({"page":page,"kind":"ocr","text":text,
+                          "provenance":{"asset_id":aid,"ocr_hash":fingerprint,"bbox":bbox,
+                                        "confidence":confidence,"language":language,
+                                        "source_facts_verified":False}})
+    return parts,sorted(visual)
 
 
 def status(profile,*,doc_id=None):

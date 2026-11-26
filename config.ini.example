@@ -21,8 +21,10 @@ pool_acquire_timeout_seconds = 30
 
 [DEPLOYMENT]
 policy = profiles/deployment_policy.example.yml
-inventory = /approved/intake/server01-shard001.jsonl
-source_root = /approved/input/server01
+; Optional legacy inventory; leave empty to discover files automatically.
+inventory =
+; Leave blank to reuse [PATHS] docs_root.
+source_root =
 receipt_dir = /approved/receipts
 batch_profile = profiles/retention_batch_linux_8core_30gb.example.json
 docx_profile = profiles/docx_evidence_example.json
@@ -38,6 +40,9 @@ embedding_workers = 4
 ; 0 means full target for embedding (only after explicit approval).
 embedding_max_chunks = 10000
 authorized_ocr = false
+authorized_visual_llm = false
+visual_llm_profile = profiles/visual_enrichment_example.json
+visual_llm_execution = profiles/visual_enrichment_execution_example.json
 authorized_embedding = false
 
 [RETENTION]

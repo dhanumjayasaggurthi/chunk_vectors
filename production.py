@@ -71,9 +71,9 @@ def resolve_configuration(path="config.ini"):
         raise ValueError("Native, OCR and retrieval table names/companions must not collide")
     dims=_integer(cfg["AZURE_OPENAI_EMBEDDING"],"dimensions",1,16000)
     evidence=_absolute(ret,"root")
-    source=_absolute(dep,"source_root")
+    source=_absolute(dep,"source_root") if dep.get("source_root","").strip() else _absolute(cfg["PATHS"],"docs_root")
     receipts=_absolute(dep,"receipt_dir")
-    inventory=_absolute(dep,"inventory")
+    inventory=_absolute(dep,"inventory") if dep.get("inventory","").strip() else None
     visual=load_visual_profile(ret["visual_profile"])
     if visual["selection_mode"]!="all_pages":
         raise ValueError("Production capture requires all_pages until selective completeness is validated")
@@ -114,7 +114,17 @@ def resolve_configuration(path="config.ini"):
         ("embedding_max_chunks",0,1000000000))}
     if retrieval["embedding"]["enabled"] is not False:
         raise ValueError("Deployment policy embedding.enabled must remain false; use explicit embed command")
-    return {"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
+    vision=None
+    if dep.getboolean("authorized_visual_llm",fallback=False):
+        from visual_enrichment import settings as model_settings,execution_settings
+        model=_json_profile(dep["visual_llm_profile"])
+        execution=_json_profile(dep["visual_llm_execution"])
+        model["authorized_provider"]=True
+        execution["authorized_result_storage"]=True
+        model=model_settings(model)
+        execution=execution_settings(execution,model)
+        vision=(model,execution)
+    return {"visual_llm":vision,"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
             "evidence":evidence,"source":source,"receipts":receipts,"inventory":inventory,
             "limits":limits,"relations":relations,
             "authorized_ocr":dep.getboolean("authorized_ocr"),
@@ -140,7 +150,7 @@ def plan(d):
 
 
 def _storage_and_inventory(d):
-    from retention_batch import iter_inventory
+    from retention_batch import iter_inventory,iter_source_files
     import fitz
     if not d["batch"]["authorized_receipt_storage"]:
         raise PermissionError("Explicit receipt storage approval required")
@@ -162,15 +172,17 @@ def _storage_and_inventory(d):
     total=sampled=docx_count=expired=0
     from retention_batch import _deadline
     now=datetime.now(timezone.utc)
-    with d["inventory"].open("rb") as f:
-        for row in iter_inventory(f,d["batch"]):
+    from contextlib import nullcontext
+    with (d["inventory"].open("rb") if d["inventory"] else nullcontext()) as f:
+        rows=iter_inventory(f,d["batch"]) if f else ({"path":str(path)} for path in iter_source_files(source,d["batch"]["max_documents"]))
+        for row in rows:
             total+=1
             path=Path(row["path"])
             if ".." in path.parts or not path.is_relative_to(d["source"]):
                 raise ValueError("Inventory path outside configured source root")
             if path.suffix.lower()==".docx":
                 docx_count+=1
-            if _deadline(row["purge_at_utc"])<=now:
+            if "purge_at_utc" in row and _deadline(row["purge_at_utc"])<=now:
                 expired+=1
                 continue
             if sampled<d["limits"]["preflight_sample_files"]:
@@ -191,11 +203,11 @@ def _storage_and_inventory(d):
         raise ValueError("No readable nonexpired inventory sample")
     if docx_count and not d["batch"]["authorized_docx_derivatives"]:
         raise PermissionError("DOCX derivative policy approval required")
-    return {"inventory_records":total,"sampled_readable_sources":sampled,"expired_records":expired,
+    return {"discovered_documents":total,"source_mode":"inventory" if d["inventory"] else "directory","inventory_records":total,"sampled_readable_sources":sampled,"expired_records":expired,
             "docx_records":docx_count,"free_evidence_gib":round(shutil.disk_usage(evidence).free/1024**3,2),
             "free_receipt_gib":round(shutil.disk_usage(receipts).free/1024**3,2),
             "renderer":expected,"source_hashes_verified_by":"capture_worker",
-            "scope":"inventory syntax/order and sampled source readability only"}
+            "scope":"source discovery and sampled readability only; no deadline required"}
 
 
 def _database(d,*,before_init=False):
@@ -263,9 +275,67 @@ def preflight(d,*,before_init=False):
     return report
 
 
+def finish_captured(d,receipt):
+    """Process only the successful capture records from this invocation.
+
+    Source-native text is never replaced by model content. OCR and model
+    results become separately labeled, page-linked chunks in the same table.
+    """
+    from collections import Counter
+    import deferred_ocr as ocr
+    from reuse_materialize import run_one,run_docx,verify_output
+    from visual_enrichment import run_pages
+    p,q=d["capture"],d["retrieval"]
+    names=verify_output(q)
+    counts=Counter()
+    with Path(receipt).open(encoding="utf-8") as stream:
+        for line in stream:
+            row=json.loads(line)
+            if row["status"]!="LOCAL_CAPTURE_VERIFIED":
+                continue
+            doc=row["doc_id"]
+            try:
+                if row["format"]=="docx":
+                    result=run_docx(d["evidence"],row["capture_id"],q,config=d["docx"],
+                                    doc_id=doc,file_name=row["file_name"],allow_logical_locators=True)
+                else:
+                    discovered=ocr.enqueue(p,doc_id=doc,max_docs=1,apply=True)
+                    if discovered["candidates"]:
+                        if not d["authorized_ocr"]:
+                            raise PermissionError("OCR provider approval required for visual source")
+                        ocr.run(p,max_jobs=d["limits"]["ocr_max_jobs"],doc_id=doc)
+                    parts,visual_pages=ocr.retrieval_results(p,doc,row["source_sha256"],discovered["candidates"])
+                    if visual_pages:
+                        if not d["visual_llm"]:
+                            raise PermissionError("Visual LLM authorization/configuration required")
+                        model,execution=d["visual_llm"]
+                        # Chunk the page list using the configured bounded run size.
+                        limit=execution["max_pages"]
+                        for start in range(0,len(visual_pages),limit):
+                            selected=visual_pages[start:start+limit]
+                            for outcome in run_pages(d["evidence"],[(row["capture_id"],n) for n in selected],
+                                    visual_settings=p["extraction"]["retained_evidence"]["visual_settings"],
+                                    config=model,execution=execution,include_result=True):
+                                if outcome["status"] not in ("COMPLETED_UNVERIFIED","SKIPPED_VERIFIED"):
+                                    raise RuntimeError("Visual model enrichment failed")
+                                result=outcome["verified_result"]
+                                parts.append({"page":outcome["source_page"],"kind":"visual_model",
+                                    "text":"\n".join(
+                                        ["[MODEL OBSERVATION — UNVERIFIED] "+item["observation"] for item in result["result"]["observations"]]
+                                        +["[MODEL LIMITATION] "+item for item in result["result"]["limitations"]]),
+                                    "provenance":{"request_id":result["request_id"],"capture_id":row["capture_id"],
+                                                  "source_facts_verified":False}})
+                    result=run_one(doc,q,names,enrichment=parts,expected_source_hash=row["source_sha256"])
+                counts[result["status"]]+=1
+            except Exception as exc:
+                logging.getLogger(__name__).error("Post-capture document %s failed: %s",doc,type(exc).__name__)
+                counts["FAILED"]+=1
+    return dict(counts)
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command",choices=("plan","preflight","init","capture","materialize","docx-preview","docx-publish",
+    parser.add_argument("command",choices=("plan","preflight","init","run","capture","materialize","docx-preview","docx-publish",
                                            "ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status",
                                            "embed-preview","embed"))
     parser.add_argument("--before-init",action="store_true")
@@ -282,7 +352,7 @@ def main(argv=None):
         parser.error("--before-init applies only to preflight")
     if (args.retry_failed or args.rescan_source) and args.command!="embed":
         parser.error("Embedding retry/rescan options apply only to embed")
-    writes={"init","capture","materialize","docx-publish","ocr-init","ocr-enqueue","ocr-run","embed"}
+    writes={"init","run","capture","materialize","docx-publish","ocr-init","ocr-enqueue","ocr-run","embed"}
     if args.command in writes and not args.apply:
         parser.error("Explicit --apply required for writes or provider calls")
     # All existing modules and spawned workers read config.ini in the working
@@ -305,15 +375,34 @@ def main(argv=None):
         from page_stage import init
         from reuse_materialize import init_output
         result={"native":init(p,apply=True),"retrieval":init_output(q,apply=True)}
+        if d["authorized_ocr"]:
+            from deferred_ocr import init as init_ocr
+            result["ocr"]=init_ocr(p,apply=True)
         result["verified"]=_database(d)
-    elif cmd=="capture":
+    elif cmd in ("run","capture"):
         preflight(d)
-        from retention_batch import run_batch
+        if cmd=="run":
+            if not d["authorized_ocr"]:
+                parser.error("run requires authorized_ocr=true; use capture for native-only capture")
+            if not _database(d)["ocr_table_exists"]:
+                parser.error("Run init --apply once with authorized_ocr=true")
+        from retention_batch import run_batch,run_root
         run_id=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")+"-"+uuid.uuid4().hex
         receipt=d["receipts"]/(run_id+".jsonl")
-        result=run_batch(d["inventory"],receipt,p,docx_config=d["docx"],config=d["batch"])
+        result=(run_batch(d["inventory"],receipt,p,docx_config=d["docx"],config=d["batch"]) if d["inventory"]
+                else run_root(d["source"],receipt,p,docx_config=d["docx"],config=d["batch"]))
         result["receipt"]=str(receipt)
         code=int(not result["all_local_capture_verified"])
+        if cmd=="run":
+            finished=finish_captured(d,receipt)
+            result["retrieval"]=finished
+            code=int(bool(code or finished.get("FAILED") or finished.get("BUSY")))
+            if d["authorized_embedding"] and not code:
+                from existing_embeddings import embed_existing
+                ep=copy.deepcopy(q)
+                ep["embedding"]["enabled"]=True
+                result["embedding"]=embed_existing(ep,max_chunks=lim["embedding_max_chunks"] or None,
+                    workers=lim["embedding_workers"],rescan_source=True)
     elif cmd=="materialize":
         _database(d)
         from reuse_materialize import run,run_one,verify_output
