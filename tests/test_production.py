@@ -87,7 +87,7 @@ class DeploymentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path,c=fixture(Path(tmp))
             q=resolve_configuration(path)["retrieval"]
-            struct=SimpleNamespace(doc_id="d"*64,file_path="/example.pdf",file_name="example.pdf",page_count=2)
+            struct=SimpleNamespace(doc_id="d"*64,file_path="/example.pdf",file_name="example.pdf",page_count=2,pages=[])
             parts=[{"page":1,"kind":"ocr","text":"Detected label 20 mg. "*1000,
                     "provenance":{"asset_id":"test"}},
                    {"page":2,"kind":"visual_model","text":"[MODEL OBSERVATION — UNVERIFIED] Image shows a pattern.",
@@ -176,6 +176,59 @@ class DeploymentPostgresTests(unittest.TestCase):
                 result=run_one(doc_id,q,n)
                 self.assertEqual(result["status"],"SUCCESS",result)
                 self.assertEqual(run_one(doc_id,q,n)["status"],"SKIPPED")
+                # Actual root -> native DB -> retained OCR and model -> same
+                # chunk table. Real PDF bytes, real DB, actual provider
+                # adapters mocked only at network boundary.
+                import io
+                import fitz
+                from PIL import Image
+                from vision_ocr import OcrResult
+                import deferred_ocr as ocr
+                from production import finish_captured
+                src=d["source"]/"scanned.pdf"
+                image=io.BytesIO()
+                Image.new("RGB",(240,180),"white").save(image,format="PNG")
+                with fitz.open() as pdf:
+                    page=pdf.new_page(width=240,height=180)
+                    page.insert_image(page.rect,stream=image.getvalue())
+                    pdf.save(src)
+                receipt=d["receipts"]/"full-run.jsonl"
+                cap=run_root(d["source"],receipt,p,docx_config=d["docx"],config=d["batch"])
+                self.assertEqual(cap["outcomes"],{"LOCAL_CAPTURE_VERIFIED":2},cap)
+                scanned=next(x for x in map(json.loads,receipt.read_text().splitlines()) if x["doc_id"]!=doc_id)
+                self.assertEqual(scanned["format"],"pdf")
+                src.unlink()
+                ocr.init(p,apply=True)
+                model=json.loads((REPO/"profiles/visual_enrichment_example.json").read_text())
+                execution=json.loads((REPO/"profiles/visual_enrichment_execution_example.json").read_text())
+                model["authorized_provider"]=True
+                execution.update(authorized_result_storage=True,workers=2,read_workers=1,rpm=60000,tpm=10000000)
+                d.update(authorized_ocr=True,visual_llm=(model,execution))
+                raw=json.dumps({"observations":[{"target":"page","observation":"A visual field is visible",
+                    "caption_quote":"","uncertainty":"limited"}],"limitations":[]})
+                with (patch("ocr_quota.detect_project_id",return_value="ci-only"),
+                      patch("ocr_quota.init_quota",return_value="ci-only"),
+                      patch("ocr_quota.PostgresOcrLimiter"),
+                      patch("vision_ocr.batch_document_text_detection",
+                            side_effect=lambda images,**kw:[OcrResult("",0,0,"",True) for _ in images]) as vision,
+                      patch("azure_client.call_visual_structured",return_value=(raw,{})) as llm):
+                    first=finish_captured(d,receipt)
+                    self.assertEqual(first,{"SUCCESS":2},first)
+                    self.assertGreater(vision.call_count,0)
+                    self.assertEqual(llm.call_count,1)
+                    counts=vision.call_count,llm.call_count
+                    second=finish_captured(d,receipt)
+                    self.assertEqual(second,{"SKIPPED":2},second)
+                    self.assertEqual((vision.call_count,llm.call_count),counts)
+                conn=get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(f"""SELECT source_chunk_text,chunk_metadata->>'source_text_status'
+                            FROM {n['table']} WHERE doc_id=%s""",(scanned["doc_id"],))
+                        result=cur.fetchall()
+                        self.assertTrue(any("A visual field is visible" in x[0] and x[1]=="MODEL_OBSERVATIONS_UNVERIFIED" for x in result))
+                finally:
+                    conn.close()
             finally:
                 conn=get_conn()
                 try:

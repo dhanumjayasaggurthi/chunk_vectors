@@ -284,8 +284,9 @@ def finish_captured(d,receipt):
     from collections import Counter
     import deferred_ocr as ocr
     from reuse_materialize import run_one,run_docx,verify_output
-    from visual_enrichment import run_pages
+    from visual_enrichment import run_pages,LocalQuota
     p,q=d["capture"],d["retrieval"]
+    quota=LocalQuota(d["visual_llm"][1]) if d["visual_llm"] else None
     names=verify_output(q)
     counts=Counter()
     with Path(receipt).open(encoding="utf-8") as stream:
@@ -315,7 +316,7 @@ def finish_captured(d,receipt):
                             selected=visual_pages[start:start+limit]
                             for outcome in run_pages(d["evidence"],[(row["capture_id"],n) for n in selected],
                                     visual_settings=p["extraction"]["retained_evidence"]["visual_settings"],
-                                    config=model,execution=execution,include_result=True):
+                                    config=model,execution=execution,include_result=True,quota=quota):
                                 if outcome["status"] not in ("COMPLETED_UNVERIFIED","SKIPPED_VERIFIED"):
                                     raise RuntimeError("Visual model enrichment failed")
                                 result=outcome["verified_result"]
@@ -325,6 +326,7 @@ def finish_captured(d,receipt):
                                         +["[MODEL LIMITATION] "+item for item in result["result"]["limitations"]]),
                                     "provenance":{"request_id":result["request_id"],"capture_id":row["capture_id"],
                                                   "source_facts_verified":False}})
+                    parts.sort(key=lambda item:(item["page"],item["kind"],json.dumps(item["provenance"],sort_keys=True)))
                     result=run_one(doc,q,names,enrichment=parts,expected_source_hash=row["source_sha256"])
                 counts[result["status"]]+=1
             except Exception as exc:
@@ -336,12 +338,13 @@ def finish_captured(d,receipt):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",choices=("plan","preflight","init","run","capture","materialize","docx-preview","docx-publish",
-                                           "ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status",
+                                           "finish","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status",
                                            "embed-preview","embed"))
     parser.add_argument("--before-init",action="store_true")
     parser.add_argument("--apply",action="store_true")
     parser.add_argument("--doc-id")
     parser.add_argument("--all-docs",action="store_true")
+    parser.add_argument("--receipt")
     parser.add_argument("--capture-id")
     parser.add_argument("--file-name")
     parser.add_argument("--allow-logical-locators",action="store_true")
@@ -352,7 +355,7 @@ def main(argv=None):
         parser.error("--before-init applies only to preflight")
     if (args.retry_failed or args.rescan_source) and args.command!="embed":
         parser.error("Embedding retry/rescan options apply only to embed")
-    writes={"init","run","capture","materialize","docx-publish","ocr-init","ocr-enqueue","ocr-run","embed"}
+    writes={"init","run","capture","finish","materialize","docx-publish","ocr-init","ocr-enqueue","ocr-run","embed"}
     if args.command in writes and not args.apply:
         parser.error("Explicit --apply required for writes or provider calls")
     # All existing modules and spawned workers read config.ini in the working
@@ -403,6 +406,15 @@ def main(argv=None):
                 ep["embedding"]["enabled"]=True
                 result["embedding"]=embed_existing(ep,max_chunks=lim["embedding_max_chunks"] or None,
                     workers=lim["embedding_workers"],rescan_source=True)
+    elif cmd=="finish":
+        if not args.receipt or not d["authorized_ocr"]:
+            parser.error("finish requires --receipt and authorized_ocr=true")
+        _database(d)
+        receipt=Path(args.receipt).resolve(strict=True)
+        if not receipt.is_relative_to(d["receipts"].resolve(strict=True)):
+            parser.error("Receipt must be in approved receipt directory")
+        result=finish_captured(d,receipt)
+        code=int(bool(result.get("FAILED") or result.get("BUSY")))
     elif cmd=="materialize":
         _database(d)
         from reuse_materialize import run,run_one,verify_output

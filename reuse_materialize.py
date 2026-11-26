@@ -720,8 +720,16 @@ def append_enrichment_rows(struct,profile,rows,parts):
     encoder=tiktoken.get_encoding(tokenizer)
     count=lambda text:len(encoder.encode(text,disallowed_special=()))
     fingerprint=profile["_fingerprint"]
-    meta=json.loads(rows[0][12]) if rows else {}
-    evidence=json.loads(rows[0][15]) if rows else {}
+    if rows:
+        meta=json.loads(rows[0][12]); evidence=json.loads(rows[0][15])
+    else:
+        from metadata_extractor import attach_metadata
+        meta=attach_metadata(struct,[],profile["metadata"])
+        evidence=getattr(struct,"metadata_evidence",{})
+        for key,value in getattr(struct,"source_metadata",{}).items():
+            if key in meta and str(meta[key])!=str(value):
+                raise ValueError("Conflicting source metadata "+key)
+            meta[key]=value
     sources=getattr(struct,"source_metadata",{})
     for part in parts:
         if part["kind"] not in ("ocr","visual_model") or not 1<=part["page"]<=struct.page_count:
@@ -782,6 +790,18 @@ def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None):
                     conn.rollback()
                     conn.close()
             check_version()
+            if enrichment is None:
+                from db import get_conn
+                conn=get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(f"""SELECT 1 FROM {names['table']} WHERE doc_id=%s
+                              AND chunk_metadata->>'source_kind' IN ('ocr','visual_model') LIMIT 1""",(doc_id,))
+                        if cur.fetchone():
+                            raise ValueError("Refusing to replace enriched output with native-only chunks")
+                finally:
+                    conn.rollback()
+                    conn.close()
             struct, digest = load_extracted_document(profile, doc_id)
             if enrichment is not None:
                 digest=hashlib.sha256((digest+"\x00enriched-v1\x00"+_safe_json(enrichment)).encode()).hexdigest()

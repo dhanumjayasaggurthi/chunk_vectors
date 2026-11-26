@@ -32,6 +32,8 @@ _DEFAULTS={
     "confidence_min":0.60, "bbox_detail":"word",
     "rpm":1500, "ipm":1500,
     "retained_evidence":None,
+    "full_page_ocr_min_native_chars":0,
+    "ocr_jpeg_quality":0,
 }
 _INT_LIMITS={
     "workers":(1,32),"batch_images":(1,16),
@@ -41,6 +43,7 @@ _INT_LIMITS={
     "timeout_seconds":(5,600),"quota_wait_seconds":(1,3600),
     "lease_seconds":(120,7200),"retry_delay_seconds":(1,3600),
     "rpm":(1,100_000),"ipm":(16,100_000),
+    "full_page_ocr_min_native_chars":(0,10000),"ocr_jpeg_quality":(0,100),
 }
 _TERMINAL=("TEXT_READY","VISUAL_PENDING","FAILED_TERMINAL")
 
@@ -71,6 +74,8 @@ def settings(profile):
         raise ValueError("OCR lease must exceed worst-case one cloud batch retry budget")
     if cfg["retained_evidence"] is not None:
         cfg["retained_evidence"] = _retained_config(cfg["retained_evidence"], cfg["render_dpi"])
+    if (cfg["full_page_ocr_min_native_chars"] or cfg["ocr_jpeg_quality"]) and cfg["retained_evidence"] is None and profile["extraction"].get("retained_evidence") is not None:
+        raise ValueError("Full-page OCR and JPEG input require retained OCR evidence")
     return cfg
 
 
@@ -120,6 +125,9 @@ def ocr_fingerprint(cfg):
         "bbox_detail":cfg["bbox_detail"],
     }
     retained=cfg.get("retained_evidence")
+    if cfg["full_page_ocr_min_native_chars"] or cfg["ocr_jpeg_quality"]:
+        payload.update(full_page_ocr_min_native_chars=cfg["full_page_ocr_min_native_chars"],
+                       ocr_jpeg_quality=cfg["ocr_jpeg_quality"])
     if retained is not None:
         from visual_evidence import capture_identity
         payload["input_evidence"] = capture_identity(
@@ -219,7 +227,8 @@ def iter_assets(profile,doc):
     doc_id,source,version,page_count=doc
     last=0
     seen=0
-    ocr_hash=ocr_fingerprint(settings(profile))
+    cfg=settings(profile)
+    ocr_hash=ocr_fingerprint(cfg)
     while True:
         conn=get_conn()
         try:
@@ -243,6 +252,23 @@ def iter_assets(profile,doc):
             if not isinstance(elements,list):
                 raise ValueError("Published page geometry is not JSONB array")
             seen+=1
+            if any(not isinstance(el,dict) for el in elements):
+                raise ValueError("Malformed source JSONB element")
+            threshold=cfg["full_page_ocr_min_native_chars"]
+            candidates=any(el.get("visual_asset") or el.get("unresolved_region") for el in elements)
+            native_chars=sum(len(el.get("text") or "") for el in elements
+                             if el.get("type")=="text")
+            if threshold and candidates and native_chars<threshold:
+                if cfg["retained_evidence"] is None:
+                    raise ValueError("Full page OCR requires retained evidence")
+                ref={"source":"retained_full_page","source_page":page_number,
+                     "reason":"LOW_NATIVE_TEXT_WITH_VISUAL_EVIDENCE"}
+                aid=hashlib.sha256(_canonical([doc_id,source,version,ocr_hash,
+                                    page_number,"page_scan",ref]).encode()).hexdigest()
+                # The exact full-page image is authoritative; do not duplicate
+                # regional OCR on the same predominantly scanned page.
+                yield (aid,doc_id,source,version,ocr_hash,page_number,"page_scan","null",_canonical(ref))
+                continue
             for position,element in enumerate(elements):
                 if not isinstance(element,dict):
                     raise ValueError("Malformed source JSONB element")
@@ -630,8 +656,17 @@ def _retained_png(job,cfg):
     x0,y0,x1,y1=meta["pixel_bbox"]
     if (x1-x0)*(y1-y0)>cfg["max_render_pixels"]:
         raise ValueError("Retained OCR clip exceeds pixel budget")
+    if len(png)>cfg["max_batch_bytes"] and cfg["ocr_jpeg_quality"]:
+        # Original lossless PNG stays unchanged. Convert only the provider
+        # request, at the same pixel dimensions; no silent resampling.
+        from PIL import Image
+        import io
+        with Image.open(io.BytesIO(png)) as image:
+            out=io.BytesIO()
+            image.convert("RGB").save(out,format="JPEG",quality=cfg["ocr_jpeg_quality"])
+            png=out.getvalue()
     if len(png)>cfg["max_batch_bytes"]:
-        raise ValueError("OCR PNG exceeds request byte budget")
+        raise ValueError("OCR image exceeds request byte budget")
     return png
 
 

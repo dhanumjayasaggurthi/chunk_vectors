@@ -413,7 +413,7 @@ def _execute_page(root,prepared,config,cfg,quota,locks):
     raise RuntimeError("Unreachable enrichment attempt state")
 
 
-def run_pages(root,pages,*,visual_settings,config,execution,include_result=False):
+def run_pages(root,pages,*,visual_settings,config,execution,include_result=False,quota=None):
     """Bounded page enrichment for caller-selected (capture_id, physical_page).
 
     One local coordinator, one shared process pool for PyMuPDF, concurrent
@@ -431,7 +431,7 @@ def run_pages(root,pages,*,visual_settings,config,execution,include_result=False
         raise PermissionError("Explicit enrichment result storage authorization required")
     if not cfg_model["authorized_provider"]:
         raise PermissionError("Explicit provider transmission authorization required")
-    quota=LocalQuota(cfg)
+    quota=quota if quota is not None else LocalQuota(cfg)
     locks=[threading.Lock() for _ in range(cfg["workers"])]
     with _local_run_lock(root):
         with concurrent.futures.ProcessPoolExecutor(

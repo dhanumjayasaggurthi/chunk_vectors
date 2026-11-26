@@ -54,10 +54,9 @@ post-capture orchestration is per document, with existing concurrent OCR and
 visual requests within that document; no measured fleet SLA. Translation
 and scanned table cell reconstruction are not integrated yet; real OCR/LLM
 accuracy and automatic visual coverage still need qualification. Native-only
-capture remains available via capture --apply. Do not run native-only
-materialize over enriched rows (it can replace them). The run fails or marks
+capture remains available via capture --apply. Native-only materialize rejects documents with existing OCR/model chunks. The run fails or marks
 incomplete if selected enrichment fails, and does not silently publish a
-new incomplete enriched version. Replay reuses verified checkpoints and
+new incomplete enriched version. Predominantly scanned pages use complete retained page OCR, with configured JPEG request compression only if needed; the lossless retained source is unchanged. To finish after originals are unavailable use production.py finish --receipt /approved/receipts/ACTUAL.jsonl --apply. Replay reuses verified checkpoints and
 provider results, except a crash between provider response and cache commit
 may cause a repeated call. Never manually delete originals.
 

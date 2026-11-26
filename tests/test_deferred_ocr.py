@@ -336,6 +336,11 @@ class DeferredOcrPostgresTests(unittest.TestCase):
                      error_code="NO_OCR_TEXT")
         self.assertEqual(ocr.claim(self.p,2,3,3600,doc_id="d"*64),[])
         self.assertEqual(ocr.status(self.p,doc_id="d"*64)["statuses"]["VISUAL_PENDING"],1)
+        parts,pages=ocr.retrieval_results(self.p,"d"*64,"a"*64,2)
+        self.assertEqual([x["text"] for x in parts],["20 mg"])
+        self.assertEqual(pages,[1])
+        with self.assertRaisesRegex(ValueError,"coverage"):
+            ocr.retrieval_results(self.p,"d"*64,"a"*64,3)
 
 
     def test_claim_is_scoped_to_explicit_document_and_status(self):

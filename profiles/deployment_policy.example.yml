@@ -126,5 +126,7 @@ embedding:
 # Existing OCR engine; actual quota allocation must be approved before enabling calls.
 deferred_ocr:
   workers: 4
+  full_page_ocr_min_native_chars: 100
+  ocr_jpeg_quality: 95
   rpm: 1500
   ipm: 1500
