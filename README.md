@@ -16,7 +16,7 @@ python -c "import pymupdf; print(pymupdf.VersionBind)"
 ~~~
 
 Merge missing keys from [config.ini.example](config.ini.example) into your
-existing config.ini. Set DB schema/native_table/chunk_table once in [POSTGRES],
+existing config.ini. Explicitly set [AZURE_OPENAI_EMBEDDING] dimensions to the actual model output size even when embeddings are disabled (legacy default was 1536). Set DB schema/native_table/chunk_table once in [POSTGRES],
 source directory in [PATHS] docs_root (or [DEPLOYMENT] source_root),
 approved evidence/receipt directories and retention policy/renderer.
 No manually prepared inventory or deadline required. Keep each server's

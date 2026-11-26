@@ -46,6 +46,20 @@ def save(path,c):
     with path.open("w") as f:c.write(f)
 
 class DeploymentTests(unittest.TestCase):
+    def test_missing_or_invalid_embedding_dimensions_has_actionable_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path,c=fixture(Path(tmp))
+            del c["AZURE_OPENAI_EMBEDDING"]["dimensions"]
+            save(path,c)
+            with self.assertRaisesRegex(ValueError,r"Missing required configuration setting \[AZURE_OPENAI_EMBEDDING\] dimensions"):
+                resolve_configuration(path)
+            for value,message in (("","Missing required"),("auto","must be an integer"),("0","must be in")):
+                c["AZURE_OPENAI_EMBEDDING"]["dimensions"]=value
+                save(path,c)
+                with self.assertRaisesRegex(ValueError,message):
+                    resolve_configuration(path)
+
+
     def test_one_table_mapping_and_host_independent_retrieval_hash(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)

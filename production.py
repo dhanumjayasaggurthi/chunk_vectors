@@ -37,9 +37,15 @@ def _json_profile(path):
 
 
 def _integer(section,key,low,high):
-    value=section.getint(key)
+    label="["+section.name+"] "+key
+    if key not in section or not section.get(key,"").strip():
+        raise ValueError("Missing required configuration setting "+label)
+    try:
+        value=section.getint(key)
+    except ValueError:
+        raise ValueError("Configuration setting "+label+" must be an integer") from None
     if not low<=value<=high:
-        raise ValueError("Invalid deployment setting "+key)
+        raise ValueError("Configuration setting "+label+f" must be in {low}..{high}")
     return value
 
 
