@@ -2,7 +2,7 @@
   "_comment": "Example admin request bodies for SmartHub main 90d2801. Not a single import file. Replace example database/schema/table/env and actual IDs; do not use empty allowlist. Register actual embedding model before enabling hybrid. Review entire JSONB contents for authorization. No source path or vectors in match response.",
   "create_api": {
     "name": "Regulatory Document Retrieval",
-    "description": "Published source-linked native regulatory chunks; not complete enriched corpus",
+    "description": "English regulatory retrieval chunks with optional original-language text; model observations labeled in chunk_metadata",
     "tables": [
       {
         "source_system": "postgresql",
@@ -17,7 +17,8 @@
           "doc_id",
           "chunk_index",
           "file_name",
-          "source_chunk_text",
+          "chunk_text",
+          "native_text",
           "chunk_vector",
           "page_start",
           "page_end",
@@ -32,8 +33,8 @@
     ]
   },
   "create_contract": {
-    "name": "Regulatory source chunks v1",
-    "description": "Use pipeline doc_id, not authoritative business ID. chunk_number is zero-based. DOCX pages null. Full JSONB only for authorized consumers.",
+    "name": "Regulatory English chunks v2",
+    "description": "Use pipeline doc_id, not authoritative business ID. chunk_number is zero-based. DOCX pages null. Full JSONB only for authorized consumers. chunk_text is English-target content; native_text is original extraction or null for model-only observations. Remove native_text from allowlist and contract for English-only consumers.",
     "definition": {
       "matches_key": "matches",
       "fields": {
@@ -43,19 +44,20 @@
         "file_name": "file_name",
         "page_number": "page_start",
         "page_end": "page_end",
-        "chunk_text": "source_chunk_text",
+        "chunk_text": "chunk_text",
         "section_title": "section_title",
         "headers": "headers",
         "document_metadata": "document_metadata",
         "chunk_metadata": "chunk_metadata",
         "content_types": "content_types",
-        "metadata_evidence": "metadata_evidence"
+        "metadata_evidence": "metadata_evidence",
+        "native_text": "native_text"
       }
     }
   },
   "sparse_settings": {
     "settings": {
-      "text_column": "source_chunk_text",
+      "text_column": "chunk_text",
       "text_search_config": "simple",
       "modes": [
         "sparse"
@@ -70,7 +72,7 @@
     "settings": {
       "vector_column": "chunk_vector",
       "metric": "cosine",
-      "text_column": "source_chunk_text",
+      "text_column": "chunk_text",
       "text_search_config": "simple",
       "modes": [
         "hybrid",

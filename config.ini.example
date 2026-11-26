@@ -44,7 +44,7 @@ authorized_visual_llm = false
 visual_llm_profile = profiles/visual_enrichment_example.json
 visual_llm_execution = profiles/visual_enrichment_execution_example.json
 authorized_embedding = false
-; Optional, uses the same approved GCP key; auto-detects native/OCR source language.
+; Required for production run/finish: English-target retrieval. Capture-only remains available without provider approval.
 authorized_translation = false
 translation_model = nmt
 translation_rpm = 30

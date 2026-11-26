@@ -89,7 +89,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "embedding.max_attempts", "embedding.timeout_seconds",
             "embedding.lease_seconds", "embedding.enqueue_page_size",
             "extraction.schema", "extraction.table", "extraction.retained_evidence",
-            "output.schema", "output.table", "embedding.dimensions",
+            "output.schema", "output.table", "output.text_contract", "embedding.dimensions",
             "deferred_ocr.render_dpi", "deferred_ocr.retained_evidence",
             "extracted_content.schema", "extracted_content.table",
             "extracted_content.doc_id_column", "extracted_content.text_column",
@@ -142,7 +142,7 @@ def validate_profile(profile: dict) -> None:
                               "file_name_column", "element_json_column", "width_column",
                               "height_column", "rotation_column", "section_column",
                               "page_end_column", "source_columns"},
-        "output": {"schema", "table"},
+        "output": {"schema", "table", "text_contract"},
     }
     if "deferred_ocr" in profile:
         from deferred_ocr import _DEFAULTS as _DEFERRED_OCR_OPTIONS
@@ -264,6 +264,8 @@ def validate_profile(profile: dict) -> None:
             raise ValueError("embedding.input_max_tokens must be 100..8000")
     output = profile["output"]
     if output:
+        if output.get("text_contract","legacy") not in ("legacy","english_v1"):
+            raise ValueError("Invalid output text contract")
         if not output.get("schema") or not output.get("table"):
             raise ValueError("output.schema and output.table are required together")
         for value in (output["schema"], output["table"]):

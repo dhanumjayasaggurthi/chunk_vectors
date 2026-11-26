@@ -85,7 +85,7 @@ def resolve_configuration(path="config.ini"):
     ocr_retained["read_workers"]=read_workers
     shared={"extraction.schema":schema,"extraction.table":native,
             "extracted_content.schema":schema,"extracted_content.table":native,
-            "output.schema":target_schema,"output.table":chunk,
+            "output.schema":target_schema,"output.table":chunk,"output.text_contract":"english_v1",
             "existing_chunks.schema":target_schema,"existing_chunks.table":chunk,
             "existing_chunks.id_column":"chunk_id","existing_chunks.text_column":"chunk_text",
             "existing_chunks.vector_column":"chunk_vector",
@@ -299,7 +299,9 @@ def finish_captured(d,receipt):
     quota=LocalQuota(d["visual_llm"][1]) if d["visual_llm"] else None
     names=verify_output(q)
     from translation_stage import GoogleTranslation
-    translator=GoogleTranslation(d["gcp_key"],d["translation"]) if d.get("translation") else None
+    if not d.get("translation"):
+        raise PermissionError("English retrieval requires authorized_translation=true")
+    translator=GoogleTranslation(d["gcp_key"],d["translation"])
     counts=Counter()
     with Path(receipt).open(encoding="utf-8") as stream:
         for line in stream:
@@ -397,6 +399,8 @@ def main(argv=None):
     elif cmd in ("run","capture"):
         preflight(d)
         if cmd=="run":
+            if not d["translation"]:
+                parser.error("English retrieval requires authorized_translation=true; use capture for evidence only")
             if not d["authorized_ocr"]:
                 parser.error("run requires authorized_ocr=true; use capture for native-only capture")
             if not _database(d)["ocr_table_exists"]:
@@ -428,6 +432,8 @@ def main(argv=None):
         result=finish_captured(d,receipt)
         code=int(bool(result.get("FAILED") or result.get("BUSY")))
     elif cmd=="materialize":
+        if q["output"].get("text_contract")=="english_v1":
+            parser.error("Use run or finish for English-only retrieval; native-only publication is disabled")
         _database(d)
         from reuse_materialize import run,run_one,verify_output
         if args.doc_id:
@@ -449,7 +455,11 @@ def main(argv=None):
             if not args.allow_logical_locators:
                 parser.error("DOCX publication requires --allow-logical-locators")
             _database(d)
-            result=run_docx(d["evidence"],args.capture_id,q,allow_logical_locators=True,**kw)
+            if not d["translation"]:
+                parser.error("English retrieval requires authorized_translation=true")
+            from translation_stage import GoogleTranslation
+            result=run_docx(d["evidence"],args.capture_id,q,allow_logical_locators=True,
+                            translator=GoogleTranslation(d["gcp_key"],d["translation"]),**kw)
             code=int(result["status"] not in ("SUCCESS","SKIPPED"))
     elif cmd.startswith("ocr-"):
         import deferred_ocr as ocr

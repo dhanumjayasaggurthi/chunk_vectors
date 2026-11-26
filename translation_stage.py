@@ -288,6 +288,9 @@ class GoogleTranslation:
     def apply_rows(self,rows,profile,sources):
         from types import SimpleNamespace
         from reuse_materialize import compose_embedding_text
+        english_contract=profile.get("output",{}).get("text_contract")=="english_v1"
+        import tiktoken
+        encoder=tiktoken.get_encoding(profile["chunking"].get("tokenizer","cl100k_base")) if english_contract else None
         result=list(rows)
         batch=[]
         chars=0
@@ -304,6 +307,22 @@ class GoogleTranslation:
                                      "source_text_sha256":hashlib.sha256(row[6].encode()).hexdigest(),
                                      "status":"ENGLISH_SOURCE" if language=="en" else "MACHINE_TRANSLATION_UNVERIFIED"}
                 embedding=row[7]
+                if english_contract:
+                    # Use the target-language provider response even when the
+                    # dominant source language is English (mixed-language text).
+                    # No native filename, headers or metadata in English text.
+                    if len(encoder.encode(english,disallowed_special=()))>profile["embedding"].get("input_max_tokens",6000):
+                        raise ValueError("English translation exceeds configured embedding token budget")
+                    model=meta.get("source_kind")=="visual_model"
+                    if model:
+                        meta["translation"]["status"]="MODEL_ENGLISH_UNVERIFIED"
+                        native=None
+                    else:
+                        native=row[6]
+                        if language!="en" or english!=native:
+                            meta["translation"]["status"]="MACHINE_TRANSLATION_UNVERIFIED"
+                    result[i]=row[:6]+(native,english,)+row[8:13]+(json.dumps(meta,ensure_ascii=False,sort_keys=True),)+row[14:]
+                    continue
                 if language!="en":
                     meta["translation"]["text"]=english
                     chunk=SimpleNamespace(chunk_text=english,section_title=row[10],file_name=row[5],
@@ -315,7 +334,7 @@ class GoogleTranslation:
             batch=[]
             chars=0
         for i,row in enumerate(result):
-            if json.loads(row[13]).get("source_kind")=="visual_model":
+            if not english_contract and json.loads(row[13]).get("source_kind")=="visual_model":
                 continue
             if len(row[6])>self.cfg["max_chars"]:
                 raise ValueError("Translation segment exceeds configured character budget")

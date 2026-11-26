@@ -376,6 +376,8 @@ def run_docx(root,capture_id,profile,*,config,doc_id,file_name,allow_logical_loc
     """
     if allow_logical_locators is not True:
         raise PermissionError("Explicit logical citation consumer approval required")
+    if _english_contract(profile) and translator is None:
+        raise PermissionError("English retrieval requires translation")
     from docx_evidence import verify
     from profile_store import profile_document_lock
     digest=_docx_identity(doc_id,file_name,capture_id)
@@ -528,6 +530,10 @@ def quality_summary(rows, policy):
     }
 
 
+def _english_contract(profile):
+    return profile.get("output",{}).get("text_contract")=="english_v1"
+
+
 def init_output(profile, *, apply=False):
     """Only an explicit --apply writes DDL; existing tables are never migrated."""
     names = identifiers(profile)
@@ -541,6 +547,8 @@ def init_output(profile, *, apply=False):
         raise ValueError("embedding.dimensions must be 1..16000")
     if len(names["table_name"] + "_doc_idx") > 63:
         raise ValueError("Output index identifier too long")
+    native_column="native_text" if _english_contract(profile) else "source_chunk_text"
+    native_constraint="" if _english_contract(profile) else " NOT NULL"
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -557,7 +565,7 @@ def init_output(profile, *, apply=False):
                   chunk_index integer NOT NULL,
                   file_path text NOT NULL,
                   file_name text NOT NULL,
-                  source_chunk_text text NOT NULL,
+                  {native_column} text{native_constraint},
                   chunk_text text NOT NULL,
                   chunk_vector vector({dims}),
                   embedding_processing_note text,
@@ -623,12 +631,12 @@ def verify_output(profile, *, logical_locators=False):
                         (profile["output"]["schema"], profile["output"]["table"]))
             columns = dict(cur.fetchall())
             expected = {"chunk_id","doc_id","profile_hash","chunk_index","file_path",
-                        "file_name","source_chunk_text","chunk_text","chunk_vector",
+                        "file_name",("native_text" if _english_contract(profile) else "source_chunk_text"),"chunk_text","chunk_vector",
                         "embedding_processing_note","page_start","page_end",
                         "section_title","headers","document_metadata",
                         "chunk_metadata","content_types","metadata_evidence"}
             if not expected.issubset(columns):
-                raise ValueError("Output table incompatible with materialization schema")
+                raise ValueError("Output table incompatible with materialization schema; use a new configured table for the English contract")
             if logical_locators:
                 cur.execute("""SELECT column_name,is_nullable FROM information_schema.columns
                                WHERE table_schema=%s AND table_name=%s
@@ -666,6 +674,22 @@ def save_document(doc_id, source_hash, profile, names, rows):
     from psycopg2.extras import execute_values
     if not rows or any(row[1] != doc_id for row in rows):
         raise ValueError("Cannot publish missing/mixed document chunks")
+    english=_english_contract(profile)
+    native_column="native_text" if english else "source_chunk_text"
+    if english:
+        for row in rows:
+            meta=json.loads(row[13])
+            trans=meta.get("translation",{})
+            if (trans.get("target_language")!="en" or not isinstance(row[7],str)
+                    or not row[7].strip() or trans.get("status") not in
+                    ("ENGLISH_SOURCE","MACHINE_TRANSLATION_UNVERIFIED","MODEL_ENGLISH_UNVERIFIED")):
+                raise ValueError("English contract requires validated English-target translation for every chunk")
+            if meta.get("source_kind")=="visual_model":
+                if row[6] is not None or trans["status"]!="MODEL_ENGLISH_UNVERIFIED":
+                    raise ValueError("Model observations must not be presented as native source text")
+            elif (not isinstance(row[6],str) or not row[6].strip()
+                    or trans.get("source_text_sha256")!=hashlib.sha256(row[6].encode()).hexdigest()):
+                raise ValueError("Native text provenance mismatch")
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -674,7 +698,7 @@ def save_document(doc_id, source_hash, profile, names, rows):
             cur.execute(f"DELETE FROM {names['table']} WHERE doc_id=%s", (doc_id,))
             execute_values(cur, f"""INSERT INTO {names['table']} (
                 chunk_id,doc_id,profile_hash,chunk_index,file_path,file_name,
-                source_chunk_text,chunk_text,page_start,page_end,section_title,
+                {native_column},chunk_text,page_start,page_end,section_title,
                 headers,document_metadata,chunk_metadata,content_types,metadata_evidence
                 ) VALUES %s""", rows,
                 template="(" + ",".join(["%s"] * 11 + ["%s::jsonb"] * 5) + ")",
@@ -810,6 +834,8 @@ def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None,t
                     conn.rollback()
                     conn.close()
             check_version()
+            if _english_contract(profile) and translator is None:
+                raise PermissionError("English retrieval requires translation")
             if enrichment is None:
                 from db import get_conn
                 conn=get_conn()

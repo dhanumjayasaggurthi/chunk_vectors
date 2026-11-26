@@ -67,6 +67,32 @@ class TestTranslationUnit(unittest.TestCase):
         self.assertEqual(translated[2],rows[2])
         self.assertEqual(session.post.call_args.kwargs["json"]["q"],["Rapport clinique","Native English"])
 
+    def test_english_contract_separates_native_and_model_output(self):
+        import json
+        from unittest.mock import Mock
+        from translation_stage import GoogleTranslation
+        cfg={"model":"nmt","rpm":10000,"max_chars":5000,"timeout_seconds":60,"attempts":1}
+        session=Mock()
+        response=session.post.return_value
+        response.status_code=200
+        response.json.return_value={"data":{"translations":[
+            {"detectedSourceLanguage":"fr","translatedText":"Clinical report"},
+            {"detectedSourceLanguage":"en","translatedText":"English and German text"},
+            {"detectedSourceLanguage":"fr","translatedText":"A visible pattern"}]}}
+        rows=[("id"+str(i),"doc","profile",i,"source","fr.pdf",text,"French augmented metadata",1,1,"French heading","[]","{}",meta,"[]","{}")
+              for i,(text,meta) in enumerate([("Rapport clinique","{}"),("English und deutscher Text","{}"),
+                   ("Motif visible","{\"source_kind\":\"visual_model\"}")])]
+        p={"output":{"text_contract":"english_v1"},"chunking":{"tokenizer":"cl100k_base"},
+           "embedding":{"input_fields":["section_title","chunk_text"]}}
+        out=GoogleTranslation("not-used",cfg,session=session).apply_rows(rows,p,{})
+        self.assertEqual([r[6] for r in out],["Rapport clinique","English und deutscher Text",None])
+        self.assertEqual([r[7] for r in out],["Clinical report","English and German text","A visible pattern"])
+        self.assertNotIn("text",json.loads(out[0][13])["translation"])
+        self.assertEqual(json.loads(out[2][13])["translation"]["status"],"MODEL_ENGLISH_UNVERIFIED")
+        response.json.return_value={"data":{"translations":[]}}
+        with self.assertRaisesRegex(ValueError,"count mismatch"):
+            GoogleTranslation("not-used",cfg,session=session).apply_rows(rows,p,{})
+
     def test_invalid_language_refuses_translation(self):
         with self.assertRaises(ValueError):
             compose_language_input("texte","english",language="bad code")

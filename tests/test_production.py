@@ -173,9 +173,8 @@ class DeploymentPostgresTests(unittest.TestCase):
                 import hashlib
                 doc_id=hashlib.sha256(str((d["source"]/"doc.pdf").resolve()).encode()).hexdigest()
                 n=verify_output(q)
-                result=run_one(doc_id,q,n)
-                self.assertEqual(result["status"],"SUCCESS",result)
-                self.assertEqual(run_one(doc_id,q,n)["status"],"SKIPPED")
+                self.assertEqual(q["output"]["text_contract"],"english_v1")
+                self.assertEqual(run_one(doc_id,q,n)["status"],"FAILED")
                 # Actual root -> native DB -> retained OCR and model -> same
                 # chunk table. Real PDF bytes, real DB, actual provider
                 # adapters mocked only at network boundary.
@@ -210,7 +209,15 @@ class DeploymentPostgresTests(unittest.TestCase):
                 from unittest.mock import Mock
                 session=Mock()
                 session.post.return_value.status_code=200
-                session.post.return_value.json.return_value={"data":{"translations":[{"detectedSourceLanguage":"fr","translatedText":"Translated clinical document"}]}}
+                def translation_reply(*args,**kwargs):
+                    response=Mock()
+                    response.status_code=200
+                    response.json.return_value={"data":{"translations":[
+                        {"detectedSourceLanguage":"en" if "MODEL" in value else "fr",
+                         "translatedText":value if "MODEL" in value else "Translated clinical document"}
+                        for value in kwargs["json"]["q"]]}}
+                    return response
+                session.post.side_effect=translation_reply
                 with (patch("translation_stage._google_session",return_value=session),
                       patch("ocr_quota.detect_project_id",return_value="ci-only"),
                       patch("ocr_quota.init_quota",return_value="ci-only"),
@@ -222,7 +229,7 @@ class DeploymentPostgresTests(unittest.TestCase):
                     self.assertEqual(first,{"SUCCESS":2},first)
                     self.assertGreater(vision.call_count,0)
                     self.assertEqual(llm.call_count,1)
-                    self.assertEqual(session.post.call_count,1)
+                    self.assertEqual(session.post.call_count,2)
                     counts=vision.call_count,llm.call_count,session.post.call_count
                     second=finish_captured(d,receipt)
                     self.assertEqual(second,{"SKIPPED":2},second)
@@ -230,10 +237,14 @@ class DeploymentPostgresTests(unittest.TestCase):
                 conn=get_conn()
                 try:
                     with conn.cursor() as cur:
-                        cur.execute(f"""SELECT source_chunk_text,chunk_metadata->>'source_text_status'
+                        cur.execute(f"""SELECT chunk_text,chunk_metadata->>'source_text_status',native_text
                             FROM {n['table']} WHERE doc_id=%s""",(scanned["doc_id"],))
                         result=cur.fetchall()
-                        self.assertTrue(any("A visual field is visible" in x[0] and x[1]=="MODEL_OBSERVATIONS_UNVERIFIED" for x in result))
+                        self.assertTrue(any("A visual field is visible" in x[0] and x[1]=="MODEL_OBSERVATIONS_UNVERIFIED" and x[2] is None for x in result))
+                        cur.execute(f"SELECT native_text,chunk_text FROM {n['table']} WHERE doc_id=%s",(doc_id,))
+                        native,english=cur.fetchone()
+                        self.assertIn("Title: Test document",native)
+                        self.assertEqual(english,"Translated clinical document")
                 finally:
                     conn.close()
             finally:
