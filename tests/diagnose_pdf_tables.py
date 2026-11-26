@@ -64,15 +64,65 @@ def diagnose(file_path: str, pages: list[int]) -> list[dict]:
     return out
 
 
+def validate_recovery(file_path: str, pages: list[int]) -> list[dict]:
+    """Run the production native page path on selected pages, without DB/API."""
+    import fitz
+    import pdfplumber
+    from pdf_processor import PDFProcessor, ElementType
+    from table_extractor import inject_table_text_into_elements
+    processor=PDFProcessor(
+        file_path,"diagnostic",Path(file_path).name,strict=True,
+        capture_rich_text=True,capture_table_structure=True,
+        preserve_uninterpreted_visuals=True,empty_table_policy="preserve_defer",
+    )
+    results=[]
+    with fitz.open(file_path) as pdf, pdfplumber.open(file_path) as plumb:
+        for number in pages:
+            if not 1 <= number <= pdf.page_count:
+                raise ValueError(f"Page {number} is out of bounds")
+            pp=plumb.pages[number-1]
+            try:
+                page=processor._process_page(pdf,number-1,plumb_page=pp)
+                error=page.error
+                if not error and page.has_tables:
+                    try:
+                        inject_table_text_into_elements(
+                            page.elements,page.staged_table_results,strict=True)
+                    except (ValueError,RuntimeError) as exc:
+                        error=str(exc)
+                results.append({
+                    "page":number,"status":"FAILED" if error else "SUCCESS",
+                    "error":error,
+                    "native_chars":sum(len(e.text) for e in page.elements
+                                       if e.element_type==ElementType.TEXT),
+                    "structured_tables":sum(e.source_table is not None for e in page.elements),
+                    "deferred_candidates":[e.unresolved_region["candidate_index"]
+                        for e in page.elements if e.unresolved_region],
+                })
+            finally:
+                pp.close()
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pdf", required=True)
     parser.add_argument("--pages", nargs="+", type=int, required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--candidate", type=int, help="Only print/store this candidate index")
+    parser.add_argument("--validate-recovery", action="store_true",
+                        help="Also run production native extraction on these pages")
     args = parser.parse_args()
     rows = diagnose(args.pdf, args.pages)
+    if args.candidate is not None:
+        rows = [row for row in rows if row["candidate"] == args.candidate]
     Path(args.output).write_text(json.dumps(rows, indent=2), encoding="utf-8")
     print("TABLE_CANDIDATE_DIAGNOSTICS=" + json.dumps(rows, separators=(",", ":")))
+    if args.validate_recovery:
+        validation = validate_recovery(args.pdf,args.pages)
+        print("NATIVE_RECOVERY_VALIDATION=" + json.dumps(validation,separators=(",",":")))
+        if any(row["status"] != "SUCCESS" for row in validation):
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

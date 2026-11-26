@@ -178,10 +178,62 @@ def validate_unresolved_region(data: dict, *, page_number: int | None = None) ->
     return data
 
 
+def _verified_nested_candidate_words(coords, words, plumb_page, native_page,
+                                     text_elements, valid_tables) -> bool:
+    """Only defer tiny nested empty cells when their native words are retained.
+
+    Compare actual source characters, not just counts. Geometry and the
+    independently recovered parent constrain the exception to nested linework.
+    No checkbox state or table structure is inferred.
+    """
+    import math
+    if native_page is None or native_page.rotation != 0:
+        return False
+    bbox = BBox(*coords)
+    if not 0 < bbox.area <= 2500:
+        return False
+    if not any(
+        parent.bbox[0] <= bbox.x0 and parent.bbox[1] <= bbox.y0
+        and parent.bbox[2] >= bbox.x1 and parent.bbox[3] >= bbox.y1
+        and (parent.bbox[2]-parent.bbox[0]) *
+            (parent.bbox[3]-parent.bbox[1]) >= 4 * bbox.area
+        for parent in valid_tables
+    ):
+        return False
+    # Reject coordinate frames we cannot safely compare.
+    if (any(abs(a-b) > 0.1 for a,b in zip(native_page.rect, plumb_page.bbox))
+            or native_page.cropbox != native_page.mediabox):
+        return False
+    def compact(text):
+        return "".join(text.split())
+    expected = []
+    for word in words:
+        value = word.get("text")
+        if not isinstance(value, str) or not compact(value):
+            return False
+        wb = BBox(*(float(word[k]) for k in ("x0","top","x1","bottom")))
+        if (not all(math.isfinite(v) for v in (wb.x0,wb.y0,wb.x1,wb.y1))
+                or not wb.area or not bbox.overlaps(wb)):
+            return False
+        # Verify the text survives the existing native cleaning/element pass.
+        if not any(el.element_type == ElementType.TEXT
+                   and el.bbox.overlaps(wb)
+                   and compact(value) in compact(el.text)
+                   for el in text_elements):
+            return False
+        expected.append(compact(value))
+    # An exact independent region transcription also checks multiplicity and
+    # prevents coincidental matching of a word elsewhere on the page.
+    return bool(expected) and compact(
+        native_page.get_textbox(_fitz().Rect(*coords))
+    ) == "".join(expected)
+
+
 def _preserve_empty_table_candidate(table, raw, plumb_page, page_number: int,
                                     max_regions: int, retained_regions: int,
-                                    *, candidate_index: int) -> PageElement:
-    """Defer only empty candidates with no source PDF words inside their bounds.
+                                    *, candidate_index: int, native_page=None,
+                                    text_elements=(), valid_tables=()) -> PageElement:
+    """Defer empty candidates with no words or verified nested native words.
 
     Original PDF bytes + exact page and bbox remain authoritative. We never
     fabricate table cells or store duplicate raster PNGs in native mode.
@@ -204,7 +256,9 @@ def _preserve_empty_table_candidate(table, raw, plumb_page, page_number: int,
                 or coords[2]>float(plumb_page.width)+1
                 or coords[3]>float(plumb_page.height)+1):
             raise ValueError("Unresolved region outside the original PDF page")
-        if plumb_page.crop(coords).extract_words():
+        words = plumb_page.crop(coords).extract_words()
+        if words and not _verified_nested_candidate_words(
+                coords, words, plumb_page, native_page, text_elements, valid_tables):
             raise ValueError("Unresolved table candidate contains source PDF words")
     except (TypeError, AttributeError) as exc:
         raise ValueError("Cannot verify original PDF candidate bounds") from exc
@@ -880,7 +934,8 @@ class PDFProcessor:
                                 table, raw, plumb_page, page_number,
                                 self.max_visual_regions_per_page,
                                 len(image_elements)+len(vector_elements),
-                                candidate_index=idx,
+                                candidate_index=idx, native_page=page,
+                                text_elements=text_elements, valid_tables=valid_tables,
                             )
                         except ValueError as exc:
                             raise RuntimeError(

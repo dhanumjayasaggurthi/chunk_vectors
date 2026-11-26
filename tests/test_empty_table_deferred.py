@@ -166,6 +166,51 @@ class EmptyTableDeferredTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"provenance"):
             validate_unresolved_region(result.unresolved_region,page_number=2)
 
+    def test_nested_candidate_preserves_verified_native_words_only(self):
+        import fitz
+        import pdfplumber
+        from pdf_processor import (
+            BBox, ElementType, PageElement, _preserve_empty_table_candidate,
+        )
+        filename=Path(self.temp.name)/"nested-form.pdf"
+        with fitz.open() as pdf:
+            for _ in range(2):
+                page=pdf.new_page(width=612,height=792)
+                page.insert_text((60,65),"X Y")
+            pdf.save(filename)
+        table=SimpleNamespace(bbox=(55,48,100,75))
+        parent=SimpleNamespace(bbox=(40,35,300,250))
+        with fitz.open(filename) as pdf, pdfplumber.open(filename) as plumb:
+            for i in range(2):
+                native=pdf[i]
+                page=plumb.pages[i]
+                blocks=native.get_text("blocks")
+                elements=[PageElement(ElementType.TEXT,BBox(*b[:4]),text=b[4])
+                          for b in blocks]
+                self.assertEqual(len(page.crop(table.bbox).extract_words()),2)
+                def preserve(els, parents=(parent,), raw=[[None],[""]]):
+                    return _preserve_empty_table_candidate(
+                        table,raw,page,i+1,10,0,candidate_index=9,
+                        native_page=native,text_elements=els,valid_tables=parents,
+                    )
+                result=preserve(elements)
+                self.assertEqual(result.bbox,BBox(*table.bbox))
+                self.assertFalse(result.text)
+                self.assertFalse(result.source_table)
+                self.assertFalse(result.unresolved_region["structured_table_recovered"])
+                self.assertEqual(result.unresolved_region["source_page"],i+1)
+                self.assertEqual(elements[0].text.strip(),"X Y")
+                with self.assertRaisesRegex(ValueError,"source PDF words"):
+                    preserve([])
+                with self.assertRaisesRegex(ValueError,"source PDF words"):
+                    preserve([PageElement(ElementType.TEXT,BBox(*blocks[0][:4]),text="X")])
+                with self.assertRaisesRegex(ValueError,"source PDF words"):
+                    preserve([PageElement(ElementType.TEXT,BBox(300,300,350,350),text="X Y")])
+                with self.assertRaisesRegex(ValueError,"source PDF words"):
+                    preserve(elements,parents=())
+                with self.assertRaisesRegex(ValueError,"source cell text"):
+                    preserve(elements,raw=[["X"]])
+
     def test_profile_semantic_versioning_and_safety_validation(self):
         from page_stage import extraction_fingerprint
         from processing_profile import validate_profile
