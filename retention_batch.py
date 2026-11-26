@@ -141,6 +141,15 @@ def capture_one(row,profile,n,docx_config,cfg):
                     "skipped_verified_pages":ev.get("skipped_verified_pages",0) if ev else 0,
                     "native_reconciliation_required":ev.get("native_reconciliation_required",False) if ev else False,
                     "local_content_verified":checked}
+            # Preserve only numeric native telemetry; never include source text.
+            for key in ("new_pages","reused_pages","failed_pages","new_pages_per_min",
+                        "source_hash_initial_seconds","stage_timings_seconds"):
+                if key in report:
+                    fields[key]=report[key]
+            if ev is not None:
+                for key in ("elapsed_seconds","image_bytes"):
+                    if key in ev:
+                        fields["evidence_"+key]=ev[key]
             status="LOCAL_CAPTURE_VERIFIED" if complete else "INCOMPLETE_OR_BUSY"
         else:
             from docx_evidence import capture

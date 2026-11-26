@@ -30,6 +30,25 @@ class RetentionBatchTests(unittest.TestCase):
                 list(iter_inventory(io.BytesIO(b"x"*65537),cfg))
             with self.assertRaisesRegex(ValueError,"Duplicate"):
                 list(iter_inventory(io.BytesIO(b'{"path":"a","path":"b"}'),cfg))
+    def test_pdf_receipt_keeps_numeric_stage_metrics(self):
+        from unittest.mock import patch
+        report={"status":"INCOMPLETE","doc_id":"d","pages":12,
+                "new_pages":10,"reused_pages":1,"failed_pages":1,
+                "stage_timings_seconds":{"pdf_parse":4.0,"retained_evidence":2.0},
+                "retained_evidence":{"local_content_verified":True,
+                    "source_pdf_sha256":"0"*64,"verified_pages":12,
+                    "elapsed_seconds":2.0,"image_bytes":500}}
+        with patch("page_stage.stage_one",return_value=report):
+            receipt=capture_one({"path":"sample.pdf"},{},None,{},settings(CFG))
+        self.assertEqual(receipt["status"],"INCOMPLETE_OR_BUSY")
+        self.assertEqual(receipt["new_pages"],10)
+        self.assertEqual(receipt["reused_pages"],1)
+        self.assertEqual(receipt["failed_pages"],1)
+        self.assertEqual(receipt["stage_timings_seconds"],report["stage_timings_seconds"])
+        self.assertEqual(receipt["evidence_elapsed_seconds"],2.0)
+        self.assertEqual(receipt["evidence_image_bytes"],500)
+        self.assertFalse(receipt["purge_safe"])
+
     def test_profile_limits(self):
         with self.assertRaises(ValueError):
             settings({**CFG,"workers":0})

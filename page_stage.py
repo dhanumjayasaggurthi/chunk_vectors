@@ -867,13 +867,24 @@ def stage_one(
                 0.0, timings["pdf_parse"]-
                 timings["pdf_table_detection"]-timings["pdf_table_cell_extraction"]
             )
+        if cfg["profile_stage_timings"] and evidence_report is not None:
+            # pdf_parse includes the synchronous evidence observer. Keep the
+            # legacy metric and expose its evidence/non-evidence components.
+            timings["retained_evidence"]=evidence_report["elapsed_seconds"]
+            timings["pdf_parse_excluding_evidence"]=max(
+                0.0, timings["pdf_parse"]-timings["retained_evidence"]
+            )
         if errors_total:
             return {
                 "doc_id":doc_id,"status":"INCOMPLETE","pages":page_count,
                 "new_pages":pages_processed,"failed_pages":errors_total,
                 "ocr_images":images_processed,
                 "elapsed_seconds":round(time.monotonic()-started,2),
+                "reused_pages":len(done),
                 **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
+                **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
+                    "stage_timings_seconds":{key:round(value,3) for key,value in timings.items()}}
+                   if cfg["profile_stage_timings"] else {}),
             }
         try:
             publication_started=time.monotonic()
