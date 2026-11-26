@@ -35,7 +35,9 @@ materialize_workers = 2
 materialize_max_docs = 10000
 ocr_max_docs = 1000
 ocr_max_jobs = 10000
-ocr_read_workers = 2
+ocr_read_workers = 1
+; Overlap OCR/translation/LLM with capture, reserving reader processes from the worker budget.
+overlap_enrichment = true
 embedding_workers = 4
 ; 0 means full target for embedding (only after explicit approval).
 embedding_max_chunks = 10000
@@ -79,5 +81,6 @@ source_type = nas
 docs_root = /approved/input/server01
 
 [PIPELINE]
+; Automatic embedding after successful capture/enrichment. Separate embed command remains available.
 enable_embeddings = false
 table_summaries_enabled = false

@@ -97,6 +97,49 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual("".join(row[6] for row in rows if row[8]==1),parts[0]["text"])
             self.assertEqual(json.loads(rows[-1][13])["source_text_status"],"MODEL_OBSERVATIONS_UNVERIFIED")
 
+    def test_overlap_reads_flushed_receipts_before_capture_finishes(self):
+        import threading
+        from production import run_capture_and_finish
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            path,c=fixture(root)
+            d=resolve_configuration(path)
+            d["inventory"]=None
+            receipt=root/"overlap.jsonl"
+            received=threading.Event()
+            def capture(source,path,profile,**kw):
+                self.assertTrue(kw["stream_receipts"])
+                self.assertEqual(kw["config"]["workers"],d["batch"]["workers"]-1)
+                with Path(path).open("w",encoding="utf-8") as f:
+                    f.write('{"status":"LOCAL_CAPTURE_VERIFIED"}\n')
+                    f.flush()
+                    self.assertTrue(received.wait(5),"enrichment must consume before capture ends")
+                    f.write('{"status":"FAILED"}\n')
+                return {"all_local_capture_verified":False}
+            def finish(d,path,*,records,admit):
+                self.assertIsNone(admit)
+                lines=iter(records)
+                self.assertEqual(json.loads(next(lines))["status"],"LOCAL_CAPTURE_VERIFIED")
+                received.set()
+                self.assertEqual([json.loads(line)["status"] for line in lines],["FAILED"])
+                return {"SUCCESS":1}
+            with patch("retention_batch.run_root",side_effect=capture),patch("production.finish_captured",side_effect=finish):
+                report=run_capture_and_finish(d,receipt,overlap=True,finish=True)
+            self.assertEqual(report["retrieval"],{"SUCCESS":1})
+            self.assertEqual(report["overlap"]["reserved_reader_processes"],1)
+
+    def test_embedding_switch_is_independent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path,c=fixture(Path(tmp))
+            self.assertFalse(resolve_configuration(path)["enable_embeddings"])
+            c["PIPELINE"]["enable_embeddings"]="true"
+            save(path,c)
+            with self.assertRaises(PermissionError):
+                resolve_configuration(path)
+            c["DEPLOYMENT"]["authorized_embedding"]="true"
+            save(path,c)
+            self.assertTrue(resolve_configuration(path)["enable_embeddings"])
+
     def test_preflight_read_only_storage_and_authorization(self):
         with tempfile.TemporaryDirectory() as tmp:
             path,c=fixture(Path(tmp))

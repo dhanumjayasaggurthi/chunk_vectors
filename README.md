@@ -48,10 +48,7 @@ python -u production.py run --apply
 New run command captures in parallel, then uses successful capture receipts
 to perform OCR, selected visual LLM enrichment and publish native + OCR +
 labeled visual observation chunks in the same retrieval table; DOCX native
-logical publication also uses same output. Optional embedding backfill when
-authorized. Separate phases protect native capture throughput. Current
-post-capture orchestration is per document, with existing concurrent OCR and
-visual requests within that document; no measured fleet SLA. English retrieval requires authorized_translation=true. GCP translates native/OCR/model text to English; original extracted text goes into native_text (NULL for model-only observations), English into chunk_text, vectors and SmartHub search use chunk_text. No mixed native metadata in English text, no duplicate translation JSON. Provider failure prevents publication; no native-language fallback. Language identifiers, scientific names and quoted terms may remain. English target is not a certified translation quality score. Scanned table cell reconstruction remains unresolved; real OCR/LLM
+logical publication also uses same output. Automatic embeddings only when [PIPELINE] enable_embeddings=true AND authorized_embedding=true; separate embed command otherwise. With overlap_enrichment=true, native processes and one document enrichment coordinator run concurrently, using flushed capture receipts as a disk backlog. Existing concurrent OCR/vision requests stay bounded; reserve reader processes from the native worker budget (default 5 native max + 1 reader). CPU/memory admission protection applies to capture and enrichment, but active work is not preempted. No measured fleet SLA. English retrieval requires authorized_translation=true. GCP translates native/OCR/model text to English; original extracted text goes into native_text (NULL for model-only observations), English into chunk_text, vectors and SmartHub search use chunk_text. No mixed native metadata in English text, no duplicate translation JSON. Provider failure prevents publication; no native-language fallback. Language identifiers, scientific names and quoted terms may remain. English target is not a certified translation quality score. Scanned table cell reconstruction remains unresolved; real OCR/LLM
 accuracy and automatic visual coverage still need qualification. Native-only
 capture remains available via capture --apply. Native-only materialize is disabled for the English contract. Existing legacy output tables are not migrated: configure a new chunk_table if needed. The run fails or marks
 incomplete if selected enrichment fails, and does not silently publish a
@@ -71,7 +68,7 @@ Use [systemd limits](docs/PRODUCTION_REFERENCE.md#4-capture-now-then-ramp-up)
 for hard OS-level protection; replace capture with run if authorized.
 No Docker. Only one coordinator per server. The application guard starts
 four workers, max six, stops new admission under memory pressure.
-The run command and directory mode are newly committed; acceptance pending.
+English-contract release 617ad4f passed all public and regression gates. New overlap and independent embedding switch require latest CI acceptance. No Docker.
 
 [Reference](docs/PRODUCTION_REFERENCE.md) · [Canonical state](docs/PIPELINE_PROJECT_STATE.md) ·
 [SmartHub and metadata](docs/LINUX_FLEET_SMARTHUB.md) · [Legacy README](README_LEGACY.md)

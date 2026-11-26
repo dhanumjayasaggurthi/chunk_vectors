@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import concurrent.futures
+import contextlib
 import copy
 import json
 import logging
@@ -10,6 +12,8 @@ import os
 import re
 import shutil
 import sys
+import threading
+import time
 import uuid
 from datetime import datetime,timezone
 from pathlib import Path
@@ -133,7 +137,11 @@ def resolve_configuration(path="config.ini"):
             "max_chars":dep.getint("translation_max_chars",5000),
             "timeout_seconds":dep.getint("translation_timeout_seconds",60),
             "attempts":dep.getint("translation_attempts",3)})
-    return {"translation":translation,"visual_llm":vision,"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
+    overlap=dep.getboolean("overlap_enrichment",fallback=False)
+    enable_embeddings=cfg["PIPELINE"].getboolean("enable_embeddings",fallback=False)
+    if enable_embeddings and not dep.getboolean("authorized_embedding"):
+        raise PermissionError("Embedding switch requires explicit provider authorization")
+    return {"overlap_enrichment":overlap,"enable_embeddings":enable_embeddings,"translation":translation,"visual_llm":vision,"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
             "evidence":evidence,"source":source,"receipts":receipts,"inventory":inventory,
             "limits":limits,"relations":relations,
             "authorized_ocr":dep.getboolean("authorized_ocr"),
@@ -285,7 +293,7 @@ def preflight(d,*,before_init=False):
     return report
 
 
-def finish_captured(d,receipt):
+def finish_captured(d,receipt,*,records=None,admit=None):
     """Process only the successful capture records from this invocation.
 
     Source-native text is never replaced by model content. OCR and model
@@ -303,13 +311,16 @@ def finish_captured(d,receipt):
         raise PermissionError("English retrieval requires authorized_translation=true")
     translator=GoogleTranslation(d["gcp_key"],d["translation"])
     counts=Counter()
-    with Path(receipt).open(encoding="utf-8") as stream:
+    with (Path(receipt).open(encoding="utf-8") if records is None else contextlib.nullcontext(records)) as stream:
         for line in stream:
             row=json.loads(line)
             if row["status"]!="LOCAL_CAPTURE_VERIFIED":
                 continue
             doc=row["doc_id"]
             try:
+                if admit is not None and not admit():
+                    counts["NOT_ADMITTED_RESOURCE"]+=1
+                    continue
                 if row["format"]=="docx":
                     result=run_docx(d["evidence"],row["capture_id"],q,config=d["docx"],
                                     doc_id=doc,file_name=row["file_name"],allow_logical_locators=True,translator=translator)
@@ -347,6 +358,106 @@ def finish_captured(d,receipt):
                 logging.getLogger(__name__).error("Post-capture document %s failed: %s",doc,type(exc).__name__)
                 counts["FAILED"]+=1
     return dict(counts)
+
+
+def _overlap_batch(d):
+    """Reserve reader processes from the existing native CPU process budget."""
+    cfg=copy.deepcopy(d["batch"])
+    readers=d["capture"]["deferred_ocr"]["retained_evidence"]["read_workers"]
+    if d["visual_llm"]:
+        readers=max(readers,d["visual_llm"][1]["read_workers"])
+    if cfg["workers"]<=readers:
+        raise ValueError("Overlap requires worker budget greater than OCR/LLM reader processes")
+    cfg["workers"]-=readers
+    if cfg.get("resource_guard"):
+        cfg["resource_guard"]["initial_workers"]=min(cfg["workers"],cfg["resource_guard"]["initial_workers"])
+    return cfg,readers
+
+
+def _live_receipts(path,done):
+    """Read complete, flushed JSONL records; disk is the bounded-memory backlog."""
+    path=Path(path)
+    while not path.exists():
+        if done.wait(.1):
+            if not path.exists():
+                return
+            break
+    with path.open("rb") as stream:
+        while True:
+            start=stream.tell()
+            line=stream.readline()
+            if line.endswith(b"\n"):
+                yield line
+                continue
+            if done.is_set():
+                # Writer has closed/fsynced. Retry once to cover the race
+                # between the previous read and producer completion.
+                stream.seek(start)
+                line=stream.readline()
+                if line.endswith(b"\n"):
+                    yield line
+                    continue
+                if line:
+                    raise ValueError("Incomplete capture receipt record")
+                return
+            stream.seek(start)
+            done.wait(.1)
+
+
+def _enrichment_admission(config):
+    """One enrichment document at a time; memory pause before new work."""
+    if not config.get("resource_guard"):
+        return None
+    from resource_guard import ResourceGuard
+    values={**config["resource_guard"],"initial_workers":1}
+    guard=ResourceGuard(values,1)
+    abandoned=False
+    def admit():
+        nonlocal abandoned
+        if abandoned:
+            return False
+        start=time.monotonic()
+        while guard.poll()==0:
+            if time.monotonic()-start>=values["max_pause_seconds"]:
+                abandoned=True
+                return False
+            time.sleep(values["poll_seconds"])
+        return True
+    return admit
+
+
+def run_capture_and_finish(d,receipt,*,overlap=False,finish=False):
+    """Existing capture and provider workers, with optional one-consumer overlap.
+
+    No in-memory document queue or additional database table. Native capture
+    keeps priority; provider errors do not stop capturing other documents.
+    Embeddings run only after both stages finish.
+    """
+    from retention_batch import run_batch,run_root
+    cfg,readers=_overlap_batch(d) if overlap and finish else (d["batch"],0)
+    streaming=bool(overlap and finish)
+    def capture():
+        kw=dict(docx_config=d["docx"],config=cfg,stream_receipts=streaming)
+        if d["inventory"]:
+            return run_batch(d["inventory"],receipt,d["capture"],**kw)
+        return run_root(d["source"],receipt,d["capture"],**kw)
+    if not streaming:
+        result=capture()
+        if finish:
+            result["retrieval"]=finish_captured(d,receipt)
+        return result
+    done=threading.Event()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future=pool.submit(finish_captured,d,receipt,records=_live_receipts(receipt,done),
+                           admit=_enrichment_admission(cfg))
+        try:
+            result=capture()
+        finally:
+            done.set()
+        result["retrieval"]=future.result()
+    result["overlap"]={"native_worker_max":cfg["workers"],"reserved_reader_processes":readers,
+                       "enrichment_documents_in_flight":1}
+    return result
 
 
 def main(argv=None):
@@ -405,18 +516,15 @@ def main(argv=None):
                 parser.error("run requires authorized_ocr=true; use capture for native-only capture")
             if not _database(d)["ocr_table_exists"]:
                 parser.error("Run init --apply once with authorized_ocr=true")
-        from retention_batch import run_batch,run_root
         run_id=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")+"-"+uuid.uuid4().hex
         receipt=d["receipts"]/(run_id+".jsonl")
-        result=(run_batch(d["inventory"],receipt,p,docx_config=d["docx"],config=d["batch"]) if d["inventory"]
-                else run_root(d["source"],receipt,p,docx_config=d["docx"],config=d["batch"]))
+        result=run_capture_and_finish(d,receipt,overlap=d["overlap_enrichment"],finish=cmd=="run")
         result["receipt"]=str(receipt)
         code=int(not result["all_local_capture_verified"])
         if cmd=="run":
-            finished=finish_captured(d,receipt)
-            result["retrieval"]=finished
-            code=int(bool(code or finished.get("FAILED") or finished.get("BUSY")))
-            if d["authorized_embedding"] and not code:
+            finished=result["retrieval"]
+            code=int(bool(code or finished.get("FAILED") or finished.get("BUSY") or finished.get("NOT_ADMITTED_RESOURCE")))
+            if d["enable_embeddings"] and not code:
                 from existing_embeddings import embed_existing
                 ep=copy.deepcopy(q)
                 ep["embedding"]["enabled"]=True
@@ -430,7 +538,7 @@ def main(argv=None):
         if not receipt.is_relative_to(d["receipts"].resolve(strict=True)):
             parser.error("Receipt must be in approved receipt directory")
         result=finish_captured(d,receipt)
-        code=int(bool(result.get("FAILED") or result.get("BUSY")))
+        code=int(bool(result.get("FAILED") or result.get("BUSY") or result.get("NOT_ADMITTED_RESOURCE")))
     elif cmd=="materialize":
         if q["output"].get("text_contract")=="english_v1":
             parser.error("Use run or finish for English-only retrieval; native-only publication is disabled")

@@ -1,6 +1,6 @@
 {
   "workers": 8,
-  "read_workers": 2,
+  "read_workers": 1,
   "max_pages": 100,
   "rpm": 60,
   "tpm": 600000,

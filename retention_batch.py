@@ -167,7 +167,7 @@ def capture_one(row,profile,n,docx_config,cfg):
                         elapsed_seconds=round(time.monotonic()-timer,3))
 
 
-def run_batch(inventory,receipt_path,profile,*,docx_config,config):
+def run_batch(inventory,receipt_path,profile,*,docx_config,config,stream_receipts=False):
     """Execute one immutable sorted shard; bounded in-flight documents.
 
     The caller must supply disjoint shards with one owner per source path.
@@ -219,6 +219,8 @@ def run_batch(inventory,receipt_path,profile,*,docx_config,config):
                 output.write(json.dumps(record,ensure_ascii=True,allow_nan=False,sort_keys=True)+"\n")
                 written+=1
                 counters[record["status"]]+=1
+                if stream_receipts:
+                    output.flush()
                 if written%cfg["receipt_flush_every"]==0:
                     output.flush()
                     os.fsync(output.fileno())
@@ -317,7 +319,7 @@ def iter_source_files(root,limit):
                 return
 
 
-def run_root(root,receipt_path,profile,*,docx_config,config):
+def run_root(root,receipt_path,profile,*,docx_config,config,stream_receipts=False):
     """Internal temporary path spool, no operator-supplied inventory."""
     cfg=settings(config)
     if not cfg["authorized_receipt_storage"]:
@@ -332,7 +334,7 @@ def run_root(root,receipt_path,profile,*,docx_config,config):
                 if path.suffix.lower()==".docx" and not cfg["authorized_docx_derivatives"]:
                     raise PermissionError("Explicit DOCX derivative storage approval required")
                 out.write(json.dumps({"path":str(path)},ensure_ascii=True)+"\n")
-        return run_batch(spool,receipt_path,profile,docx_config=docx_config,config=cfg)
+        return run_batch(spool,receipt_path,profile,docx_config=docx_config,config=cfg,stream_receipts=stream_receipts)
     finally:
         if spool is not None:
             spool.unlink(missing_ok=True)
