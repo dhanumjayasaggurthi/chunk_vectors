@@ -135,7 +135,7 @@ def extraction_fingerprint(profile) -> str:
     if cfg["native_table_prepass"]:
         semantic["native_table_prepass_version"]=1
     if cfg["native_open_grid_body"]:
-        semantic["native_open_grid_body_version"]=1
+        semantic["native_open_grid_body_version"]=2
     # Deferred visual preservation changes page content; version it independently.
     if cfg["empty_table_policy"]!="fail":
         semantic["empty_table_policy"]=cfg["empty_table_policy"]

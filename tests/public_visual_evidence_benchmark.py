@@ -55,11 +55,11 @@ def download_pdf(source, url, config, expected):
 
 def check_table_continuation(source, source_hash, page_count, expected):
     from configurable_chunking import chunk_with_profile
-    from page_stage import _tables
     from pdf_processor import PDFProcessor
     from processing_profile import load_profile
     from semantic_chunking_v2 import _markdown_row
     from table_continuity import iter_logical_table_rows
+    from table_extractor import inject_table_text_into_elements
 
     pages = expected["pages"]
     included = set(range(max(1, pages[0] - 1), min(page_count, pages[-1] + 1) + 1))
@@ -69,7 +69,10 @@ def check_table_continuation(source, source_hash, page_count, expected):
                           preserve_uninterpreted_visuals=True, empty_table_policy="preserve_defer")
     (window,) = parser.iter_page_batches(batch_pages=16, completed_pages=skip)
     assert {page.page_number for page in window.pages if not page.error} == included
-    assert not _tables(window.pages, str(source), {"table_summaries_enabled": False})
+    for page in window.pages:
+        if page.has_tables:
+            assert page.staged_table_results
+            inject_table_text_into_elements(page.elements, page.staged_table_results, strict=True)
     tables = [element for page in window.pages for element in page.elements if element.source_table]
     original_cells = [_json_bytes(element.source_table) for element in tables]
     profile_path = Path(__file__).resolve().parents[1] / "profiles/regulatory_semantic_v2_example.yml"

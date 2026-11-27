@@ -8,6 +8,23 @@ from open_grid_recovery import recover_open_grid,validate_physical_body
 
 
 class OpenGridBodyTests(unittest.TestCase):
+    def test_restore_compact_words_only_when_cell_characters_match(self):
+        from open_grid_recovery import _restore_native_word_spacing
+
+        cells = [["Livehorses", "6.8%1/", "Existing space"], ["French:étiquette", "20%", ""]]
+        boundaries = [0, 100, 200, 300]
+        lines = [0, 20, 40]
+        words = [
+            (0, 2, 18, 10, "Live"), (20, 2, 55, 10, "horses"),
+            (102, 2, 123, 10, "6.8%"), (124, 2, 132, 10, "1/"),
+            (202, 2, 225, 10, "Existing"), (226, 2, 245, 10, "space"),
+            (0, 22, 25, 30, "French:"), (28, 22, 69, 30, "étiquette"),
+            (102, 22, 124, 30, "2"), (125, 22, 150, 30, "1%"),
+        ]
+        self.assertEqual(_restore_native_word_spacing(cells, boundaries, lines, words),
+                         [["Live horses", "6.8% 1/", "Existing space"], ["French: étiquette", "20%", ""]])
+        self.assertEqual(cells[0], ["Livehorses", "6.8%1/", "Existing space"])
+
     def test_physical_grid_and_strict_native_output_preservation(self):
         import fitz
         import pdfplumber

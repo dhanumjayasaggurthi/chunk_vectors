@@ -13,6 +13,7 @@ import math
 from statistics import median
 
 FORMAT = "open_grid_physical_lines_v1"
+SPACED_FORMAT = "open_grid_physical_lines_v2"
 
 
 def _canonical(data):
@@ -27,7 +28,8 @@ def _nonspace(text):
 def validate_physical_body(data, *, max_json_bytes=8_000_000, header_bbox=None):
     keys={"format", "logical_rows_verified", "header_bbox", "column_boundaries",
           "line_boundaries", "physical_cells", "nonspace_characters", "sha256"}
-    if not isinstance(data,dict) or set(data)!=keys or data["format"]!=FORMAT or data["logical_rows_verified"] is not False:
+    if (not isinstance(data,dict) or set(data)!=keys or data["format"] not in (FORMAT, SPACED_FORMAT)
+            or data["logical_rows_verified"] is not False):
         raise ValueError("Invalid physical table body format")
     xs,ys,box,rows=(data[k] for k in ("column_boundaries","line_boundaries","header_bbox","physical_cells"))
     def finite(values):
@@ -53,7 +55,27 @@ def validate_physical_body(data, *, max_json_bytes=8_000_000, header_bbox=None):
     return data
 
 
-def recover_open_grid(page, tables, *, max_json_bytes=8_000_000):
+def _restore_native_word_spacing(matrix, xs, ys, native_words):
+    """Restore gaps in compact cells only when the native glyph sequence agrees."""
+    words_by_cell = {}
+    for x0, y0, x1, y1, text, *_ in native_words:
+        column = bisect_right(xs, (x0+x1)/2)-1
+        line = bisect_right(ys, (y0+y1)/2)-1
+        if (0 <= line < len(matrix) and 0 <= column < len(xs)-1
+                and xs[column]-.5 <= x0 <= x1 <= xs[column+1]+.5):
+            words_by_cell.setdefault((line,column), []).append((x0,text))
+    spaced = [row.copy() for row in matrix]
+    for (line,column), words in words_by_cell.items():
+        original = matrix[line][column]
+        if len(words) < 2 or any(c.isspace() for c in original):
+            continue
+        candidate = " ".join(text for _, text in sorted(words))
+        if "".join(candidate.split()) == original:
+            spaced[line][column] = candidate
+    return spaced
+
+
+def recover_open_grid(page, tables, *, max_json_bytes=8_000_000, native_page=None):
     """Return (status, body). Only accept one shallow, wide detected header.
 
     A full set of continuous source vertical rules is required. Horizontal
@@ -137,6 +159,22 @@ def recover_open_grid(page, tables, *, max_json_bytes=8_000_000):
     body={"format":FORMAT,"logical_rows_verified":False,"header_bbox":[x0,y0,x1,top],
           "column_boundaries":xs,"line_boundaries":ys,"physical_cells":matrix,
           "nonspace_characters":sum(sum(not c.isspace() for c in cell) for row in matrix for cell in row)}
+    native_words = ()
+    if native_page is not None:
+        try:
+            native_words = native_page.get_text("words")
+        except (RuntimeError, ValueError):
+            # The verified pdfplumber payload is still usable if the
+            # independent word view is unavailable.
+            pass
+    if native_words:
+        spaced = _restore_native_word_spacing(matrix, xs, ys, native_words)
+        if spaced != matrix:
+            candidate = {**body, "format": SPACED_FORMAT, "physical_cells": spaced}
+            candidate["sha256"] = hashlib.sha256(_canonical(candidate)).hexdigest()
+            if len(_canonical(candidate)) <= max_json_bytes:
+                validate_physical_body(candidate, max_json_bytes=max_json_bytes)
+                return "PHYSICAL_LINES_VERIFIED_ONLY", candidate
     body['sha256']=hashlib.sha256(_canonical(body)).hexdigest()
     if len(_canonical(body))>max_json_bytes:
         return "BODY_BYTE_BUDGET_EXCEEDED",None

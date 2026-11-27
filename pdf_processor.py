@@ -1100,7 +1100,8 @@ class PDFProcessor:
                 if len(detected)==len(staged_table_results)==1 and not page.rotation and page.cropbox==page.mediabox:
                     from open_grid_recovery import recover_open_grid
                     status,physical_body=recover_open_grid(
-                        plumb_page,detected,max_json_bytes=self.max_table_source_json_bytes)
+                        plumb_page,detected,max_json_bytes=self.max_table_source_json_bytes,
+                        native_page=page)
                 self.open_grid_stats[status]=self.open_grid_stats.get(status,0)+1
             table_bboxes = [BBox(*result.bbox) for result in staged_table_results]
         else:

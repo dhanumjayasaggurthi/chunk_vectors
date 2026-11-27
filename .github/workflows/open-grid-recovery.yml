@@ -54,6 +54,7 @@ jobs:
           assert result['counts'] == {'BODY_IN_ROW': 2084, 'NO_BODY_IN_ROW': 2412}
           assert result['physical_lines'] == 81941
           assert result['nonspace_characters'] == 3584452
+          assert 0 < result['bodies_with_native_spacing'] <= 2084
           assert result['logical_rows_verified'] is False
           PY
       - uses: actions/upload-artifact@v4
