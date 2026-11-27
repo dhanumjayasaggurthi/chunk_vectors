@@ -422,6 +422,13 @@ class DeferredOcrPostgresTests(unittest.TestCase):
         parts,pages=ocr.retrieval_results(self.p,"d"*64,"a"*64,2)
         self.assertEqual([x["text"] for x in parts],["20 mg"])
         self.assertEqual(pages,[1])
+        plan=ocr.visual_plan(self.p,doc_id="d"*64)
+        self.assertEqual(plan["pages"],1)
+        self.assertEqual(plan["documents"][0]["vector_region_pages"],1)
+        self.assertFalse(plan["writes"])
+        self.assertTrue(ocr.visual_page_selected(self.p,"d"*64,"a"*64,1))
+        self.assertFalse(ocr.visual_page_selected(self.p,"d"*64,"a"*64,2))
+        self.assertFalse(ocr.visual_page_selected(self.p,"d"*64,"0"*64,1))
         with self.assertRaisesRegex(ValueError,"coverage"):
             ocr.retrieval_results(self.p,"d"*64,"a"*64,3)
 

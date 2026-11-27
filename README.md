@@ -120,6 +120,21 @@ requeued jobs. Fix other failure causes before retrying. Do not reset
 successful jobs or retry terminal failures indiscriminately. Logs are named after the configured chunk table:
 `logs/<chunk_table>.log`, JSONL and per-process worker files.
 
+For visual model diagnostics, use the existing selected-page inventory and
+a single-page probe. Neither command re-extracts PDFs or publishes chunks.
+
+~~~bash
+python production.py visual-plan
+python production.py visual-probe --doc-id FULL_64_CHARACTER_ID
+python production.py visual-probe --doc-id FULL_64_CHARACTER_ID --apply
+~~~
+
+The first two are read-only. The third requires approved Azure configuration,
+makes at most one provider attempt and saves a reusable normal visual cache
+result if validated. Add --page N to choose a specific selected physical page.
+A successful probe is not semantic certification. Do not run full finish
+until its failure reason and release gates are resolved.
+
 Linux background execution (only on a qualified release):
 
 ~~~bash

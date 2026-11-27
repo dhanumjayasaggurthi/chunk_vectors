@@ -571,7 +571,7 @@ def run_capture_and_finish(d,receipt,*,overlap=False,finish=False):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",choices=("plan","status","preflight","init","run","capture","materialize","docx-preview","docx-publish",
-                                           "finish","enrich-preview","enrich","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status","ocr-recover-crops",
+                                           "finish","enrich-preview","enrich","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status","ocr-recover-crops","visual-plan","visual-probe",
                                            "embed-preview","embed"))
     parser.add_argument("--before-init",action="store_true")
     parser.add_argument("--apply",action="store_true")
@@ -579,11 +579,14 @@ def main(argv=None):
     parser.add_argument("--all-docs",action="store_true")
     parser.add_argument("--receipt")
     parser.add_argument("--capture-id")
+    parser.add_argument("--page",type=int)
     parser.add_argument("--file-name")
     parser.add_argument("--allow-logical-locators",action="store_true")
     parser.add_argument("--retry-failed",action="store_true")
     parser.add_argument("--rescan-source",action="store_true")
     args=parser.parse_args(argv)
+    if args.page is not None and (args.command!="visual-probe" or args.page<1):
+        parser.error("--page requires visual-probe and a positive physical page number")
     if args.before_init and args.command!="preflight":
         parser.error("--before-init applies only to preflight")
     if (args.retry_failed or args.rescan_source) and args.command!="embed":
@@ -659,6 +662,31 @@ def main(argv=None):
         else:
             result=finish_captured(d,receipt)
         code=int(bool(result.get("FAILED") or result.get("BUSY") or result.get("NOT_ADMITTED_RESOURCE")))
+    elif cmd=="visual-plan":
+        import deferred_ocr as ocr
+        if args.apply:
+            parser.error("visual-plan is read-only")
+        result=ocr.visual_plan(p,doc_id=args.doc_id)
+    elif cmd=="visual-probe":
+        import deferred_ocr as ocr
+        from visual_evidence import capture_identity,_capture_id
+        from visual_enrichment import probe_page
+        if not args.doc_id or args.all_docs or not d["visual_llm"]:
+            parser.error("visual-probe requires one full --doc-id and approved visual configuration")
+        selected=ocr.visual_plan(p,doc_id=args.doc_id)["documents"]
+        if len(selected)!=1:
+            parser.error("No current OCR-selected visual page for this document")
+        item=selected[0]
+        page=args.page if args.page is not None else item["first_page"]
+        if not ocr.visual_page_selected(p,args.doc_id,item["source_hash"],page):
+            parser.error("Page is not selected by the current visual policy")
+        retained=p["extraction"]["retained_evidence"]
+        cid=_capture_id(capture_identity(item["source_hash"],retained["visual_settings"],
+                            retained["policy_id"],retained["renderer"]))
+        model,execution=d["visual_llm"]
+        result=probe_page(d["evidence"],cid,page,visual_settings=retained["visual_settings"],
+                          config=model,execution=execution,apply=args.apply)
+        code=int(result["status"]=="FAILED")
     elif cmd in ("enrich-preview","enrich"):
         if not args.doc_id or args.all_docs:
             parser.error("Optional enrichment requires one full --doc-id")

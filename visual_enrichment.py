@@ -453,6 +453,43 @@ def safe_failure_code(exc):
     return known.get(str(exc), type(exc).__name__)
 
 
+def probe_page(root,capture_id,number,*,visual_settings,config,execution,apply=False):
+    """One verified page, at most one provider attempt, reusable normal cache."""
+    started=time.monotonic()
+    report={"source_page":number,"cloud_attempts":0,"writes":False,
+            "source_facts_verified":False}
+    try:
+        cfg_model=settings(config)
+        cfg=execution_settings(execution,cfg_model)
+        prepared=prepare_page(root,capture_id,number,visual_settings=visual_settings,config=cfg_model)
+        report.update(request_id=prepared["request_id"],image_bytes=prepared["image_bytes"],
+                      figure_candidates=len(prepared["context"]["candidates"]))
+        path=_cache_path(root,prepared)
+        if path.exists():
+            result=_read_cached(path,prepared,cfg_model)
+            report.update(status="SKIPPED_VERIFIED",observations=len(result["result"]["observations"]),
+                          limitations=len(result["result"]["limitations"]))
+        elif not apply:
+            report["status"]="READY"
+        else:
+            if not cfg_model["authorized_provider"] or not cfg["authorized_result_storage"]:
+                raise PermissionError("Explicit visual authorization required")
+            with _local_run_lock(root):
+                # Another coordinator may have saved the exact result.
+                if not path.exists():
+                    report["cloud_attempts"]=1
+                outcome=_execute_page(root,prepared,cfg_model,{**cfg,"max_attempts":1},
+                                      LocalQuota(cfg),[threading.Lock()])
+                result=outcome["verified_result"]["result"]
+                report.update(status=outcome["status"],cloud_attempts=outcome["provider_attempts"],
+                              writes=outcome["status"]=="COMPLETED_UNVERIFIED",
+                              observations=len(result["observations"]),limitations=len(result["limitations"]))
+    except Exception as exc:
+        report.update(status="FAILED",error_code=safe_failure_code(exc))
+    report["elapsed_seconds"]=round(time.monotonic()-started,3)
+    return report
+
+
 def run_pages(root,pages,*,visual_settings,config,execution,include_result=False,quota=None):
     """Bounded page enrichment for caller-selected (capture_id, physical_page).
 

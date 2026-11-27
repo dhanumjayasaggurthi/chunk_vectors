@@ -76,6 +76,46 @@ class VisualEnrichmentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"checksum"):
                 prepare_page(root/"retained",cid,1,visual_settings=vs,config=cfg)
 
+    def test_single_page_probe_is_read_only_then_cached_and_bounded(self):
+        import fitz
+        import requests
+        from visual_enrichment import probe_page
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            source=root/"source.pdf"
+            with fitz.open() as doc:
+                doc.new_page(width=100,height=100).draw_rect((10,10,80,80))
+                doc.save(source)
+            vs={"dpi":150}
+            retained=root/"retained"
+            cap=capture(source,retained,1,1,settings=vs,policy_id="test",
+                        authorized_page_derivatives=True)
+            source.unlink()
+            cfg={**configuration(),"authorized_provider":True}
+            execution=json.loads((Path(__file__).resolve().parents[1]/"profiles"/
+                "visual_enrichment_execution_example.json").read_text(encoding="utf-8"))
+            execution.update(authorized_result_storage=True,rpm=60000,tpm=10000000)
+            kw=dict(visual_settings=vs,config=cfg,execution=execution)
+            raw=json.dumps({"observations":[{"target":"page","observation":"A rectangle is visible",
+                        "caption_quote":"","uncertainty":"limited"}],"limitations":[]})
+            response=requests.Response()
+            response.status_code=429
+            with patch("azure_client.call_visual_structured",side_effect=[requests.HTTPError(response=response),(raw,{})]) as api:
+                preview=probe_page(retained,cap["capture_id"],1,**kw)
+                self.assertEqual(preview["status"],"READY")
+                self.assertEqual(preview["cloud_attempts"],0)
+                api.assert_not_called()
+                fail=probe_page(retained,cap["capture_id"],1,apply=True,**kw)
+                self.assertEqual(fail["error_code"],"HTTP_429")
+                self.assertEqual(api.call_count,1)
+                good=probe_page(retained,cap["capture_id"],1,apply=True,**kw)
+                self.assertEqual(good["status"],"COMPLETED_UNVERIFIED")
+                self.assertEqual(api.call_count,2)
+                replay=probe_page(retained,cap["capture_id"],1,apply=True,**kw)
+                self.assertEqual(replay["status"],"SKIPPED_VERIFIED")
+                self.assertEqual(api.call_count,2)
+                self.assertFalse(replay["writes"])
+
     def test_bounded_run_reuse_retry_and_corrupt_cache(self):
         import fitz
         import requests

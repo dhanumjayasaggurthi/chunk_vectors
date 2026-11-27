@@ -1012,6 +1012,70 @@ def retrieval_results(profile,doc_id,source_hash,expected_candidates):
     return parts,sorted(visual)
 
 
+def visual_plan(profile,*,doc_id=None):
+    """Current-version visual workload, not a claim of semantic coverage.
+
+    Classify pages by why the existing policy escalates them. A chart with
+    OCR text still needs interpretation; no-text regions are not discarded.
+    """
+    from db import get_conn
+    if doc_id is not None and (not isinstance(doc_id,str) or len(doc_id)!=64
+                              or any(c not in "0123456789abcdef" for c in doc_id)):
+        raise ValueError("Full document ID required")
+    n=tables(profile)
+    fingerprint=ocr_fingerprint(settings(profile))
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""WITH per_page AS (
+                SELECT j.doc_id,j.source_hash,j.page_number,COUNT(*) AS assets,
+                       BOOL_OR(j.kind='vector_region') AS vector,
+                       BOOL_OR(j.status='VISUAL_PENDING') AS pending,
+                       BOOL_OR(j.kind='chart') AS chart
+                FROM {n['ocr']} j JOIN {n['docs']} d ON d.doc_id=j.doc_id
+                    AND d.source_hash=j.source_hash AND d.extraction_hash=j.extraction_hash
+                WHERE j.ocr_hash=%s AND (%s IS NULL OR j.doc_id=%s)
+                  AND (j.kind IN ('chart','vector_region') OR j.status='VISUAL_PENDING')
+                  AND j.status IN ('TEXT_READY','VISUAL_PENDING')
+                GROUP BY j.doc_id,j.source_hash,j.page_number
+            ) SELECT doc_id,source_hash,COUNT(*),SUM(assets),MIN(page_number),
+                     COUNT(*) FILTER (WHERE vector),
+                     COUNT(*) FILTER (WHERE pending AND NOT vector),
+                     COUNT(*) FILTER (WHERE chart AND NOT pending AND NOT vector)
+              FROM per_page GROUP BY doc_id,source_hash ORDER BY doc_id""",
+              (fingerprint,doc_id,doc_id))
+            rows=cur.fetchall()
+        documents=[{"doc_id":r[0],"source_hash":r[1],"pages":int(r[2]),"assets":int(r[3]),
+                    "first_page":r[4],"vector_region_pages":int(r[5]),
+                    "other_visual_pending_pages":int(r[6]),"chart_text_ready_only_pages":int(r[7])}
+                   for r in rows]
+        return {"documents":documents,"pages":sum(r["pages"] for r in documents),
+                "writes":False,"cloud_calls":False,"coverage_verified":False}
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def visual_page_selected(profile,doc_id,source_hash,page):
+    """The probe may only send an asset page selected by the existing policy."""
+    from db import get_conn
+    n=tables(profile)
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT EXISTS (
+                SELECT 1 FROM {n['ocr']} j JOIN {n['docs']} d ON d.doc_id=j.doc_id
+                  AND d.source_hash=j.source_hash AND d.extraction_hash=j.extraction_hash
+                WHERE j.doc_id=%s AND j.source_hash=%s AND j.page_number=%s AND j.ocr_hash=%s
+                  AND j.status IN ('TEXT_READY','VISUAL_PENDING')
+                  AND (j.kind IN ('chart','vector_region') OR j.status='VISUAL_PENDING'))""",
+                (doc_id,source_hash,page,ocr_fingerprint(settings(profile))))
+            return cur.fetchone()[0]
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 def status(profile,*,doc_id=None):
     from db import get_conn
     n=tables(profile)
