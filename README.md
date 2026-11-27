@@ -164,6 +164,21 @@ tail -f ingestlogs.log
 Run one coordinator per server. See [production reference](docs/PRODUCTION_REFERENCE.md)
 for OS resource protection and advanced diagnostics.
 
+## Real-corpus qualification (public test PDFs only)
+
+~~~bash
+python tests/online_public_regulatory_benchmark.py --documents 100 --min-pages 100 --max-pages 0 --workers 4 --process-pool --production-tables --batch-size 16 --report public_corpus_report.json
+~~~
+
+Full distinct originals, no cloud inference or PostgreSQL writes. The report
+separates download time from extraction wall time, successful native
+pages/sec, complete documents/min, latency percentiles, memory and table
+coverage indicators. It fails if fewer than 100 originals are available or
+any document is incomplete or has a page error. This is native-only,
+not a 10-day SLA or semantic-accuracy certification. The same command runs
+in the public benchmark GitHub workflow; source download failures are
+reported, not replaced by duplicate copies or sampled pages.
+
 ## Worker tuning
 
 Use independent limits by feature, not one worker count for everything.

@@ -14,6 +14,7 @@ import json
 import multiprocessing
 from functools import partial
 import logging
+import math
 import os
 import sys
 import tempfile
@@ -253,6 +254,30 @@ def gather_downloads(directory, *, target_documents, max_candidates,
                       "rejected_sample": rejected}
 
 
+def performance_summary(results, seconds, *, full_documents):
+    """Separate successful native pages from attempted pages and source quality."""
+    attempted=sum(r["extracted_pages"] for r in results)
+    page_errors=sum(len(r["errors"]) for r in results)
+    success_pages=attempted-page_errors
+    complete=[r for r in results if not r["errors"] and r["extracted_pages"]==r["source_pages"]]
+    durations=sorted(r["seconds"] for r in results)
+    def percentile(p):
+        return durations[max(0,math.ceil(p*len(durations))-1)] if durations else None
+    return {"native_extraction_wall_seconds":round(seconds,3),
+            "successful_native_pages":success_pages,
+            "fully_processed_error_free_documents":len(complete),
+            "native_success_pages_per_second":round(success_pages/seconds,3) if seconds>0 else None,
+            "complete_documents_per_minute":round(60*len(complete)/seconds,3) if seconds>0 and full_documents else None,
+            "document_latency_p50_seconds":percentile(.50),
+            "document_latency_p95_seconds":percentile(.95),
+            "document_latency_max_seconds":max(durations,default=None),
+            "max_source_pages":max((r["source_pages"] for r in results),default=0),
+            "structured_table_fragments":sum(r["structured_table_fragments"] for r in results),
+            "detected_source_table_rows":sum(r["source_table_rows"] for r in results),
+            "suspected_header_only_table_pages":sum(r["suspected_header_only_table_pages"] for r in results),
+            "native_semantic_accuracy_verified":False}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--documents", type=int, default=5)
@@ -272,6 +297,8 @@ def main():
                         help="Spawn isolated PDF worker processes instead of threads")
     parser.add_argument("--local-pdf", action="append", default=[],
                         help="Use original local approved public PDF(s), no download")
+    parser.add_argument("--production-tables", action="store_true",
+                        help="Use strict production native table preservation for online PDFs too")
     parser.add_argument("--large-hts", action="store_true",
                         help="Full original USITC tariff PDF, at least 4001 pages")
     parser.add_argument("--report", required=True)
@@ -326,7 +353,11 @@ def main():
             download_workers=args.download_workers, timeout=args.download_timeout,
             include_fda=args.include_fda, shard_index=args.shard_index,
             shard_count=args.shard_count)
-        LOG.info("Downloaded %d unique official PDFs", len(accepted))
+        if len({r["sha256"] for r in accepted})!=len(accepted):
+            parser.error("Benchmark inputs must have distinct source hashes")
+        LOG.info("Accepted %d unique original PDFs", len(accepted))
+        acquisition_seconds=time.monotonic()-started
+        extraction_started=time.monotonic()
         # Processes isolate PDF native caches/GIL for CPU-bound native parsing;
         # worker recycling caps long-lived allocator growth on giant corpora.
         if args.process_pool:
@@ -339,11 +370,14 @@ def main():
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=args.workers)
         with executor:
             work=partial(extract, max_pages=args.max_pages,
-                         batch_size=args.batch_size,production_tables=bool(args.large_hts or args.local_pdf))
+                         batch_size=args.batch_size,production_tables=bool(args.production_tables or args.large_hts or args.local_pdf))
             results=list(executor.map(work, accepted, chunksize=1))
         report = {
             "kind": "public_usitc_large_native_extraction" if args.large_hts else ("local_public_native_extraction" if args.local_pdf else "public_official_cfr_fda_native_extraction"),
             "tested_full_documents": args.max_pages == 0,
+            "production_table_validation":bool(args.production_tables or args.large_hts or args.local_pdf),
+            "source_acquisition_seconds":round(acquisition_seconds,3),
+            "performance":performance_summary(results,time.monotonic()-extraction_started,full_documents=args.max_pages==0),
             "requested_documents": args.documents,
             "shard_index": args.shard_index,
             "shard_count": args.shard_count,
@@ -382,8 +416,8 @@ def main():
              if k not in ("documents", "rejected_sources", "limitations")},
             sort_keys=True))
         if (len(accepted) < args.documents or report["page_errors"]
-                or (args.large_hts and (report["total_extracted_pages"]!=report["total_source_pages"]
-                    or any(item["suspected_header_only_table_pages"] for item in results)))):
+                or (args.max_pages==0 and report["performance"]["fully_processed_error_free_documents"]!=args.documents)
+                or (args.large_hts and any(item["suspected_header_only_table_pages"] for item in results))):
             raise SystemExit(2)
 
 

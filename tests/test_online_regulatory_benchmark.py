@@ -11,10 +11,26 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from online_public_regulatory_benchmark import candidates, extract
+from online_public_regulatory_benchmark import candidates, extract, performance_summary
 
 
 class TestRegulatoryBenchmark(unittest.TestCase):
+    def test_throughput_excludes_failed_pages_and_partial_documents(self):
+        base={"structured_table_fragments":1,"source_table_rows":4,
+              "suspected_header_only_table_pages":0}
+        results=[{**base,"extracted_pages":100,"source_pages":100,"errors":[],"seconds":10},
+                 {**base,"extracted_pages":80,"source_pages":80,"errors":[{"page":7}],"seconds":20},
+                 {**base,"extracted_pages":5,"source_pages":200,"errors":[],"seconds":3}]
+        summary=performance_summary(results,20,full_documents=True)
+        self.assertEqual(summary["successful_native_pages"],184)
+        self.assertEqual(summary["fully_processed_error_free_documents"],1)
+        self.assertEqual(summary["native_success_pages_per_second"],9.2)
+        self.assertEqual(summary["complete_documents_per_minute"],3)
+        self.assertEqual(summary["document_latency_p95_seconds"],20)
+        self.assertEqual(summary["max_source_pages"],200)
+        self.assertFalse(summary["native_semantic_accuracy_verified"])
+        self.assertIsNone(performance_summary(results,20,full_documents=False)["complete_documents_per_minute"])
+
     def test_corpus_shards_are_disjoint_and_complete(self):
         universe = list(candidates(include_fda=False))
         shards = [

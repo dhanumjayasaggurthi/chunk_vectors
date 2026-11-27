@@ -20,6 +20,10 @@ on:
         description: Required original document page count
         default: '100'
         required: false
+      workers:
+        description: Isolated native process workers
+        default: '4'
+        required: false
 
 jobs:
   benchmark:
@@ -45,13 +49,14 @@ jobs:
           [GCP]
           gcp_key_path=not-used.json
           EOF
-      - name: Download and test actual public regulatory PDFs
+      - name: Full 100-document native production-path benchmark
         env:
           REQUESTED_DOCUMENTS: ${{ github.event_name == 'workflow_dispatch' && inputs.documents || '100' }}
-          MAX_PAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_pages || '12' }}
+          MAX_PAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_pages || '0' }}
           MIN_PAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.min_pages || '100' }}
+          WORKERS: ${{ github.event_name == 'workflow_dispatch' && inputs.workers || '4' }}
         run: |
-          python tests/online_public_regulatory_benchmark.py --documents "$REQUESTED_DOCUMENTS" --min-pages "$MIN_PAGES" --max-pages "$MAX_PAGES" --workers 8 --download-workers 3 --batch-size 8 --include-fda --report public_corpus_report.json
+          python tests/online_public_regulatory_benchmark.py --documents "$REQUESTED_DOCUMENTS" --min-pages "$MIN_PAGES" --max-pages "$MAX_PAGES" --workers "$WORKERS" --download-workers 3 --batch-size 16 --process-pool --production-tables --include-fda --report public_corpus_report.json
       - name: Extract five complete multi-hundred-page regulatory volumes
         if: always()
         run: |
