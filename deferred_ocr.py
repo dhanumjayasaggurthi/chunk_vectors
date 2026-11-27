@@ -750,25 +750,33 @@ def run_group(profile,group,cfg,limiter,verifier,reader_pool=None):
                     profile,[j for j in group if j[0] not in finished],
                     cfg["lease_seconds"],
                 )
+                # Exact byte equality only, scoped to the current bounded
+                # batch. Same pixels/encoding => same OCR input coordinates.
+                # Each source occurrence still owns its original asset ID,
+                # page, bbox, lease and independent durable result.
+                by_image={}
+                for job,png in batch:
+                    by_image.setdefault(png,[]).append(job)
                 try:
                     responses=batch_document_text_detection(
-                        [png for _job,png in batch],
+                        list(by_image),
                         limiter=limiter,
                         max_retries=cfg["max_api_retries"],
                         timeout_seconds=cfg["timeout_seconds"],
                         min_confidence=cfg["confidence_min"],
                         bbox_detail=cfg["bbox_detail"],
                     )
-                    if len(responses)!=len(batch):
+                    if len(responses)!=len(by_image):
                         raise RuntimeError("OCR response count mismatch")
                 except Exception as exc:
                     for job,_ in batch:
                         fail(job,exc)
                     return
-                for (job,_),result in zip(batch,responses):
-                    # Persist each response under its own lease token.
-                    # Do NOT convert database failures to OCR failures.
-                    finalize(job,result)
+                for occurrences,result in zip(by_image.values(),responses):
+                    for job in occurrences:
+                        # Persist each occurrence under its own lease token.
+                        # Do NOT convert database failures to OCR failures.
+                        finalize(job,result)
 
             for job in group:
                 try:

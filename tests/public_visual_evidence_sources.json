@@ -45,6 +45,24 @@
       "https://www.govinfo.gov/content/pkg/FR-1950-04-06/pdf/FR-1950-04-06.pdf",
       1,
       0
+    ],
+    [
+      "reagan_udall_fda_access",
+      "https://reaganudall.org/sites/default/files/2024-07/Improving-Access-to-Publicly-Available-FDA-Information-Final.pdf",
+      1,
+      0
+    ],
+    [
+      "glass_durability_charts",
+      "https://www.spectrex.com/html_files2/pdf/ChemicalDurabilityOfGlassUsedInThePharmaceuticalIndustry1.pdf",
+      1,
+      0
+    ],
+    [
+      "fda_medwatch_3500a",
+      "https://www.fda.gov/media/69876/download",
+      1,
+      0
     ]
   ],
   "long_document_stress": {
@@ -123,5 +141,10 @@
       "max_retry_delay_seconds": 60,
       "authorized_result_storage": false
     }
-  }
+  },
+  "native_validation_sources": [
+    "reagan_udall_fda_access",
+    "glass_durability_charts",
+    "fda_medwatch_3500a"
+  ]
 }

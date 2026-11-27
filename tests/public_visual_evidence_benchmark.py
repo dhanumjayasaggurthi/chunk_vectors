@@ -45,6 +45,7 @@ def check(spec, config):
                             raise ValueError("Public fixture exceeds download limit")
                         stream.write(block)
         source_hash = digest_file(source)
+        native_validation = None
         with fitz.open(source) as pdf:
             count = pdf.page_count
             last = last or count
@@ -56,6 +57,20 @@ def check(spec, config):
                 image_pages += bool(page.get_image_info())
                 vector_pages += bool(page.get_drawings())
                 text_pages += bool(page.get_text().strip())
+        if name in config.get("native_validation_sources",[]):
+            # Exercise the same strict production native parser and table
+            # injection on every selected physical page of the actual PDF.
+            from diagnose_pdf_tables import validate_recovery
+            tick=time.monotonic()
+            checked=validate_recovery(str(source),list(range(first,last+1)))
+            native_validation={"pages":len(checked),
+                               "successful":sum(x["status"]=="SUCCESS" for x in checked),
+                               "structured_tables":sum(x["structured_tables"] for x in checked),
+                               "deferred_regions":sum(len(x["deferred_candidates"]) for x in checked),
+                               "elapsed_seconds":round(time.monotonic()-tick,3),
+                               "failures":[{"page":x["page"],"error":x["error"]}
+                                           for x in checked if x["status"]!="SUCCESS"]}
+            assert native_validation["successful"]==last-first+1, native_validation
         kw = dict(settings=config["visual_evidence"], policy_id="public-benchmark", authorized_page_derivatives=True)
         # Exercise the exact native-worker open-handle path on complete public
         # documents, comparing with independently scheduled parallel capture.
@@ -340,6 +355,7 @@ def check(spec, config):
         return {
             "source": name, "url": url, "source_sha256": source_hash,
             "source_pages": count, "tested_pages": n, "first": first, "last": last,
+            "strict_native_validation":native_validation,
             "pages_with_images": image_pages, "pages_with_paths": vector_pages,
             "pages_with_text": text_pages, "pixel_exact_pages": n,
             "retained_bytes": cold["image_bytes"], "cold_seconds": cold["elapsed_seconds"],

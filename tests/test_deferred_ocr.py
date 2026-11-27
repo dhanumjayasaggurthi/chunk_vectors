@@ -217,7 +217,8 @@ class DeferredOcrUnitTests(unittest.TestCase):
             jobs=[
                 (f"job-{i}",doc_id,source,version,1,
                  "image" if i==0 else "vector_region",
-                 [45,50,200,190],1,f"lease-{i}")
+                 [45,50,200,190] if i==0 else [45,100,200,190],
+                 1,f"lease-{i}")
                 for i in range(2)
             ]
             results=[
@@ -239,6 +240,32 @@ class DeferredOcrUnitTests(unittest.TestCase):
             self.assertEqual(api.call_count,1)
             self.assertEqual(completed[0][1]["text"],"Dose 20 mg")
             self.assertEqual(completed[1][1]["error_code"],"NO_OCR_TEXT")
+
+    def test_identical_inputs_share_ocr_not_source_identity(self):
+        from vision_ocr import OcrResult
+        with tempfile.TemporaryDirectory() as folder:
+            path=make_pdf(folder)
+            doc_id=hashlib.sha256(str(path).encode("utf-8")).hexdigest()
+            source=hashlib.sha256(path.read_bytes()).hexdigest()
+            jobs=[(f"job-{i}",doc_id,source,"e"*64,1,"image",
+                   [45,50,200,190] if i<2 else [45,100,200,190],
+                   1,f"lease-{i}") for i in range(3)]
+            completed=[]
+            with (patch("deferred_ocr._file_path",return_value=path),
+                  patch("deferred_ocr.renew_leases"),
+                  patch("deferred_ocr.complete",
+                        side_effect=lambda p,j,**kw:completed.append((j[0],j[8],kw))),
+                  patch("vision_ocr.batch_document_text_detection",
+                        return_value=[OcrResult("Dose 20 mg",.98,3,"en",True),
+                                      OcrResult("",0,0,"",True)]) as api):
+                result=ocr.run_group(profile(),jobs,ocr.settings(profile()),
+                                     None,ocr._SourceVerifier())
+                self.assertEqual(len(api.call_args.args[0]),2)
+            self.assertEqual(result,{"TEXT_READY":2,"VISUAL_PENDING":1})
+            self.assertEqual([(x[0],x[1]) for x in completed],
+                             [(f"job-{i}",f"lease-{i}") for i in range(3)])
+            self.assertEqual(completed[0][2]["text"],completed[1][2]["text"])
+            self.assertEqual(completed[2][2]["error_code"],"NO_OCR_TEXT")
 
     def test_retryable_cloud_failure_never_looks_like_success(self):
         with tempfile.TemporaryDirectory() as folder:
