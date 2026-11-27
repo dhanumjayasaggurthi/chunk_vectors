@@ -278,6 +278,32 @@ def performance_summary(results, seconds, *, full_documents):
             "native_semantic_accuracy_verified":False}
 
 
+def run_extraction(work,items,workers,*,process_pool,on_result):
+    """Recycle whole bounded pools, not individual workers with queued work.
+
+    CPython gh-115634 affects worker recycling in older Python versions.
+    Each wave has at most eight documents per configured worker on average;
+    closing the whole pool at the wave boundary releases its native caches.
+    """
+    from itertools import islice
+    iterator=iter(items)
+    wave_size=workers*8
+    results=[]
+    while wave:=list(islice(iterator,wave_size)):
+        if process_pool:
+            executor=concurrent.futures.ProcessPoolExecutor(
+                max_workers=workers,mp_context=multiprocessing.get_context("spawn"))
+        else:
+            executor=concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+        with executor:
+            futures={executor.submit(work,item):item for item in wave}
+            for future in concurrent.futures.as_completed(futures):
+                result=future.result()
+                results.append(result)
+                on_result(result,len(results))
+    return sorted(results,key=lambda row:row["name"])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--documents", type=int, default=5)
@@ -358,20 +384,18 @@ def main():
         LOG.info("Accepted %d unique original PDFs", len(accepted))
         acquisition_seconds=time.monotonic()-started
         extraction_started=time.monotonic()
-        # Processes isolate PDF native caches/GIL for CPU-bound native parsing;
-        # worker recycling caps long-lived allocator growth on giant corpora.
-        if args.process_pool:
-            executor = concurrent.futures.ProcessPoolExecutor(
-                max_workers=args.workers,
-                mp_context=multiprocessing.get_context("spawn"),
-                max_tasks_per_child=8,
-            )
-        else:
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=args.workers)
-        with executor:
-            work=partial(extract, max_pages=args.max_pages,
-                         batch_size=args.batch_size,production_tables=bool(args.production_tables or args.large_hts or args.local_pdf))
-            results=list(executor.map(work, accepted, chunksize=1))
+        work=partial(extract, max_pages=args.max_pages,
+                     batch_size=args.batch_size,production_tables=bool(args.production_tables or args.large_hts or args.local_pdf))
+        progress_path=Path(str(args.report)+".progress.jsonl")
+        with progress_path.open("w",encoding="utf-8") as progress:
+            def record(result,completed):
+                progress.write(json.dumps(result,ensure_ascii=False)+"\n")
+                progress.flush()
+                LOG.info("Document completed=%d/%d name=%s pages=%d/%d errors=%d seconds=%.3f",
+                         completed,len(accepted),result["name"],result["extracted_pages"],
+                         result["source_pages"],len(result["errors"]),result["seconds"])
+            results=run_extraction(work,accepted,args.workers,
+                                   process_pool=args.process_pool,on_result=record)
         report = {
             "kind": "public_usitc_large_native_extraction" if args.large_hts else ("local_public_native_extraction" if args.local_pdf else "public_official_cfr_fda_native_extraction"),
             "tested_full_documents": args.max_pages == 0,

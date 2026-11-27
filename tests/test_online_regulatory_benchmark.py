@@ -11,10 +11,28 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from online_public_regulatory_benchmark import candidates, extract, performance_summary
+from online_public_regulatory_benchmark import candidates, extract, performance_summary, run_extraction
 
 
 class TestRegulatoryBenchmark(unittest.TestCase):
+    def test_worker_waves_complete_more_than_recycling_limit(self):
+        from unittest.mock import patch
+        # Real isolated processes and >8 tasks per worker. Use a picklable
+        # builtin and lightweight dicts, independent of provider or PDF data.
+        items=[{"name":f"doc-{i:03d}","page_count":100+i} for i in range(21)]
+        observed=[]
+        real=concurrent.futures.ProcessPoolExecutor
+        with patch("online_public_regulatory_benchmark.concurrent.futures.ProcessPoolExecutor",
+                   wraps=real) as pools:
+            result=run_extraction(dict,items,2,process_pool=True,
+                                  on_result=lambda row,n:observed.append((row["name"],n)))
+            self.assertEqual(pools.call_count,2)
+            self.assertTrue(all("max_tasks_per_child" not in call.kwargs
+                                for call in pools.call_args_list))
+        self.assertEqual(result,items)
+        self.assertEqual({name for name,_ in observed},{row["name"] for row in items})
+        self.assertEqual([n for _,n in observed],list(range(1,22)))
+
     def test_throughput_excludes_failed_pages_and_partial_documents(self):
         base={"structured_table_fragments":1,"source_table_rows":4,
               "suspected_header_only_table_pages":0}
