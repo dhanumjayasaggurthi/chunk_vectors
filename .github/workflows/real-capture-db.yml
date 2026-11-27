@@ -4,6 +4,7 @@ on:
     branches: [feat/rich-document-multilingual-v2]
     paths:
       - tests/real_capture_db_benchmark.py
+      - tests/test_real_capture_db_benchmark.py
       - .github/workflows/real-capture-db.yml
   workflow_dispatch:
 jobs:
@@ -54,6 +55,8 @@ jobs:
           [GCP]
           gcp_key_path=not-used.json
           EOF
+      - name: Check benchmark inventory and source identity contract
+        run: python -m unittest discover -s tests -p test_real_capture_db_benchmark.py -v
       - name: Full 6353-page retained capture and native-only publication
         timeout-minutes: 90
         run: python tests/real_capture_db_benchmark.py --workers 4 --materialize-workers 2 --report real_capture_db.json

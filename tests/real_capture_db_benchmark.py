@@ -27,6 +27,40 @@ from native_prepass_qualification import acquire_manifest
 from online_public_regulatory_benchmark import candidates
 
 
+# Exact original bytes and page counts from successful run 46047298590.
+# A changed upstream file is a new corpus, not a comparable repeat.
+QUALIFIED_SOURCES = {
+    "CFR-2025-title7-vol13": (281, "385c692ed98be5756b1aa7ef84b692803c278e6e237507b56d64d0f1b4221281"),
+    "CFR-2025-title40-vol17": (382, "9aa74166eda7fc670dadcd7ec0e65963de98c374b8d435876931e3be4cc65ab0"),
+    "CFR-2025-title40-vol35": (533, "77eb8fcd20ddc94ddf9286f5631039020fa66ad0dbbbba7df5eb553bb15c21ad"),
+    "CFR-2025-title7-vol8": (686, "c32d4f4bf4c725355d991cd292703a99a8558ebb09e1127d34628d50d746f4c8"),
+    "CFR-2025-title7-vol11": (827, "e9f1a10ceb58826bff7a308d0a967e59e36393400293bffd7046f0f5472e0730"),
+    "CFR-2025-title26-vol10": (974, "9061144feadc5ba07986abbc4a6c43162758fd20dc886f3ab9b2dc2ac18189b5"),
+    "CFR-2025-title40-vol16": (1149, "bcfee8e1e09a1192218a21b8e52a5ef46f2376af257549b4f1b6a5221072ee74"),
+    "CFR-2025-title40-vol3": (1521, "d117e5af01c532bdbfe1b5ca181a5503dcf77309b2cce7005968c7a9498b8d71"),
+}
+
+
+def write_benchmark_inventory(path, items, batch_config):
+    """Use the existing path-only contract for CI's non-purging fixtures.
+
+    Acquisition and both sets of receipts bind to the exact source hashes.
+    Never invent a regulatory purge deadline or relax the production parser.
+    """
+    from retention_batch import iter_inventory
+    actual = {i["name"]: (i.get("pages"), i.get("sha256")) for i in items}
+    if (len(items) != len(QUALIFIED_SOURCES) or actual != QUALIFIED_SOURCES
+            or any("path" not in i for i in items)
+            or len({i["path"] for i in items}) != len(items)):
+        raise ValueError("Fixed corpus source identity changed or incomplete")
+    rows = [{"path": i["path"]} for i in sorted(items, key=lambda i: i["path"])]
+    path.write_text("".join(json.dumps(row)+"\n" for row in rows), encoding="utf-8")
+    # Cheap contract check before any DB setup or expensive capture.
+    with path.open("rb") as stream:
+        if list(iter_inventory(stream, batch_config)) != rows:
+            raise ValueError("Benchmark inventory reconciliation failed")
+
+
 def verify_ci_database():
     if (os.environ.get("GITHUB_ACTIONS")!="true"
             or os.environ.get("INGESTION_REUSE_TEST_DB")!="1"
@@ -264,12 +298,7 @@ def main():
         report["source_acquisition_seconds"]=round(time.monotonic()-start,3)
         report["sources"]=[{k:v for k,v in i.items() if k!="path"} for i in items]
         save()
-        if any("path" not in i for i in items) or len({i["sha256"] for i in items})!=len(FIXTURES):
-            raise ValueError("Incomplete or duplicate fixed corpus")
-        if sum(i["pages"] for i in items)!=6353:
-            raise ValueError("Fixed corpus page count changed")
-        (root/"inventory.jsonl").write_text("".join(json.dumps({"path":i["path"],"source_sha256":i["sha256"]})+"\n" for i in items),
-                                            encoding="utf-8")
+        write_benchmark_inventory(root/"inventory.jsonl",items,d["batch"])
         init(d["capture"],apply=True)
         init_output(d["retrieval"],apply=True)
         receipt=out.with_suffix(out.suffix+".receipts.jsonl")
