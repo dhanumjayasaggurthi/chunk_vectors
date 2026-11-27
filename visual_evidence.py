@@ -456,7 +456,18 @@ def read_region(root, capture_id, number, bbox=None, *, settings=None):
         page_rect = fitz.Rect(record["page_rect"])
         rotated = box * rotation
         if not page_rect.contains(rotated):
-            raise ValueError("Region outside retained page; refusing to truncate")
+            # Image transforms in PDF float32 coordinates can overshoot a
+            # page edge by a fraction of a point. Only normalize numerical
+            # noise (0.001 pt = 0.0042 px at 300 DPI); never accept a materially
+            # off-page crop. Keep the original requested bbox in provenance.
+            epsilon = 0.001
+            overflow = max(page_rect.x0-rotated.x0, page_rect.y0-rotated.y0,
+                           rotated.x1-page_rect.x1, rotated.y1-page_rect.y1)
+            if overflow > epsilon:
+                raise ValueError("Region outside retained page; refusing to truncate")
+            rotated = rotated & page_rect
+            if rotated.is_empty or not page_rect.contains(rotated):
+                raise ValueError("Region outside retained page; refusing to truncate")
         scale = fitz.Matrix(dpi / 72, dpi / 72)
         origin = (page_rect * scale).irect
         area = (rotated * scale).irect

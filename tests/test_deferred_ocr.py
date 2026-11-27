@@ -53,6 +53,28 @@ def make_pdf(where):
 
 
 class DeferredOcrUnitTests(unittest.TestCase):
+    def test_retained_crop_normalizes_only_subpixel_boundary_noise(self):
+        from visual_evidence import capture, read_region
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            source=make_pdf(folder)
+            visual={"dpi":300,"workers":1}
+            captured=capture(source,root/"retained",1,1,settings=visual,
+                             policy_id="synthetic-test",authorized_page_derivatives=True)
+            cid=captured["capture_id"]
+            source.unlink()
+            expected,expected_meta=read_region(root/"retained",cid,1,[7.8,0,604.2,792],
+                                               settings=visual)
+            requested=[7.8,-0.00006103515625,604.2,792]
+            actual,meta=read_region(root/"retained",cid,1,requested,settings=visual)
+            self.assertEqual(actual,expected)
+            self.assertEqual(meta["pixel_bbox"],expected_meta["pixel_bbox"])
+            self.assertEqual(meta["requested_bbox_pt"],requested)
+            for bbox in ([7.8,-0.01,604.2,792],[7.8,0,613,792],
+                         [-0.01,0,604.2,792],[7.8,0,604.2,793]):
+                with self.assertRaisesRegex(ValueError,"outside retained page"):
+                    read_region(root/"retained",cid,1,bbox,settings=visual)
+
     def test_retained_ocr_uses_existing_queue_without_original_or_cloud(self):
         import concurrent.futures
         import multiprocessing
