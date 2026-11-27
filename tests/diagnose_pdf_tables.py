@@ -7,6 +7,9 @@ Never treats a candidate as safe to ignore automatically.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from statistics import median
+from bisect import bisect_right
 import json
 import math
 import sys
@@ -64,6 +67,77 @@ def diagnose(file_path: str, pages: list[int]) -> list[dict]:
     return out
 
 
+def open_grid_probe(page,table):
+    """Diagnostic only: physical lines under actual column rules, not semantic rows."""
+    x0,_,x1,top=table.bbox
+    xs=sorted(set(x for cell in table.cells for x in (cell[0],cell[2])))
+    if len(xs)<4 or top>page.height*.25 or x1-x0<page.width*.4:
+        return {'status':'NOT_CANDIDATE'}
+    # Require all actual column rules extend continuously beyond the header.
+    ends=[]
+    for x in xs:
+        matches=[e['bottom'] for e in page.vertical_edges
+                 if abs(e['x0']-x)<=2 and e['top']<=top+2
+                 and e['bottom']>=top+page.height*.15]
+        if not matches:
+            return {'status':'NO_CONTINUOUS_COLUMN_RULES'}
+        ends.append(max(matches))
+    bottom=min(ends)
+    region=page.crop((x0,top,x1,bottom))
+    # Independently segment words within each source column. The detector's
+    # page-wide word builder can merge dot leaders and the adjacent column.
+    from pdfplumber.utils import extract_words
+    chars_by_column=[[] for _ in xs[:-1]]
+    for ch in region.chars:
+        if not ch['text'].strip():
+            continue
+        col=bisect_right(xs,(ch['x0']+ch['x1'])/2)-1
+        if not 0<=col<len(chars_by_column):
+            return {'status':'SOURCE_CHAR_OUTSIDE_GRID'}
+        if ch['x0']<xs[col]-.5 or ch['x1']>xs[col+1]+.5:
+            return {'status':'GLYPH_CROSSES_COLUMN'}
+        chars_by_column[col].append(ch)
+    words=[w for chars in chars_by_column for w in extract_words(chars)]
+    if len(words)<10:
+        return {'status':'INSUFFICIENT_BODY'}
+    groups=[]
+    for word in sorted(words,key=lambda w:(w['top'],w['x0'])):
+        if not groups or word['top']-groups[-1][0]['top']>3:
+            groups.append([])
+        groups[-1].append(word)
+    shift=median(w['height'] for w in words)/2
+    ys=[top]+[(max(w['top'] for w in a)+min(w['top'] for w in b))/2+shift
+              for a,b in zip(groups,groups[1:])]+[bottom]
+    if any(b<=a for a,b in zip(ys,ys[1:])):
+        return {'status':'AMBIGUOUS_ROW_BOUNDARIES'}
+    grids=region.find_tables({'vertical_strategy':'explicit','explicit_vertical_lines':xs,
+                       'horizontal_strategy':'explicit','explicit_horizontal_lines':ys,
+                       'snap_tolerance':0,'intersection_tolerance':1})
+    if len(grids)!=1:
+        return {'status':'AMBIGUOUS_GRID'}
+    grid=grids[0]
+    matrix=grid.extract()
+    if len(matrix)!=len(ys)-1 or any(len(row)!=len(xs)-1 for row in matrix):
+        return {'status':'GRID_DIMENSION_MISMATCH'}
+    # Assign each original character by its center; compare independently
+    # against each cell. No character is silently dropped or counted twice.
+    expected={}
+    for ch in region.chars:
+        if not ch['text'].strip():
+            continue
+        col=bisect_right(xs,(ch['x0']+ch['x1'])/2)-1
+        row=bisect_right(ys,(ch['top']+ch['bottom'])/2)-1
+        if not (0<=row<len(matrix) and 0<=col<len(xs)-1):
+            return {'status':'SOURCE_CHAR_OUTSIDE_GRID'}
+        expected.setdefault((row,col),Counter()).update(c for c in ch['text'] if c.strip())
+    for i,row in enumerate(matrix):
+        for j,value in enumerate(row):
+            if Counter(c for c in (value or '') if c.strip())!=expected.get((i,j),Counter()):
+                return {'status':'CELL_CHARACTER_MISMATCH'}
+    return {'status':'PHYSICAL_LINES_VERIFIED_ONLY','physical_lines':len(matrix),'columns':len(xs)-1,
+            'nonspace_characters':sum(sum(c.values()) for c in expected.values()),'logical_rows_verified':False}
+
+
 def validate_recovery(file_path: str, pages: list[int]) -> list[dict]:
     """Run the production native page path on selected pages, without DB/API."""
     import fitz
@@ -110,6 +184,8 @@ def main():
     parser.add_argument("--pages", nargs="+", type=int, required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--candidate", type=int, help="Only print/store this candidate index")
+    parser.add_argument("--probe-open-grid", action="store_true",
+                        help="Test physical-line grids, without asserting logical table rows")
     parser.add_argument("--validate-recovery", action="store_true",
                         help="Also run production native extraction on these pages")
     args = parser.parse_args()
@@ -118,6 +194,21 @@ def main():
         rows = [row for row in rows if row["candidate"] == args.candidate]
     Path(args.output).write_text(json.dumps(rows, indent=2), encoding="utf-8")
     print("TABLE_CANDIDATE_DIAGNOSTICS=" + json.dumps(rows, separators=(",", ":")))
+    if args.probe_open_grid:
+        import pdfplumber
+        from config import TABLE_SETTINGS
+        probes=[]
+        with pdfplumber.open(args.pdf) as pdf:
+            for number in args.pages:
+                pp=pdf.pages[number-1]
+                try:
+                    grids=pp.find_tables(TABLE_SETTINGS)
+                    result=(open_grid_probe(pp,grids[0]) if len(grids)==1
+                            else {"status":"NOT_SINGLE_GRID"})
+                    probes.append({"page":number,**result})
+                finally:
+                    pp.close()
+        print("OPEN_GRID_PROBES="+json.dumps(probes,separators=(",",":")))
     if args.validate_recovery:
         validation = validate_recovery(args.pdf,args.pages)
         print("NATIVE_RECOVERY_VALIDATION=" + json.dumps(validation,separators=(",",":")))

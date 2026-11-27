@@ -25,6 +25,45 @@ class TestRegulatoryBenchmark(unittest.TestCase):
         self.assertEqual(len({value[0] for shard in shards for value in shard}),
                          len(universe))
 
+    def test_open_grid_probe_preserves_all_columns_without_claiming_logical_rows(self):
+        import fitz
+        import pdfplumber
+        from config import TABLE_SETTINGS
+        from diagnose_pdf_tables import open_grid_probe
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"open-grid.pdf"
+            with fitz.open() as pdf:
+                for crossing in (False,True):
+                    page=pdf.new_page(width=612,height=792)
+                    xs=[50,200,350,550]
+                    for x in xs:
+                        page.draw_line((x,60),(x,700))
+                    for y in (60,100):
+                        page.draw_line((50,y),(550,y))
+                    for x,value in zip(xs,["Visit","Dose","Response"]):
+                        page.insert_text((x+8,85),value)
+                    for y,values in ((120,["Visit day one","Dose amount 20 mg","Observed response"]),
+                                     (145,["Visit day two","Dose amount 40 mg","Final result"]),
+                                     (170,["Visit day three","Dose amount 60 mg","Follow up"]),
+                                     (195,["Visit day four","Dose amount 80 mg","Follow up"])):
+                        for x,value in zip(xs,values):
+                            page.insert_text((x+8,y),value,fontsize=10)
+                    if crossing:
+                        page.insert_text((198,210),"WORD",fontsize=12)
+                pdf.save(path)
+            with pdfplumber.open(path) as pdf:
+                first=pdf.pages[0]
+                tables=first.find_tables(TABLE_SETTINGS)
+                self.assertEqual(len(tables),1)
+                result=open_grid_probe(first,tables[0])
+                self.assertEqual(result["status"],"PHYSICAL_LINES_VERIFIED_ONLY")
+                self.assertEqual(result["columns"],3)
+                self.assertEqual(result["physical_lines"],4)
+                self.assertFalse(result["logical_rows_verified"])
+                other=pdf.pages[1]
+                self.assertEqual(open_grid_probe(other,other.find_tables(TABLE_SETTINGS)[0])["status"],
+                                 "GLYPH_CROSSES_COLUMN")
+
     def test_real_parser_runs_in_isolated_spawned_worker(self):
         import fitz
         with tempfile.TemporaryDirectory() as temp:

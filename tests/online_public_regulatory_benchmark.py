@@ -129,6 +129,9 @@ def extract(item, *, max_pages, batch_size, production_tables=False):
             if max_pages and processed >= max_pages:
                 break
             processed += 1
+            if processed%500==0:
+                LOG.info("Native benchmark pages attempted=%s/%s elapsed=%.2fs errors=%s",
+                         processed,item["pages"],time.monotonic()-start,len(errors))
             if page.error:
                 errors.append({"page": page.page_number, "error": page.error[:250]})
                 continue
