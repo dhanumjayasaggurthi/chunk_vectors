@@ -38,6 +38,35 @@ def retained_docx(root):
 
 
 class TestConsumerIntake(unittest.TestCase):
+    def test_unique_metadata_pairs_refuse_conflicting_applications(self):
+        from metadata_extractor import attach_metadata
+        from pdf_processor import PageContent,PageElement,BBox,ElementType
+        def page(number,text):
+            return PageContent(page_number=number,width=612,height=792,
+                elements=[PageElement(ElementType.TEXT,BBox(20,30,500,200),text=text)])
+        p=load_profile(str(REPO/"profiles/deployment_policy.example.yml"))
+        rules=p["metadata"]
+        document=SimpleNamespace(pages=[page(1,"Protocol Number: ABC-2026-001\nBLA 12345"),
+            page(2,"BLA 12345"),page(4001,"NDA 98765")])
+        result=attach_metadata(document,[],rules)
+        self.assertEqual(result["application_type"],"BLA")
+        self.assertEqual(result["application_number"],"12345")
+        self.assertEqual(result["protocol_number"],"ABC-2026-001")
+        self.assertEqual(document.metadata_evidence["application_number"]["page"],1)
+        document.pages.insert(1,page(3,"NDA 98765"))
+        result=attach_metadata(document,[],rules)
+        self.assertNotIn("application_number",result)
+        self.assertNotIn("application_type",result)
+        document.pages=[page(1,"Asset ABC-2026-001; compound gMG")]
+        self.assertNotIn("protocol_number",attach_metadata(document,[],rules))
+        self.assertNotIn("indication_code",attach_metadata(document,[],rules))
+        rules["document"]["indication_code"]["enabled"]=True
+        self.assertNotIn("indication_code",attach_metadata(document,[],rules))
+        document.pages=[page(1,"Indication Code: gMG")]
+        self.assertEqual(attach_metadata(document,[],rules)["indication_code"],"gMG")
+        rules["document"]["indication_code"]["enabled"]=False
+        self.assertNotIn("indication_code",attach_metadata(document,[],rules))
+
     def test_docx_preview_logical_spans_and_review_exclusion(self):
         from reuse_materialize import prepare_docx_document
         from docx_evidence import iter_logical_blocks

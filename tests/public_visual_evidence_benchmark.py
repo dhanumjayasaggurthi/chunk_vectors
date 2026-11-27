@@ -70,6 +70,13 @@ def check(spec, config):
                                "elapsed_seconds":round(time.monotonic()-tick,3),
                                "failures":[{"page":x["page"],"error":x["error"]}
                                            for x in checked if x["status"]!="SUCCESS"]}
+            if native_validation["failures"]:
+                # Public fixtures only: emit bounded counts/geometry for the
+                # exact failed candidates to diagnose rather than relax guards.
+                from diagnose_pdf_tables import diagnose
+                numbers=[x["page"] for x in native_validation["failures"][:5]]
+                print("PUBLIC_NATIVE_FAILURE_DIAGNOSTICS="+json.dumps(
+                    {"source":name,"candidates":diagnose(str(source),numbers)}),flush=True)
             assert native_validation["successful"]==last-first+1, native_validation
         kw = dict(settings=config["visual_evidence"], policy_id="public-benchmark", authorized_page_derivatives=True)
         # Exercise the exact native-worker open-handle path on complete public

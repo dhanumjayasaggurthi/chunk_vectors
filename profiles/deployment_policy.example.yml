@@ -79,6 +79,7 @@ metadata:
       enabled: true
       required: false
       first_pages: 25
+      match_policy: unique
       sample_values: [ABC-2026-001]
     document_title:
       method: label
@@ -87,11 +88,72 @@ metadata:
       enabled: true
       required: false
       first_pages: 10
+    # The two application fields share the exact same capture tuple.
+    # Conflicting pairs are omitted rather than combining unrelated matches.
+    application_type:
+      method: regex
+      pattern: '\b(IND|NDA|BLA|sBLA|ANDA|sNDA|MAA|CTA)[ \t]+(\d{5,8})\b'
+      group: 1
+      match_policy: unique
+      type: enum
+      allowed_values: [IND, NDA, BLA, sBLA, ANDA, sNDA, MAA, CTA]
+      enabled: true
+      required: false
+      first_pages: 25
     application_number:
       method: regex
-      pattern: '(?im)^\s*Application\s+(?:Number|No\.?)\s*[:#-]\s*([A-Za-z0-9/-]+)'
+      pattern: '\b(IND|NDA|BLA|sBLA|ANDA|sNDA|MAA|CTA)[ \t]+(\d{5,8})\b'
+      group: 2
+      match_policy: unique
       type: string
       enabled: true
+      required: false
+      first_pages: 25
+    # Explicit disease-code labels only. Examples are not extracted values.
+    indication_code:
+      method: regex
+      pattern: '(?im)^\s*Indication[ \t]+Code[ \t]*:[ \t]*([A-Za-z][A-Za-z0-9-]*)[ \t]*
+    report_date:
+      method: regex
+      pattern: '(?im)^\s*Report\s+Date\s*:\s*(\d{4}-\d{2}-\d{2})\s*$'
+      type: date
+      enabled: true
+      required: false
+      first_pages: 15
+  chunk:
+    study_identifier:
+      method: regex
+      pattern: '(?im)\bStudy\s+(?:ID|Number)\s*:\s*([A-Za-z0-9_-]+)'
+      type: string
+      enabled: true
+      required: false
+
+embedding:
+  enabled: false
+  reuse_existing: true
+  batch_size: 128
+  # dimensions supplied once by config.ini [AZURE_OPENAI_EMBEDDING]
+  rpm: 30
+  tpm: 750000
+  input_max_tokens: 6000
+  input_fields:
+    - document.protocol_number
+    - section_title
+    - chunk_text
+
+
+# Existing OCR engine; actual quota allocation must be approved before enabling calls.
+deferred_ocr:
+  workers: 4
+  full_page_ocr_min_native_chars: 100
+  ocr_jpeg_quality: 95
+  rpm: 1500
+  ipm: 1500
+
+      match_policy: unique
+      type: enum
+      allowed_values: [gMG, HDFN, wAIHA, SLE, pSD, SjD, pSS, RA, CIDP, IIM, BP, FNAIT]
+      enabled: false
       required: false
       first_pages: 25
     report_date:

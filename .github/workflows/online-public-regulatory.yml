@@ -60,6 +60,10 @@ jobs:
         if: always()
         run: |
           python tests/online_public_regulatory_benchmark.py --documents 2 --min-pages 1 --max-pages 0 --max-candidates 4 --workers 2 --download-workers 2 --include-fda --report illustrated_fda_report.json
+      - name: Full original 4000-plus-page public tariff schedule
+        if: always()
+        run: |
+          python tests/online_public_regulatory_benchmark.py --large-hts --documents 1 --min-pages 4001 --max-pages 0 --workers 1 --process-pool --batch-size 16 --max-download-mb 64 --download-timeout 120 --report large_hts_report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -68,5 +72,6 @@ jobs:
             public_corpus_report.json
             full_regulatory_report.json
             illustrated_fda_report.json
+            large_hts_report.json
           retention-days: 14
           if-no-files-found: warn

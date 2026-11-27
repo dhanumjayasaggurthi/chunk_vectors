@@ -39,7 +39,7 @@ FDA_REPORTS = [
 ]
 MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
 _ALLOWED_HOSTS = {"www.govinfo.gov", "govinfo.gov", "www.fda.gov", "fda.gov",
-                  "nvlpubs.nist.gov", "www.gao.gov", "gao.gov"}
+                  "nvlpubs.nist.gov", "www.gao.gov", "gao.gov", "learning.usitc.gov"}
 
 
 def candidates(*, include_fda=False):
@@ -226,6 +226,8 @@ def main():
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--process-pool", action="store_true",
                         help="Spawn isolated PDF worker processes instead of threads")
+    parser.add_argument("--large-hts", action="store_true",
+                        help="Full original USITC tariff PDF, at least 4001 pages")
     parser.add_argument("--report", required=True)
     args = parser.parse_args()
     if not (1 <= args.documents <= 180
@@ -240,7 +242,18 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="regulatory-online-") as temp:
-        accepted, rejected = gather_downloads(
+        if args.large_hts:
+            if args.documents!=1 or args.max_pages!=0 or args.min_pages<4001:
+                parser.error("Large HTS requires --documents 1 --min-pages 4001 --max-pages 0")
+            item=download(("USITC-HTS-2025-REV5",
+                "https://learning.usitc.gov/hts-docs/documents/finalCopy.pdf"),
+                Path(temp),min_pages=args.min_pages,
+                max_bytes=args.max_download_mb*1024*1024,timeout=args.download_timeout)
+            accepted=[item] if "path" in item else []
+            rejected={"rejected_sample":[] if accepted else [item],
+                      "rejections_by_reason":{} if accepted else {"large_fixture_rejected":1}}
+        else:
+            accepted, rejected = gather_downloads(
             Path(temp), target_documents=args.documents,
             max_candidates=args.max_candidates, min_pages=args.min_pages,
             max_bytes=args.max_download_mb * 1024 * 1024,
@@ -263,7 +276,7 @@ def main():
                          batch_size=args.batch_size)
             results=list(executor.map(work, accepted, chunksize=1))
         report = {
-            "kind": "public_official_cfr_fda_native_extraction",
+            "kind": "public_usitc_large_native_extraction" if args.large_hts else "public_official_cfr_fda_native_extraction",
             "tested_full_documents": args.max_pages == 0,
             "requested_documents": args.documents,
             "shard_index": args.shard_index,
@@ -302,7 +315,8 @@ def main():
             {k: v for k, v in report.items()
              if k not in ("documents", "rejected_sources", "limitations")},
             sort_keys=True))
-        if len(accepted) < args.documents or report["page_errors"]:
+        if (len(accepted) < args.documents or report["page_errors"]
+                or (args.large_hts and report["total_extracted_pages"]!=report["total_source_pages"])):
             raise SystemExit(2)
 
 

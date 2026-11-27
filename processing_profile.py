@@ -374,14 +374,24 @@ def validate_profile(profile: dict) -> None:
             if not isinstance(rule, dict) or rule.get("method") not in _ALLOWED_METHODS:
                 raise ValueError("Invalid metadata rule for " + name)
             extra_options = set(rule) - {"method", "label", "pattern", "value", "first_pages",
-                                                   "enabled", "required", "type", "allowed_values", "sample_values"}
+                                                   "enabled", "required", "type", "allowed_values", "sample_values",
+                                                    "group", "match_policy"}
             if extra_options:
                 raise ValueError("Unsupported rule options for " + name)
             if rule["method"] == "regex":
                 pattern = rule.get("pattern", "")
                 if not isinstance(pattern, str) or not 1 <= len(pattern) <= 300:
                     raise ValueError("Invalid regex for " + name)
-                re.compile(pattern)
+                compiled=re.compile(pattern)
+                if "group" in rule and (type(rule["group"]) is not int
+                                        or not 0<=rule["group"]<=compiled.groups):
+                    raise ValueError("Invalid regex capture group for " + name)
+            elif "group" in rule:
+                raise ValueError("group is only supported for regex metadata")
+            if rule.get("match_policy","first") not in ("first","unique"):
+                raise ValueError("Invalid metadata match_policy for " + name)
+            if rule["method"]=="constant" and rule.get("match_policy","first")!="first":
+                raise ValueError("Constant metadata cannot use unique matching")
             if rule["method"] == "label" and not isinstance(rule.get("label"), str):
                 raise ValueError("Missing label for " + name)
             if rule["method"] == "constant" and not isinstance(rule.get("value"), (str, int, float, bool)):
