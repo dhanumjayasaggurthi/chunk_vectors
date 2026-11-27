@@ -11,7 +11,9 @@ import concurrent.futures
 import hashlib
 import json
 import re
+import threading
 import time
+from collections import deque
 
 LANGUAGE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$")
 
@@ -225,13 +227,16 @@ def translate_claimed(rows, translator, *, workers=8):
 def production_settings(value):
     """Small bounded local quota; allocate per host from the approved project quota."""
     expected={"model","rpm","max_chars","timeout_seconds","attempts"}
-    if not isinstance(value,dict) or set(value)!=expected or value["model"] not in ("nmt","base"):
+    if not isinstance(value,dict) or not expected<=set(value) or set(value)-expected-{"workers"} or value["model"] not in ("nmt","base"):
         raise ValueError("Invalid Google Translation configuration")
     for k,low,high in (("rpm",1,10000),("max_chars",100,30000),
                        ("timeout_seconds",5,600),("attempts",1,5)):
         if type(value[k]) is not int or not low<=value[k]<=high:
             raise ValueError("Invalid translation "+k)
-    return dict(value)
+    workers=value.get("workers",1)
+    if type(workers) is not int or not 1<=workers<=16:
+        raise ValueError("Invalid translation workers")
+    return {**value,"workers":workers}
 
 
 def _google_session(key_path):
@@ -253,23 +258,31 @@ class GoogleTranslation:
         self.cfg=production_settings(config)
         self.key_path=key_path
         self.session=session
+        if session is not None and self.cfg["workers"]!=1:
+            raise ValueError("Injected translation session requires one worker")
         self.next_request=0.0
+        self._rate_lock=threading.Lock()
         self.identity=translation_fingerprint(provider="google-translate-v2",
                                   model=self.cfg["model"],glossary_version="en-auto-source-v1")
 
-    def _batch(self,values):
-        if self.session is None:
-            self.session=_google_session(self.key_path)
+    def _batch(self,values,*,session=None):
+        if session is None:
+            if self.session is None:
+                self.session=_google_session(self.key_path)
+            session=self.session
         for attempt in range(self.cfg["attempts"]):
-            delay=max(0,self.next_request-time.monotonic())
-            if delay:
-                time.sleep(delay)
-            self.next_request=time.monotonic()+60/self.cfg["rpm"]
-            response=self.session.post("https://translation.googleapis.com/language/translate/v2",
+            # All requests (including retries) share the coordinator pacing.
+            with self._rate_lock:
+                delay=max(0,self.next_request-time.monotonic())
+                if delay:
+                    time.sleep(delay)
+                self.next_request=time.monotonic()+60/self.cfg["rpm"]
+            response=session.post("https://translation.googleapis.com/language/translate/v2",
                 json={"q":values,"target":"en","format":"text","model":self.cfg["model"]},
                 timeout=self.cfg["timeout_seconds"])
             if response.status_code in (429,500,502,503,504) and attempt+1<self.cfg["attempts"]:
-                self.next_request=max(self.next_request,time.monotonic()+min(60,2**attempt))
+                with self._rate_lock:
+                    self.next_request=max(self.next_request,time.monotonic()+min(60,2**attempt))
                 continue
             response.raise_for_status()
             items=response.json()["data"]["translations"]
@@ -285,6 +298,62 @@ class GoogleTranslation:
             return result
         raise RuntimeError("Translation attempts exhausted")
 
+    def _translated_batches(self,batches):
+        """Keep at most workers requests in flight, in input order.
+
+        A worker owns its own HTTP session. Failures propagate before the
+        caller publishes anything; no unbounded executor submission.
+        """
+        if self.cfg["workers"]==1:
+            for batch in batches:
+                yield batch,self._batch(list(batch))
+            return
+        local=threading.local()
+        sessions=[]
+        lock=threading.Lock()
+        def work(batch):
+            if not hasattr(local,"session"):
+                local.session=_google_session(self.key_path)
+                with lock:
+                    sessions.append(local.session)
+            return self._batch(list(batch),session=local.session)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.cfg["workers"]) as pool:
+                pending=deque()
+                for batch in batches:
+                    pending.append((batch,pool.submit(work,batch)))
+                    if len(pending)>=self.cfg["workers"]:
+                        first,future=pending.popleft()
+                        yield first,future.result()
+                while pending:
+                    first,future=pending.popleft()
+                    yield first,future.result()
+        finally:
+            for session in sessions:
+                session.close()
+
+    def _input_batches(self,rows,english_contract):
+        """Exact text reuse within a bounded batch, independent row identities."""
+        batch={}
+        chars=count=0
+        for i,row in enumerate(rows):
+            if not english_contract and json.loads(row[13]).get("source_kind")=="visual_model":
+                continue
+            value=row[6]
+            if len(value)>self.cfg["max_chars"]:
+                raise ValueError("Translation segment exceeds configured character budget")
+            added=0 if value in batch else len(value)
+            if batch and (chars+added>self.cfg["max_chars"] or count>=64):
+                yield batch
+                batch={}
+                chars=count=0
+                added=len(value)
+            batch.setdefault(value,[]).append(i)
+            chars+=added
+            count+=1
+        if batch:
+            yield batch
+
     def apply_rows(self,rows,profile,sources):
         from types import SimpleNamespace
         from reuse_materialize import compose_embedding_text
@@ -292,14 +361,14 @@ class GoogleTranslation:
         import tiktoken
         encoder=tiktoken.get_encoding(profile["chunking"].get("tokenizer","cl100k_base")) if english_contract else None
         result=list(rows)
-        batch=[]
-        chars=0
-        def flush():
-            nonlocal batch,chars
-            if not batch:
-                return
-            values=[result[i][6] for i in batch]
-            for i,(language,english) in zip(batch,self._batch(values)):
+        # Translation results are applied on the coordinator thread and only
+        # returned once all bounded batches have succeeded.
+        for batch,responses in self._translated_batches(self._input_batches(result,english_contract)):
+            if len(responses)!=len(batch):
+                raise ValueError("Translation response count mismatch")
+            occurrences=((i,language,english) for indices,(language,english) in zip(batch.values(),responses)
+                         for i in indices)
+            for i,language,english in occurrences:
                 row=result[i]
                 meta=json.loads(row[13])
                 meta["translation"]={"provider":"google-translate-v2","fingerprint":self.identity,
@@ -331,16 +400,4 @@ class GoogleTranslation:
                           sources,max_tokens=profile["embedding"].get("input_max_tokens",6000),
                           tokenizer=profile["chunking"].get("tokenizer","cl100k_base"))
                 result[i]=row[:7]+(embedding,)+row[8:13]+(json.dumps(meta,ensure_ascii=False,sort_keys=True),)+row[14:]
-            batch=[]
-            chars=0
-        for i,row in enumerate(result):
-            if not english_contract and json.loads(row[13]).get("source_kind")=="visual_model":
-                continue
-            if len(row[6])>self.cfg["max_chars"]:
-                raise ValueError("Translation segment exceeds configured character budget")
-            if batch and (chars+len(row[6])>self.cfg["max_chars"] or len(batch)>=64):
-                flush()
-            batch.append(i)
-            chars+=len(row[6])
-        flush()
         return result

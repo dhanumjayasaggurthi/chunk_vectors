@@ -50,6 +50,8 @@ authorized_embedding = false
 authorized_translation = false
 translation_model = nmt
 translation_rpm = 30
+; Per coordinator, shared request pacing. Increase only within approved quotas.
+translation_workers = 1
 translation_max_chars = 30000
 translation_timeout_seconds = 60
 translation_attempts = 3

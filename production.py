@@ -140,6 +140,7 @@ def resolve_configuration(path="config.ini"):
         translation=production_settings({
             "model":dep.get("translation_model","nmt"),
             "rpm":dep.getint("translation_rpm",30),
+            "workers":dep.getint("translation_workers",1),
             "max_chars":dep.getint("translation_max_chars",5000),
             "timeout_seconds":dep.getint("translation_timeout_seconds",60),
             "attempts":dep.getint("translation_attempts",3)})

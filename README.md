@@ -72,7 +72,10 @@ Replace the placeholder with the actual receipt path inside the configured
 receipt directory. For one document, add `--doc-id FULL_64_CHARACTER_ID`.
 Successful OCR and visual results can be reused; an interrupted provider
 response not yet committed can require a repeated call. Required OCR,
-translation and selected visual LLM processing must be authorized. In the
+translation and selected visual LLM processing must be authorized.
+For translation throughput, [DEPLOYMENT] translation_workers defaults to 1;
+increase within the approved per-coordinator translation_rpm and character
+quota. All workers share request pacing; allocate quota across servers. In the
 current release, a selected visual failure blocks that document's publication.
 Native evidence and earlier publications remain intact.
 

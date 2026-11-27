@@ -93,6 +93,68 @@ class TestTranslationUnit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"count mismatch"):
             GoogleTranslation("not-used",cfg,session=session).apply_rows(rows,p,{})
 
+    def test_translation_batches_deduplicate_exact_inputs_and_preserve_occurrences(self):
+        from translation_stage import GoogleTranslation
+        cfg={"model":"nmt","rpm":10000,"max_chars":100,"timeout_seconds":60,"attempts":1}
+        translator=GoogleTranslation("not-used",cfg)
+        def row(value,meta="{}"):
+            return (None,)*6+(value,)+(None,)*6+(meta,)
+        rows=[row("A"*60),row("A"*60),row("B"*50),row("A"*60),
+              row("ignored",'{"source_kind":"visual_model"}')]
+        batches=list(translator._input_batches(rows,False))
+        self.assertEqual(batches,[{"A"*60:[0,1]},{"B"*50:[2]},{"A"*60:[3]}])
+        repeated=list(translator._input_batches([row("same")]*130,True))
+        self.assertEqual([len(x["same"]) for x in repeated],[64,64,2])
+        with self.assertRaisesRegex(ValueError,"character budget"):
+            list(translator._input_batches([row("X"*101)],True))
+
+    def test_translation_parallel_requests_are_bounded_ordered_and_session_owned(self):
+        import time
+        from unittest.mock import patch
+        from translation_stage import GoogleTranslation
+        active=peak=0
+        started=[]
+        sessions=[]
+        lock=threading.Lock()
+        class Response:
+            status_code=200
+            def __init__(self,values): self.values=values
+            def raise_for_status(self): pass
+            def json(self):
+                return {"data":{"translations":[{"detectedSourceLanguage":"fr",
+                           "translatedText":"English "+v} for v in self.values]}}
+        class Session:
+            def __init__(self):
+                self.owner=threading.get_ident()
+                self.closed=False
+                sessions.append(self)
+            def post(self,url,*,json,timeout):
+                nonlocal active,peak
+                assert self.owner==threading.get_ident()
+                with lock:
+                    active+=1
+                    peak=max(peak,active)
+                    started.append(time.monotonic())
+                try:
+                    time.sleep(.06 if json["q"][0]=="0" else .04)
+                    return Response(json["q"])
+                finally:
+                    with lock: active-=1
+            def close(self): self.closed=True
+        cfg={"model":"nmt","rpm":6000,"max_chars":100,"timeout_seconds":60,
+             "attempts":1,"workers":3}
+        translator=GoogleTranslation("not-used",cfg)
+        batches=[{str(i):[i]} for i in range(8)]
+        with patch("translation_stage._google_session",side_effect=lambda _:Session()):
+            output=list(translator._translated_batches(iter(batches)))
+        self.assertEqual([b for b,_ in output],batches)
+        self.assertEqual([v[0][1] for _,v in output],["English "+str(i) for i in range(8)])
+        self.assertGreater(peak,1)
+        self.assertLessEqual(peak,3)
+        self.assertLessEqual(len(sessions),3)
+        self.assertTrue(all(s.closed for s in sessions))
+        self.assertGreaterEqual(started[-1]-started[0],.06)
+
     def test_invalid_language_refuses_translation(self):
         with self.assertRaises(ValueError):
             compose_language_input("texte","english",language="bad code")
