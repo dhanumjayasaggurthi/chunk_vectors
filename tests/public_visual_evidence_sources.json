@@ -72,6 +72,22 @@
     ]
   ],
   "source_expectations": {
+    "reagan_udall_fda_access": {
+      "sha256": "a8b9e2f26070998658aafc27640627c98db09dad19f8edf1680470d5f4b81073",
+      "continued_table": {
+        "pages": [48, 49, 50, 51],
+        "columns": 4,
+        "data_rows": [2, 12, 14, 10],
+        "anchors": [
+          [48, 1, "application_number", "string", "1"],
+          [49, 1, "openfda.brand_name", "array of strings", "1"],
+          [50, 5, "products.active_ingredients", "object", "1"],
+          [50, 14, "sponsor_name", "string", "1"],
+          [51, 10, "submissions.submission_type", "string", "1"]
+        ],
+        "blank_definition_rows": [[50, 5], [51, 1]]
+      }
+    },
     "fda_medwatch_3500a": {
       "sha256": "d9f3e6b6b9fcd5c8d38fda4989c50e73ce77e15ef657476a5e04a968dc2bd382",
       "alternate_urls": ["https://www.fda.gov/media/69876/download"],

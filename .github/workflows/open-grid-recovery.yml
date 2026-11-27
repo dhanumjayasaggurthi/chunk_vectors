@@ -1,16 +1,17 @@
 name: Open-grid physical table body regression
 on:
   push:
-    branches: [feat/rich-document-multilingual-v2]
+    branches: [feat/rich-document-multilingual-v2, feat/regulatory-capture-qualification]
     paths:
       - open_grid_recovery.py
       - tests/test_open_grid_recovery.py
+      - tests/full_open_grid_benchmark.py
       - .github/workflows/open-grid-recovery.yml
   workflow_dispatch:
 jobs:
   regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,3 +33,33 @@ jobs:
           gcp_key_path=not-used.json
           EOF
       - run: python -m unittest discover -s tests -p test_open_grid_recovery.py -v
+      - name: Acquire the pinned public USITC original
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 360 --max-filesize 140000000 \
+            https://learning.usitc.gov/hts-docs/documents/finalCopy.pdf --output public-hts.pdf
+          sha256sum --check <<'EOF'
+          e52e377f0234c60d5c98947129040a0706958438377868abddeff876cbf56068  public-hts.pdf
+          EOF
+      - name: Verify strict native rows for all 4496 physical pages
+        run: |
+          python tests/full_open_grid_benchmark.py --pdf "$RUNNER_TEMP/public-hts.pdf" \
+            --workers 4 --native-rows --report hts_native_rows.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          result = json.loads(Path('hts_native_rows.json').read_text(encoding='utf-8'))
+          assert result['pages'] == 4496
+          assert result['counts'] == {'BODY_IN_ROW': 2084, 'NO_BODY_IN_ROW': 2412}
+          assert result['physical_lines'] == 81941
+          assert result['nonspace_characters'] == 3584452
+          assert result['logical_rows_verified'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hts-native-rows-${{ github.run_id }}
+          path: hts_native_rows.json
+          if-no-files-found: warn
+          retention-days: 14

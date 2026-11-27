@@ -50,6 +50,48 @@ def scan(path,bounds):
             "detail":details,"seconds":time.monotonic()-started}
 
 
+def scan_native_rows(path, bounds, source_sha256, page_count):
+    """Run the window parser, validated table injection and staged row encoding."""
+    from page_stage import _page_row, _tables
+    from pdf_processor import PDFProcessor
+
+    lo, hi = bounds
+    started = time.monotonic()
+    parser = PDFProcessor(path, source_sha256, Path(path).name, strict=True,
+                          capture_rich_text=True, capture_table_structure=True,
+                          preserve_uninterpreted_visuals=True, empty_table_policy="preserve_defer",
+                          experimental_table_prepass=True, recover_open_grid_body=True)
+    skip = set(range(1, lo)) | set(range(hi + 1, page_count + 1))
+    details = []
+    errors = []
+    for window in parser.iter_page_batches(batch_pages=32, completed_pages=skip):
+        table_errors = _tables(window.pages, path, {"table_summaries_enabled": False})
+        for page in window.pages:
+            number = page.page_number
+            if page.error or number in table_errors:
+                errors.append({"page": number, "stage": "parse" if page.error else "table_injection"})
+                details.append({"page": number, "status": "ERROR"})
+                continue
+            try:
+                row = _page_row(page, window, source_sha256, "public-validation")
+                bodies = [entry["physical_table_body"] for entry in json.loads(row[9])
+                          if "physical_table_body" in entry]
+                if any(body["logical_rows_verified"] is not False for body in bodies):
+                    raise ValueError("Physical source lines were labeled as logical rows")
+            except (KeyError, ValueError, RuntimeError) as error:
+                errors.append({"page": number, "stage": "row_encoding", "error_type": type(error).__name__})
+                details.append({"page": number, "status": "ERROR"})
+                continue
+            details.append({"page": number, "status": "BODY_IN_ROW" if bodies else "NO_BODY_IN_ROW",
+                            "physical_lines": sum(len(body["physical_cells"]) for body in bodies),
+                            "nonspace_characters": sum(body["nonspace_characters"] for body in bodies)})
+        if len(details) % 256 == 0:
+            print(f"worker {lo}-{hi} encoded {len(details)}/{hi-lo+1} pages", flush=True)
+    return {"bounds": bounds, "errors": errors, "detail": details,
+            "native_open_grid_counts": parser.open_grid_stats, "native_prepass_counts": parser.table_prepass_stats,
+            "seconds": time.monotonic() - started}
+
+
 def main():
     import fitz
     import pdfplumber
@@ -57,6 +99,8 @@ def main():
     parser.add_argument("--pdf",required=True)
     parser.add_argument("--workers",type=int,default=4)
     parser.add_argument("--report",required=True)
+    parser.add_argument("--native-rows", action="store_true",
+                        help="Use strict native extraction and stage row encoding instead of the raw detector")
     args=parser.parse_args()
     if not 1<=args.workers<=8:
         parser.error("workers must be 1..8")
@@ -72,7 +116,10 @@ def main():
     started=time.monotonic()
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers,
             mp_context=multiprocessing.get_context("spawn")) as pool:
-        futures=[pool.submit(scan,str(path),bounds) for bounds in ranges]
+        if args.native_rows:
+            futures = [pool.submit(scan_native_rows, str(path), bounds, digest, total) for bounds in ranges]
+        else:
+            futures = [pool.submit(scan, str(path), bounds) for bounds in ranges]
         rows=[f.result() for f in futures]
     detail=[p for row in rows for p in row["detail"]]
     if [p["page"] for p in detail]!=list(range(1,total+1)):
@@ -81,7 +128,8 @@ def main():
     with path.open("rb") as f:
         if hashlib.file_digest(f,"sha256").hexdigest()!=digest:
             raise RuntimeError("Original PDF changed during scan")
-    report={"kind":"detector_and_body_probe_only","source_name":path.name,
+    report={"kind":"native_parse_and_row_encoding" if args.native_rows else "detector_and_body_probe_only",
+            "source_name":path.name,
             "source_sha256":digest,"source_bytes":path.stat().st_size,
             "pages":total,"process_workers":workers,"counts":dict(counts),
             "physical_lines":sum(p.get("physical_lines",0) for p in detail),

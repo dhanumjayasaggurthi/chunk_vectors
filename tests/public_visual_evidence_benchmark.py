@@ -19,6 +19,58 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster, read_vectors, read_figures, _json_bytes, OpenPageCapture, _source_state
 
 
+def check_table_continuation(source, source_hash, page_count, expected):
+    from configurable_chunking import chunk_with_profile
+    from page_stage import _tables
+    from pdf_processor import PDFProcessor
+    from processing_profile import load_profile
+    from semantic_chunking_v2 import _markdown_row
+    from table_continuity import iter_logical_table_rows
+
+    pages = expected["pages"]
+    included = set(range(max(1, pages[0] - 1), min(page_count, pages[-1] + 1) + 1))
+    skip = set(range(1, page_count + 1)) - included
+    parser = PDFProcessor(str(source), source_hash, source.name, strict=True,
+                          capture_rich_text=True, capture_table_structure=True,
+                          preserve_uninterpreted_visuals=True, empty_table_policy="preserve_defer")
+    (window,) = parser.iter_page_batches(batch_pages=16, completed_pages=skip)
+    assert {page.page_number for page in window.pages if not page.error} == included
+    assert not _tables(window.pages, str(source), {"table_summaries_enabled": False})
+    tables = [element for page in window.pages for element in page.elements if element.source_table]
+    original_cells = [_json_bytes(element.source_table) for element in tables]
+    profile_path = Path(__file__).resolve().parents[1] / "profiles/regulatory_semantic_v2_example.yml"
+    policy = load_profile(str(profile_path))["chunking"]
+    chunks = chunk_with_profile(window, policy)
+    fragments = [element for element in tables if element.table_continuity.get("source_pages") == pages]
+    assert len(fragments) == len(pages)
+    table_id = fragments[0].table_continuity["table_id"]
+    table_chunks = [chunk for chunk in chunks if chunk.chunk_metadata.get("table_id") == table_id]
+    assert table_chunks and all(chunk.chunk_metadata["table_continuation_verified"] for chunk in table_chunks)
+    assert all(chunk.chunk_metadata["table_source_pages"] == pages for chunk in table_chunks)
+    rows = list(iter_logical_table_rows(fragments))
+    assert [(page, row) for page, row, _ in rows if row == 0] == [(pages[0], 0)]
+    assert all(len(cells) == expected["columns"] for _, _, cells in rows)
+    data_rows = {(page, row): cells for page, row, cells in rows if row > 0}
+    assert list(data_rows) == [(page, row) for page, count in zip(pages, expected["data_rows"])
+                               for row in range(1, count + 1)]
+    # Transcribed source cells at known physical page/row locations. Ignore
+    # line wraps in field names and normalize whitespace in type labels.
+    for page, row, field, datatype, dataset_number in expected["anchors"]:
+        cells = data_rows[(page, row)]
+        assert ("".join(cells[0].split()), " ".join(cells[1].split()), cells[2]) == (field, datatype, dataset_number)
+    for page, row in expected["blank_definition_rows"]:
+        assert data_rows[(page, row)][3] == ""
+    for (page, _), cells in data_rows.items():
+        line = _markdown_row(cells, expected["columns"])
+        assert sum(chunk.page_start <= page <= chunk.page_end and line in chunk.chunk_text.splitlines()
+                   for chunk in table_chunks) == 1
+    assert [_json_bytes(element.source_table) for element in tables] == original_cells
+    return {"source_pages": pages, "verified_data_rows": len(data_rows), "verified_columns": expected["columns"],
+            "projected_rows_including_header": len(rows),
+            "gold_cell_anchors": len(expected["anchors"]), "gold_blank_definitions": len(expected["blank_definition_rows"]),
+            "table_chunks": len(table_chunks), "source_cells_unchanged": True}
+
+
 def check(spec, config):
     import fitz
     import requests
@@ -103,6 +155,8 @@ def check(spec, config):
                 print("PUBLIC_NATIVE_FAILURE_DIAGNOSTICS="+json.dumps(
                     {"source":name,"candidates":diagnose(str(source),numbers)}),flush=True)
             assert native_validation["successful"]==last-first+1, native_validation
+        continued_table = (check_table_continuation(source, source_hash, count, expected["continued_table"])
+                           if "continued_table" in expected else None)
         kw = dict(settings=config["visual_evidence"], policy_id="public-benchmark", authorized_page_derivatives=True)
         # Exercise the exact native-worker open-handle path on complete public
         # documents, comparing with independently scheduled parallel capture.
@@ -412,6 +466,7 @@ def check(spec, config):
             "interactive_widgets_by_page": widget_counts,
             "archived_interactive_original_verified": verified_archived_form,
             "strict_native_validation":native_validation,
+            "continued_table_validation": continued_table,
             "pages_with_images": image_pages, "pages_with_paths": vector_pages,
             "pages_with_text": text_pages, "pixel_exact_pages": n,
             "retained_bytes": cold["image_bytes"], "cold_seconds": cold["elapsed_seconds"],
