@@ -562,7 +562,12 @@ class PDFProcessor:
         max_visual_regions_per_page: int = 256,
         empty_table_policy: str = "fail",
         profile_page_timings: bool = False,
+        experimental_table_prepass: bool = False,
     ):
+        if type(experimental_table_prepass) is not bool:
+            raise ValueError("experimental_table_prepass must be a boolean")
+        self.experimental_table_prepass = experimental_table_prepass
+        self.table_prepass_stats = {}
         self.strict = strict
         self.capture_rich_text = capture_rich_text
         self.approved_image_assets = approved_image_assets or {}
@@ -1000,7 +1005,12 @@ class PDFProcessor:
             if self.profile_page_timings:
                 from time import perf_counter
                 started=perf_counter()
-            detected = plumb_page.find_tables(TABLE_SETTINGS)
+            if self.experimental_table_prepass:
+                from native_table_prepass import detect_tables
+                detected, reason = detect_tables(plumb_page, TABLE_SETTINGS)
+                self.table_prepass_stats[reason] = self.table_prepass_stats.get(reason, 0) + 1
+            else:
+                detected = plumb_page.find_tables(TABLE_SETTINGS)
             if self.profile_page_timings:
                 self.profiled_table_detection_seconds += perf_counter()-started
                 started=perf_counter()

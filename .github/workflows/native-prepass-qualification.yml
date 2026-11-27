@@ -1,0 +1,42 @@
+name: Full native prepass output qualification
+on:
+  push:
+    branches: [feat/rich-document-multilingual-v2]
+    paths:
+      - native_table_prepass.py
+      - tests/native_prepass_qualification.py
+      - tests/test_native_prepass_qualification.py
+      - .github/workflows/native-prepass-qualification.yml
+  workflow_dispatch:
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install "PyMuPDF==1.28.2" "pdfplumber==0.11.10" "pdfminer.six==20260107" "pillow>=10,<13" "requests>=2.32,<3"
+      - name: CI-only config
+        run: |
+          cat > config.ini <<'EOF'
+          [POSTGRES]
+          host=localhost
+          port=5432
+          database=embedding_test
+          user=postgres
+          password=test
+          schema=intake_ci
+          folder=ci
+          [GCP]
+          gcp_key_path=not-used.json
+          EOF
+      - run: python -m unittest discover -s tests -p test_native_prepass_qualification.py -v
+      - run: python tests/native_prepass_qualification.py --workers 4 --report native_prepass_qualification.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-prepass-qualification-${{ github.run_id }}
+          path: native_prepass_qualification.json
+          if-no-files-found: warn
