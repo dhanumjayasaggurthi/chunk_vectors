@@ -2,7 +2,7 @@
 
 **Current branch**: [feat/rich-document-multilingual-v2](https://github.com/dhanumjayasaggurthi/chunk_vectors/tree/feat/rich-document-multilingual-v2)
 **Repository**: [chunk_vectors](https://github.com/dhanumjayasaggurthi/chunk_vectors)
-**Updated**: 2026-11-24. Check branch HEAD and CI; never assume a particular commit remains HEAD.
+**Updated**: 2026-11-27. Check branch HEAD and CI; never assume a particular commit remains HEAD.
 
 **This is the canonical handoff link for a new conversation.** Read this document and [native_throughput_semantic_v2.md](native_throughput_semantic_v2.md), inspect branch HEAD, then work from the P0 section below. Update this document whenever implementation, validation, benchmarks or priorities change.
 
@@ -35,6 +35,10 @@
 
 
 
+
+## New-chat continuation contract (2026-11-27)
+
+Read this file and native_throughput_semantic_v2.md from the live feature branch, inspect main and latest branch HEAD/Actions before edits. Use GitHub connector for repository reads and atomic commits; update this file with every substantive iteration. Latest implementation at handoff 0fb29c28636cdaa33c5d431d1e6ae560577b4649, main 86e48c81bbba622acb4982949df9fdf954b6f02d. Main regression 45963553545 completed SUCCESS; fixed-corpus scaling 45963548072 in progress; rich 45963553521 and 45963548024 in progress at handoff. Recheck rather than assuming final status. Next read scaling logs/artifacts, determine actual CPU affinity/limits and 1/2/4/8 worker throughput; prioritize native performance bottlenecks and complex table-body fidelity; only then qualify 100-doc end-to-end retained evidence/PostgreSQL/OCR/visual/translation/embedding workload. 100 original PDFs native 80312/80312, zero errors, 18.451 pages/s, 1.378 docs/min already completed; no need to repeat this baseline blindly. Ten-day 1.3M document target unqualified; actual source census, fleet capacity, approved provider quota and required vs optional enrichment scope unknown. Avoid unnecessary infrastructure, preserve existing DB/evidence, independent bounded feature workers, no live provider calls without authorization, no full user rerun until qualification. Main review before code modifications and command-first README remain mandatory. Uploaded original public PDFs and feature source ZIP were used in previous conversation; a new chat may not have their runtime files. Retrieve from Library if available or ask for only required originals/current source ZIP without credentials, never assume old sandbox paths. Original report 110p, FDA MedWatch 9p, HTS 4496p; hashes and measured results below. Public download blockers do not invalidate successful native runs; no production readiness claim.
 
 ## P0 — actual complete 100-document throughput result and same-corpus worker scaling (2026-11-27 03:08 ET)
 
