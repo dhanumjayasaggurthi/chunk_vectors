@@ -571,7 +571,7 @@ def run_capture_and_finish(d,receipt,*,overlap=False,finish=False):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",choices=("plan","status","preflight","init","run","capture","materialize","docx-preview","docx-publish",
-                                           "finish","enrich-preview","enrich","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status",
+                                           "finish","enrich-preview","enrich","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status","ocr-recover-crops",
                                            "embed-preview","embed"))
     parser.add_argument("--before-init",action="store_true")
     parser.add_argument("--apply",action="store_true")
@@ -702,6 +702,12 @@ def main(argv=None):
             result=ocr.init(p,apply=True)
         elif cmd=="ocr-status":
             result=ocr.status(p,doc_id=args.doc_id)
+        elif cmd=="ocr-recover-crops":
+            if not args.doc_id or args.all_docs:
+                parser.error("Crop recovery requires one full --doc-id")
+            result=ocr.recover_boundary_crops(p,args.doc_id,apply=args.apply,
+                                             limit=min(1000,lim["ocr_max_jobs"]))
+            code=int(bool(result["errors"]))
         elif cmd in ("ocr-discover","ocr-enqueue"):
             if bool(args.doc_id)==bool(args.all_docs):
                 parser.error("Choose exactly one of --doc-id or --all-docs")

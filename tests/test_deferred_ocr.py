@@ -426,6 +426,68 @@ class DeferredOcrPostgresTests(unittest.TestCase):
             ocr.retrieval_results(self.p,"d"*64,"a"*64,3)
 
 
+    def test_boundary_recovery_verifies_local_crop_and_preserves_other_jobs(self):
+        import fitz
+        from visual_evidence import capture
+        from db import get_conn
+        doc_id="7"*64
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            path=make_pdf(folder)
+            sha=hashlib.sha256(path.read_bytes()).hexdigest()
+            visual={"dpi":200,"workers":1}
+            capture(path,root/"retained",1,1,settings=visual,
+                    policy_id="synthetic-test",authorized_page_derivatives=True)
+            path.unlink()
+            p={**profile(),"deferred_ocr":{"retained_evidence":{
+                "root":str(root/"retained"),"policy_id":"synthetic-test",
+                "renderer":str(fitz.VersionBind),"visual_settings":visual,"read_workers":1}}}
+            fingerprint=ocr.ocr_fingerprint(ocr.settings(p))
+            reason="Region outside retained page; refusing to truncate"
+            conn=get_conn()
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(f"INSERT INTO {self.n['docs']} VALUES (%s,%s,%s,1)",
+                                    (doc_id,sha,"b"*64))
+                        for aid,bbox,status,err in (
+                            ("crop-recover",[7.8,-0.00006103515625,604.2,792],"FAILED_TERMINAL",reason),
+                            ("crop-unrelated",[20,20,50,50],"FAILED_TERMINAL","Unrelated"),
+                            ("crop-success",[20,20,50,50],"TEXT_READY",None),
+                            ("crop-bad",[7.8,-0.01,604.2,792],"FAILED_TERMINAL",reason),
+                        ):
+                            cur.execute(f"""INSERT INTO {self.n['ocr']} (
+                                asset_id,doc_id,source_hash,extraction_hash,ocr_hash,page_number,
+                                kind,bbox,source_ref,status,attempts,error_code,error_message)
+                                VALUES (%s,%s,%s,%s,%s,1,'image',%s::jsonb,'{{}}'::jsonb,%s,1,%s,%s)""",
+                                (aid,doc_id,sha,"b"*64,fingerprint,json.dumps(bbox),status,
+                                 "ValueError" if err else None,err))
+                failed=ocr.recover_boundary_crops(p,doc_id,apply=True)
+                self.assertEqual(failed["selected"],2)
+                self.assertEqual(failed["verified"],1)
+                self.assertEqual(failed["requeued"],0)
+                self.assertFalse(failed["writes"])
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(f"DELETE FROM {self.n['ocr']} WHERE asset_id='crop-bad'")
+                preview=ocr.recover_boundary_crops(p,doc_id)
+                self.assertEqual(preview["verified"],1)
+                self.assertFalse(preview["writes"])
+                self.assertEqual(ocr.recover_boundary_crops(p,doc_id,apply=True)["requeued"],1)
+                self.assertEqual(ocr.recover_boundary_crops(p,doc_id,apply=True)["requeued"],0)
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT asset_id,status,attempts FROM {self.n['ocr']} WHERE doc_id=%s",(doc_id,))
+                    self.assertEqual({aid:(state,attempt) for aid,state,attempt in cur.fetchall()},
+                        {"crop-recover":("RETRY_WAIT",1),"crop-unrelated":("FAILED_TERMINAL",1),
+                         "crop-success":("TEXT_READY",1)})
+            finally:
+                conn.rollback()
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(f"DELETE FROM {self.n['ocr']} WHERE doc_id=%s",(doc_id,))
+                        cur.execute(f"DELETE FROM {self.n['docs']} WHERE doc_id=%s",(doc_id,))
+                conn.close()
+
     def test_claim_is_scoped_to_explicit_document_and_status(self):
         """Never charge another document's OCR quota during a single-PDF pilot."""
         from db import get_conn

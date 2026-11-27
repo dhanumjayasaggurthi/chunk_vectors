@@ -674,6 +674,77 @@ def _validate_ocr_png(job,cfg,png,meta):
     return png
 
 
+def recover_boundary_crops(profile,doc_id,*,apply=False,limit=1000):
+    """Requeue only exact historical boundary failures after local crop proof.
+
+    No original PDF or provider call. Keep attempt count and previous error
+    until the next normal OCR result replaces it. Reject the whole selected
+    batch if any crop cannot be recovered without material truncation.
+    """
+    from db import get_conn
+    if not isinstance(doc_id,str) or len(doc_id)!=64 or any(c not in "0123456789abcdef" for c in doc_id):
+        raise ValueError("Crop recovery requires one full document ID")
+    if type(limit) is not int or not 1<=limit<=1000:
+        raise ValueError("Crop recovery limit must be 1..1000")
+    cfg=settings(profile)
+    if cfg["retained_evidence"] is None:
+        raise ValueError("Crop recovery requires verified retained evidence")
+    n=tables(profile)
+    fingerprint=ocr_fingerprint(cfg)
+    reason="Region outside retained page; refusing to truncate"
+    report={"selected":0,"verified":0,"requeued":0,"errors":[],
+            "writes":False,"cloud_calls":False,"limit":limit}
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT j.asset_id,j.doc_id,j.source_hash,j.extraction_hash,
+                       j.page_number,j.kind,j.bbox,j.attempts,j.lease_token
+                FROM {n['ocr']} j JOIN {n['docs']} d ON d.doc_id=j.doc_id
+                  AND d.source_hash=j.source_hash AND d.extraction_hash=j.extraction_hash
+                WHERE j.doc_id=%s AND j.ocr_hash=%s AND j.status='FAILED_TERMINAL'
+                  AND j.error_code='ValueError' AND j.error_message=%s
+                  AND j.attempts<%s AND j.lease_token IS NULL
+                ORDER BY j.page_number,j.asset_id LIMIT %s""",
+                (doc_id,fingerprint,reason,cfg["max_attempts"],limit))
+            jobs=cur.fetchall()
+        conn.rollback()
+    finally:
+        conn.close()
+    report["selected"]=len(jobs)
+    for job in jobs:
+        try:
+            _retained_png(job,cfg)
+            report["verified"]+=1
+        except Exception as exc:
+            report["errors"].append({"page":job[4],"asset_id":job[0],"code":type(exc).__name__})
+    if not apply or report["errors"] or not jobs:
+        return report
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            for job in jobs:
+                cur.execute(f"""UPDATE {n['ocr']} j
+                    SET status='RETRY_WAIT',next_attempt_at=now(),updated_at=now()
+                    WHERE j.asset_id=%s AND j.doc_id=%s AND j.source_hash=%s
+                      AND j.extraction_hash=%s AND j.ocr_hash=%s
+                      AND j.status='FAILED_TERMINAL' AND j.attempts=%s
+                      AND j.lease_token IS NULL AND j.error_code='ValueError'
+                      AND j.error_message=%s AND EXISTS (
+                        SELECT 1 FROM {n['docs']} d WHERE d.doc_id=j.doc_id
+                        AND d.source_hash=j.source_hash AND d.extraction_hash=j.extraction_hash
+                      )""",(job[0],doc_id,job[2],job[3],fingerprint,job[7],reason))
+                if cur.rowcount!=1:
+                    raise ValueError("Crop recovery state changed; no jobs requeued")
+        conn.commit()
+        report.update(requeued=len(jobs),writes=True)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return report
+
+
 def _retained_page_pngs(jobs,cfg):
     """One verified page per bounded task; preserve individual crop failures.
 

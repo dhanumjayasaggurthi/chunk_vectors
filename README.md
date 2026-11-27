@@ -106,8 +106,18 @@ Use the failed document ID from the log for a targeted retry:
 python -u production.py finish --receipt "PATH_FROM_CAPTURE_OUTPUT.jsonl" --doc-id FULL_64_CHARACTER_ID --apply
 ~~~
 
-Fix the cause before retrying. Do not reset successful jobs or retry terminal
-failures indiscriminately. Logs are named after the configured chunk table:
+For the specific retained-page boundary error, preview then explicitly requeue
+only locally verified crops (no cloud requests):
+
+~~~bash
+python production.py ocr-recover-crops --doc-id FULL_64_CHARACTER_ID
+python production.py ocr-recover-crops --doc-id FULL_64_CHARACTER_ID --apply
+~~~
+
+If any crop cannot be verified, none in that selected batch are requeued.
+After review and provider approval, normal scoped ocr-run processes the
+requeued jobs. Fix other failure causes before retrying. Do not reset
+successful jobs or retry terminal failures indiscriminately. Logs are named after the configured chunk table:
 `logs/<chunk_table>.log`, JSONL and per-process worker files.
 
 Linux background execution (only on a qualified release):
