@@ -44,7 +44,14 @@ class TestConsumerIntake(unittest.TestCase):
         def page(number,text):
             return PageContent(page_number=number,width=612,height=792,
                 elements=[PageElement(ElementType.TEXT,BBox(20,30,500,200),text=text)])
-        p=load_profile(str(REPO/"profiles/deployment_policy.example.yml"))
+        # Deployment YAML deliberately gets identifiers from config.ini in
+        # production.resolve_configuration; supply equivalent test overrides.
+        p=load_profile(str(REPO/"profiles/deployment_policy.example.yml"),[
+            'extraction.schema="intake_ci"','extraction.table="cv_test_pages"',
+            'extracted_content.schema="intake_ci"','extracted_content.table="cv_test_pages"',
+            'output.schema="intake_ci"','output.table="cv_test_chunks"',
+            'output.text_contract="english_v1"',
+        ])
         rules=p["metadata"]
         document=SimpleNamespace(pages=[page(1,"Protocol Number: ABC-2026-001\nBLA 12345"),
             page(2,"BLA 12345"),page(4001,"NDA 98765")])
