@@ -2,7 +2,7 @@ name: Rich document extraction and translation validation
 
 on:
   push:
-    branches: [feat/rich-document-multilingual-v2]
+    branches: [feat/rich-document-multilingual-v2, feat/regulatory-capture-qualification]
   pull_request:
     paths:
       - rich_document.py

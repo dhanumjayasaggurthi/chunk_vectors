@@ -295,6 +295,55 @@ class FigureRecoveryTests(unittest.TestCase):
 
 
 class DerivativePageEvidenceTests(unittest.TestCase):
+    def test_native_capture_timings_preserve_evidence_and_replay(self):
+        import fitz
+        from unittest.mock import patch
+        from visual_evidence import OpenPageCapture, _paths, _source_state, digest_file, verify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = self._fixture(folder)
+            root = folder / "retained"
+            settings = {"dpi": 150, "capture_rasters": True, "capture_vectors": True, "capture_figures": True}
+            config = {"root": str(root), "policy_id": "test", "renderer": fitz.VersionBind,
+                      "visual_settings": settings, "authorized_page_derivatives": True}
+
+            def run(config, profile_timings):
+                with fitz.open(source) as doc:
+                    observer = OpenPageCapture(source, digest_file(source), _source_state(source), doc.page_count,
+                                               config, profile_timings=profile_timings)
+                    for number in range(1, doc.page_count + 1):
+                        observer.consume(doc, number)
+                return observer.report()
+
+            plain_root = folder / "plain"
+            baseline = run({**config, "root": str(plain_root)}, False)
+            measured = run(config, True)
+            self.assertNotIn("phase_timings_seconds", baseline)
+            self.assertEqual(measured["capture_id"], baseline["capture_id"])
+            self.assertEqual(measured["image_bytes"], baseline["image_bytes"])
+            for number in range(1, measured["source_pages"] + 1):
+                for measured_path, plain_path in zip(_paths(root, measured["capture_id"], number),
+                                                     _paths(plain_root, baseline["capture_id"], number)):
+                    self.assertEqual(measured_path.read_bytes(), plain_path.read_bytes())
+            self.assertLessEqual(sum(measured["phase_timings_seconds"].values()), measured["elapsed_seconds"] + 0.001)
+            self.assertTrue({"render", "png_encode", "figure_inventory", "immediate_png_checksum",
+                             "immediate_png_decode", "png_write"} <= measured["phase_timings_seconds"].keys())
+            with patch.object(fitz.Page, "get_pixmap", side_effect=AssertionError("unexpected rendering")):
+                replay = run(config, True)
+                self.assertEqual(replay["skipped_verified_pages"], measured["source_pages"])
+                self.assertEqual(replay["rendered_pages"], 0)
+                self.assertIn("replay_png_decode", replay["phase_timings_seconds"])
+                self.assertNotIn("render", replay["phase_timings_seconds"])
+                self.assertTrue(verify(root, measured["capture_id"], 1, measured["source_pages"], settings=settings,
+                                       profile_timings=True)["phase_timings_seconds"]["verify_png_decode"] > 0)
+                image, _ = _paths(root, measured["capture_id"], 1)
+                data = bytearray(image.read_bytes())
+                data[-1] ^= 1
+                image.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "checksum/size"):
+                    run(config, True)
+
     def test_retained_figure_candidates_ambiguous_and_source_independent(self):
         import fitz
         from visual_evidence import capture,read_figures,read_region,verify,_paths

@@ -1,10 +1,22 @@
 # Regulatory extraction — living engineering state
 
-**Current branch**: [feat/rich-document-multilingual-v2](https://github.com/dhanumjayasaggurthi/chunk_vectors/tree/feat/rich-document-multilingual-v2)
+**Current branch**: [feat/regulatory-capture-qualification](https://github.com/dhanumjayasaggurthi/chunk_vectors/tree/feat/regulatory-capture-qualification)
 **Repository**: [chunk_vectors](https://github.com/dhanumjayasaggurthi/chunk_vectors)
 **Updated**: 2026-11-27. Check branch HEAD and CI; never assume a particular commit remains HEAD.
 
 **This is the canonical handoff link for a new conversation.** Read this document and [native_throughput_semantic_v2.md](native_throughput_semantic_v2.md), inspect branch HEAD, then work from the P0 section below. Update this document whenever implementation, validation, benchmarks or priorities change.
+
+## P0 — retained-evidence phase attribution and public interactive-form qualification (2026-11-27)
+
+Continuation started from `2c0ad10a18784cab31786af238faf79bfcc2b505`. Reviewed the legacy PDF extraction, chunk publication and embeddings on `main` at `86e48c81bbba622acb4982949df9fdf954b6f02d`. The source branch's [main reuse regression](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/46058938192) passed. The [previous rich run](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/46047305324) failed on FDA acquisition. The [previous retained-evidence artifact](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/46047298590/artifacts/15223364467) contained eight verified receipts and measured 6.012 pages/s for cold retained capture over 6,353 physical pages. The 94.172 pages/s baseline measures native parsing alone.
+
+The profiling commit uses the existing `profile_stage_timings` setting to report render, PNG encode and checksums, inventory, immutable writes including fsync, and immediate or replay validation. The benchmark runs a separate source-independent verification pass and a production-path replay after materialization. It pins all eight CFR source hashes and checks coverage, unchanged capture identity and zero new renders on replay. Worker-time components and wall-clock phases have separate fields. Raster inventory includes its asset writes. The capture format, renderer, 300 DPI, retention policy, worker admission and verification checks are unchanged.
+
+Local validation with PyMuPDF 1.28.2 and pdfplumber 0.11.10 passed 21 figure/evidence, 7 retention and 1 physical-grid tests. The FDA MedWatch original downloaded through both official URLs with the same SHA-256. The nine-page acceptance run verified 355 widgets in the byte-identical public original archive, 9/9 strict native pages and 9/9 pixel-exact derivatives. It also tested replay, one-page resume, source-independent verification and tamper rejection. The IRS W-9 passed the same six-page evidence checks with 23 archived widgets, plus a separate strict native run on all six pages. The required rich workflow records failed FDA fetch attempts and accepts an alternate URL only for the pinned source revision. Public originals used for archive tests live in temporary test directories.
+
+Local 64-page stratified probe of the same eight SHA-256-pinned CFR originals, using the qualified renderer with four processes on nine affinity CPUs: 64/64 cold captures, exact-pixel comparisons and replay verifications in 8.694 seconds total. The worker-time sums were 1.274s render, 10.946s PNG encode, 5.398s immediate decode, 5.383s replay decode and 0.028s combined PNG/manifest writes. The workspace used tmpfs for these derivatives. This sampled render-and-verification workload excludes PostgreSQL and cannot establish whole-corpus throughput or storage latency.
+
+Exact next task: capture the new branch's Actions results and fixed-corpus artifact. Compare the disjoint worker-time components against cold, reconciliation and replay wall times. Optimize the largest measured component only after exact output parity on actual originals. Continue the 4,496-page tariff physical-body production path and explicit logical table cell/continuation gold checks. The 1.3M/10-day end-to-end goal still requires source census, fleet capacity and approved provider quotas. Existing production data and provider queues were outside this iteration.
 
 
 

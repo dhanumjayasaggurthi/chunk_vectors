@@ -1,7 +1,7 @@
 name: Real PDF retained capture and PostgreSQL throughput
 on:
   push:
-    branches: [feat/rich-document-multilingual-v2]
+    branches: [feat/rich-document-multilingual-v2, feat/regulatory-capture-qualification]
     paths:
       - tests/real_capture_db_benchmark.py
       - .github/workflows/real-capture-db.yml
@@ -64,5 +64,6 @@ jobs:
           path: |
             real_capture_db.json
             real_capture_db.json.receipts.jsonl
+            real_capture_db.json.replay.jsonl
           if-no-files-found: warn
           retention-days: 14

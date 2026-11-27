@@ -2,7 +2,7 @@ name: Main ingestion reuse and performance tests
 
 on:
   push:
-    branches: [feat/main-ingestion-reuse-performance]
+    branches: [feat/main-ingestion-reuse-performance, feat/regulatory-capture-qualification]
   pull_request:
     paths:
       - main.py

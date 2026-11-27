@@ -60,11 +60,28 @@
     ],
     [
       "fda_medwatch_3500a",
-      "https://www.fda.gov/media/69876/download",
+      "https://www.fda.gov/media/69876/download?attachment=",
+      1,
+      0
+    ],
+    [
+      "irs_w9",
+      "https://www.irs.gov/pub/irs-pdf/fw9.pdf",
       1,
       0
     ]
   ],
+  "source_expectations": {
+    "fda_medwatch_3500a": {
+      "sha256": "d9f3e6b6b9fcd5c8d38fda4989c50e73ce77e15ef657476a5e04a968dc2bd382",
+      "alternate_urls": ["https://www.fda.gov/media/69876/download"],
+      "widgets_by_page": [37, 2, 36, 34, 34, 41, 61, 71, 39]
+    },
+    "irs_w9": {
+      "sha256": "2d420cbb4123dcf1fb82595b2359cfbb5d81f00b9df9d359fcc7af361d093f53",
+      "widgets_by_page": [23, 0, 0, 0, 0, 0]
+    }
+  },
   "long_document_stress": {
     "pages": 3001,
     "page_width_pt": 72,
@@ -145,6 +162,7 @@
   "native_validation_sources": [
     "reagan_udall_fda_access",
     "glass_durability_charts",
-    "fda_medwatch_3500a"
+    "fda_medwatch_3500a",
+    "irs_w9"
   ]
 }

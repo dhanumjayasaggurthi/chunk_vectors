@@ -26,6 +26,8 @@ def check(spec, config):
     from urllib3.util.retry import Retry
 
     name, url, first, last = spec
+    expected = config.get("source_expectations", {}).get(name, {})
+    attempts = []
     with tempfile.TemporaryDirectory(prefix="public-visual-") as tmp:
         root = Path(tmp)
         source = root / "source.pdf"
@@ -34,20 +36,37 @@ def check(spec, config):
             session.mount("https://", HTTPAdapter(max_retries=Retry(
                 total=config['download_retries'], backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504],
                 allowed_methods=["GET"])))
-            with session.get(url, stream=True, timeout=(config['connect_timeout'], config['read_timeout']),
-                             headers={"User-Agent": "Public regulatory extraction benchmark/1.0"}) as response:
-                response.raise_for_status()
-                size = 0
-                with source.open("wb") as stream:
-                    for block in response.iter_content(1024*1024):
-                        size += len(block)
-                        if size > config['max_download_bytes']:
-                            raise ValueError("Public fixture exceeds download limit")
-                        stream.write(block)
-        source_hash = digest_file(source)
+            for download_url in (url, *expected.get("alternate_urls", [])):
+                try:
+                    with session.get(download_url, stream=True, timeout=(config['connect_timeout'], config['read_timeout']),
+                                     headers={"User-Agent": "Public regulatory extraction benchmark/1.0"}) as response:
+                        response.raise_for_status()
+                        size = 0
+                        with source.open("wb") as stream:
+                            for block in response.iter_content(1024*1024):
+                                size += len(block)
+                                if size > config['max_download_bytes']:
+                                    raise ValueError("Public fixture exceeds download limit")
+                                stream.write(block)
+                    with source.open("rb") as stream:
+                        if stream.read(5) != b"%PDF-":
+                            raise ValueError("Public fixture is not a PDF")
+                    source_hash = digest_file(source)
+                    if "sha256" in expected and source_hash != expected["sha256"]:
+                        raise ValueError("Public fixture SHA-256 changed")
+                except (requests.RequestException, ValueError) as error:
+                    attempts.append({"url": download_url, "error": str(error)})
+                else:
+                    break
+            else:
+                raise ValueError(f"Public fixture acquisition failed: {attempts}")
         native_validation = None
+        widget_counts = expected.get("widgets_by_page")
+        verified_archived_form = False
         with fitz.open(source) as pdf:
             count = pdf.page_count
+            if widget_counts is not None:
+                assert [sum(1 for _ in page.widgets()) for page in pdf] == widget_counts
             last = last or count
             if not first <= last <= count :
                 raise ValueError("Unexpected public fixture page range")
@@ -57,6 +76,12 @@ def check(spec, config):
                 image_pages += bool(page.get_image_info())
                 vector_pages += bool(page.get_drawings())
                 text_pages += bool(page.get_text().strip())
+        if widget_counts is not None:
+            # The derivative depicts widget appearances. Only the unchanged
+            # original can prove preservation of the interactive form.
+            from source_evidence_archive import capture as archive_source
+            archive_root = root / "public-original"
+            archive_source(source, archive_root, authorized_retention=True)
         if name in config.get("native_validation_sources",[]):
             # Exercise the same strict production native parser and table
             # injection on every selected physical page of the actual PDF.
@@ -271,6 +296,12 @@ def check(spec, config):
             expected_ids=set(config.get("figure_caption_anchors",{}).get(name,[]))
             assert expected_ids<=figure_ids, f"Missing configured public figure anchors: {expected_ids-figure_ids}"
         source.unlink()
+        if widget_counts is not None:
+            from source_evidence_archive import verify as verify_archive
+            archived = verify_archive(archive_root, source_hash, suffix=".pdf")
+            with fitz.open(archived["archive_path"]) as pdf:
+                assert [sum(1 for _ in page.widgets()) for page in pdf] == widget_counts
+            verified_archived_form = True
         figure_count=figure_hints=figure_crops=0
         for i,digest in figure_refs:
             inv,meta=read_figures(retained,cid,i,settings=config["visual_evidence"])
@@ -376,7 +407,10 @@ def check(spec, config):
             raise AssertionError("Tampered evidence was accepted")
         return {
             "source": name, "url": url, "source_sha256": source_hash,
+            "download_url": download_url, "failed_download_attempts": attempts,
             "source_pages": count, "tested_pages": n, "first": first, "last": last,
+            "interactive_widgets_by_page": widget_counts,
+            "archived_interactive_original_verified": verified_archived_form,
             "strict_native_validation":native_validation,
             "pages_with_images": image_pages, "pages_with_paths": vector_pages,
             "pages_with_text": text_pages, "pixel_exact_pages": n,
