@@ -148,7 +148,7 @@ def capture_one(row,profile,n,docx_config,cfg):
                 if key in report:
                     fields[key]=report[key]
             if ev is not None:
-                for key in ("elapsed_seconds","image_bytes"):
+                for key in ("elapsed_seconds","image_bytes","timings_seconds","reconciliation_seconds"):
                     if key in ev:
                         fields["evidence_"+key]=ev[key]
             status="LOCAL_CAPTURE_VERIFIED" if complete else "INCOMPLETE_OR_BUSY"

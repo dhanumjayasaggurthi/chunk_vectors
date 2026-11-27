@@ -804,7 +804,8 @@ def stage_one(
                 raise ValueError("Encrypted PDF")
             if retained_cfg is not None:
                 from visual_evidence import OpenPageCapture
-                evidence=OpenPageCapture(path,source,evidence_state,page_count,retained_cfg)
+                evidence=OpenPageCapture(path,source,evidence_state,page_count,retained_cfg,
+                                         profile_timings=cfg['profile_stage_timings'])
             if published==(source,fingerprint,page_count):
                 if evidence is None:
                     return {"doc_id":doc_id,"status":"SKIPPED","pages":page_count,"elapsed_seconds":0}

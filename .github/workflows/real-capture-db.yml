@@ -64,5 +64,6 @@ jobs:
           path: |
             real_capture_db.json
             real_capture_db.json.receipts.jsonl
+            real_capture_db.json.replay.jsonl
           if-no-files-found: warn
           retention-days: 14

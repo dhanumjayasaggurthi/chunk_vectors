@@ -37,7 +37,9 @@ class RetentionBatchTests(unittest.TestCase):
                 "stage_timings_seconds":{"pdf_parse":4.0,"retained_evidence":2.0},
                 "retained_evidence":{"local_content_verified":True,
                     "source_pdf_sha256":"0"*64,"verified_pages":12,
-                    "elapsed_seconds":2.0,"image_bytes":500}}
+                    "elapsed_seconds":2.0,"image_bytes":500,
+                    "timings_seconds":{"render":1.5,"other_capture":0.5},
+                    "reconciliation_seconds":0.001}}
         with patch("page_stage.stage_one",return_value=report):
             receipt=capture_one({"path":"sample.pdf"},{},None,{},settings(CFG))
         self.assertEqual(receipt["status"],"INCOMPLETE_OR_BUSY")
@@ -47,6 +49,8 @@ class RetentionBatchTests(unittest.TestCase):
         self.assertEqual(receipt["stage_timings_seconds"],report["stage_timings_seconds"])
         self.assertEqual(receipt["evidence_elapsed_seconds"],2.0)
         self.assertEqual(receipt["evidence_image_bytes"],500)
+        self.assertEqual(receipt["evidence_timings_seconds"],report["retained_evidence"]["timings_seconds"])
+        self.assertEqual(receipt["evidence_reconciliation_seconds"],0.001)
         self.assertFalse(receipt["purge_safe"])
 
     def test_profile_limits(self):

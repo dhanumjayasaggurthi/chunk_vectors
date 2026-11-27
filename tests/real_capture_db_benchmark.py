@@ -11,6 +11,7 @@ import configparser
 from collections import Counter
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import shutil
@@ -91,7 +92,7 @@ def deployment(root,workers):
     return d,schema
 
 
-def checked_receipts(path,items):
+def checked_receipts(path,items,*,replay=False):
     records=[json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     expected={i["sha256"]:i["pages"] for i in items}
     seen=set()
@@ -101,10 +102,11 @@ def checked_receipts(path,items):
         if (sha not in expected or sha in seen or row.get("doc_id") in ids
                 or not row.get("doc_id")
                 or row.get("status")!="LOCAL_CAPTURE_VERIFIED"
-                or row.get("native_status")!="SUCCESS"
+                or row.get("native_status")!=("SKIPPED" if replay else "SUCCESS")
                 or row.get("pages")!=expected[sha]
                 or row.get("verified_pages")!=expected[sha]
-                or row.get("rendered_pages")!=expected[sha]
+                or row.get("rendered_pages")!=(0 if replay else expected[sha])
+                or row.get("skipped_verified_pages")!=(expected[sha] if replay else 0)
                 or row.get("local_content_verified") is not True
                 or row.get("purge_safe") is not False
                 or row.get("durable_storage_verified") is not False):
@@ -113,6 +115,32 @@ def checked_receipts(path,items):
     if seen!=set(expected):
         raise ValueError("Capture did not cover the complete source manifest")
     return records
+
+
+def evidence_metrics(records, *, replay=False):
+    """Reject absent, overlapping or incomplete profiling, including on replay."""
+    totals=Counter()
+    reconciled=0.0
+    for row in records:
+        phases=row.get("evidence_timings_seconds")
+        required={"other_capture"}
+        prefix="replay_verify" if replay else "fresh_verify"
+        required.update(prefix+"_"+s for s in ("manifest_read","image_checksum",
+                        "image_decode","raster_inventory","vector_inventory","figure_inventory"))
+        if not replay:
+            required.update(("render","png_encode","png_write","manifest_write","image_checksum",
+                             "raster_capture_including_asset_writes","vector_inventory","figure_inventory"))
+        if (not isinstance(phases,dict) or not required.issubset(phases)
+                or any(type(v) not in (int,float) or not math.isfinite(v) or v<0 for v in phases.values())
+                or (replay and set(phases)!=required)
+                or abs(sum(phases.values())-row["evidence_elapsed_seconds"])>0.002):
+            raise ValueError("Missing or inconsistent retention timing breakdown")
+        value=row["evidence_reconciliation_seconds"]
+        if type(value) not in (int,float) or not math.isfinite(value) or value<0:
+            raise ValueError("Invalid evidence reconciliation timing")
+        reconciled+=value
+        totals.update(phases)
+    return {"capture_worker_seconds":dict(totals),"report_reconciliation_worker_seconds":reconciled}
 
 
 def snapshot(d,records,*,materialized=False):
@@ -240,7 +268,7 @@ def main():
             raise ValueError("Incomplete or duplicate fixed corpus")
         if sum(i["pages"] for i in items)!=6353:
             raise ValueError("Fixed corpus page count changed")
-        (root/"inventory.jsonl").write_text("".join(json.dumps({"path":i["path"]})+"\n" for i in items),
+        (root/"inventory.jsonl").write_text("".join(json.dumps({"path":i["path"],"source_sha256":i["sha256"]})+"\n" for i in items),
                                             encoding="utf-8")
         init(d["capture"],apply=True)
         init_output(d["retrieval"],apply=True)
@@ -263,6 +291,7 @@ def main():
                       capture_documents_per_minute=round(60*len(records)/elapsed,3),
                       stage_worker_seconds=dict(totals),native_prepass_counts=dict(prepass),
                       open_grid_counts=dict(grid),
+                      evidence_profile=evidence_metrics(records),
                       evidence_file_bytes=sum(f.stat().st_size for f in (root/"evidence").rglob("*") if f.is_file()),
                       native_snapshot=snapshot(d,records))
         save()
@@ -277,6 +306,30 @@ def main():
         if len(results)!=len(records) or any(x["status"]!="SUCCESS" for x in results):
             raise RuntimeError("Native-only materialization failed")
         report["final_snapshot"]=snapshot(d,records,materialized=True)
+        save()
+        # Separate warm replay on the same immutable source/evidence and native
+        # destination; never count this duration as first-pass throughput.
+        replay_receipt=out.with_suffix(out.suffix+".replay.jsonl")
+        tick=time.monotonic()
+        report["replay"]=run_batch(d["inventory"],replay_receipt,d["capture"],
+                                   docx_config=d["docx"],config=d["batch"],stream_receipts=True)
+        report["replay_wall_seconds"]=round(time.monotonic()-tick,3)
+        save()
+        replayed=checked_receipts(replay_receipt,items,replay=True)
+        def identities(rows):
+            return {r["source_sha256"]:(r["doc_id"],r["capture_id"],r["evidence_image_bytes"])
+                    for r in rows}
+        if identities(replayed)!=identities(records):
+            raise ValueError("Replay evidence identity changed")
+        if sum(f.stat().st_size for f in (root/"evidence").rglob("*") if f.is_file())!=report["evidence_file_bytes"]:
+            raise ValueError("Replay evidence footprint changed")
+        replay_snapshot=snapshot(d,replayed,materialized=True)
+        for key in ("native_documents","native_pages","native_errors","materialized_documents",
+                    "chunks","embedded_chunks"):
+            if replay_snapshot[key]!=report["final_snapshot"][key]:
+                raise ValueError("Replay changed publication coverage")
+        report["replay_profile"]=evidence_metrics(replayed,replay=True)
+        report["replay_verified_pages"]=sum(r["skipped_verified_pages"] for r in replayed)
         report["complete"]=True
         save()
         print("CAPTURE_DB_SUMMARY="+json.dumps({k:v for k,v in report.items()

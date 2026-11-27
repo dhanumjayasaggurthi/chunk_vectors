@@ -422,6 +422,62 @@ class DerivativePageEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"Raster asset checksum"):
                 verify(root,cid,1,2,settings=settings)
 
+    def test_native_evidence_profiling_preserves_bytes_and_replay_checks(self):
+        import fitz
+        from visual_evidence import OpenPageCapture, _source_state, digest_file, _paths
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = folder / "profile.pdf"
+            with fitz.open() as pdf:
+                page = pdf.new_page(width=180, height=180)
+                page.insert_text((15,30),"Regulatory source evidence")
+                page.draw_line((15,50),(120,50))
+                pdf.save(source)
+            state = _source_state(source)
+            sha = digest_file(source)
+            settings = dict(dpi=150,capture_rasters=True,capture_vectors=True,capture_figures=True)
+            def run(root, enabled):
+                config = dict(root=str(root),policy_id="test",renderer=str(fitz.VersionBind),
+                              visual_settings=settings,authorized_page_derivatives=True)
+                with fitz.open(source) as pdf:
+                    capture = OpenPageCapture(source,sha,state,pdf.page_count,config,
+                                              profile_timings=enabled)
+                    capture.consume(pdf,1)
+                    return capture.report()
+            ordinary = run(folder/"ordinary",False)
+            measured = run(folder/"measured",True)
+            self.assertNotIn("timings_seconds",ordinary)
+            self.assertEqual(ordinary["capture_id"],measured["capture_id"])
+            cid = measured["capture_id"]
+            self.assertEqual(ordinary["image_bytes"],measured["image_bytes"])
+            def tree(root):
+                return {p.relative_to(root):digest_file(p) for p in root.rglob("*") if p.is_file()}
+            expected = tree(folder/"ordinary")
+            self.assertEqual(expected,tree(folder/"measured"))
+            timings = measured["timings_seconds"]
+            for key in ("render","png_encode","png_write","manifest_write","image_checksum",
+                        "raster_capture_including_asset_writes","vector_inventory","figure_inventory",
+                        "fresh_verify_manifest_read","fresh_verify_image_checksum",
+                        "fresh_verify_image_decode","fresh_verify_raster_inventory",
+                        "fresh_verify_vector_inventory","fresh_verify_figure_inventory","other_capture"):
+                self.assertIn(key,timings)
+                self.assertGreaterEqual(timings[key],0)
+            self.assertAlmostEqual(sum(timings.values()),measured["elapsed_seconds"],delta=0.002)
+            self.assertGreaterEqual(measured["reconciliation_seconds"],0)
+            replay = run(folder/"measured",True)
+            self.assertEqual(replay["rendered_pages"],0)
+            self.assertEqual(replay["skipped_verified_pages"],1)
+            self.assertNotIn("render",replay["timings_seconds"])
+            self.assertNotIn("png_write",replay["timings_seconds"])
+            self.assertIn("replay_verify_image_decode",replay["timings_seconds"])
+            self.assertIn("replay_verify_image_checksum",replay["timings_seconds"])
+            self.assertEqual(tree(folder/"measured"),expected)
+            png,_ = _paths(folder/"measured",cid,1)
+            with png.open("ab") as stream:
+                stream.write(b"tampered")
+            with self.assertRaisesRegex(ValueError,"checksum/size mismatch"):
+                run(folder/"measured",True)
+
     def test_retained_region_exact_pixels_rotation_and_source_removal(self):
         import fitz
         import hashlib
