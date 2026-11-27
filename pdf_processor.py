@@ -260,6 +260,66 @@ def _verified_raster_caption_words(coords, words, plumb_page, native_page, text_
                for item in native_page.get_image_info())
 
 
+def _verified_blank_widget_boundary_words(table, words, plumb_page, native_page,
+                                         text_elements, valid_tables):
+    """Defer blank interactive field grids with independently retained labels.
+
+    Require a recovered parent, one blank text widget per detected cell, and
+    exact native text confined to spans touching the top edge. A populated
+    field, interior text, or ambiguous geometry fails closed. This is not
+    field extraction, nor evidence that the page is semantically complete.
+    """
+    import fitz
+    if native_page is None or native_page.rotation != 0:
+        return False
+    if (any(abs(a-b)>0.1 for a,b in zip(native_page.rect,plumb_page.bbox))
+            or native_page.cropbox!=native_page.mediabox):
+        return False
+    box=fitz.Rect(*table.bbox)
+    if not any(fitz.Rect(parent.bbox).contains(box) for parent in valid_tables):
+        return False
+    def compact(text):
+        return "".join(text.split())
+    expected="".join(compact(w["text"]) for w in words)
+    if not expected or compact(native_page.get_textbox(box))!=expected:
+        return False
+    # The native spans must only touch the top edge; prove each survives
+    # the existing text pass, including the date/units in form labels.
+    spans=[]
+    for block in native_page.get_text("dict",flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
+        for line in block.get("lines",[]):
+            for span in line["spans"]:
+                sb=fitz.Rect(span["bbox"])
+                value=compact(span["text"])
+                if not value or not sb.intersects(box):
+                    continue
+                if not (sb.y0<box.y0<sb.y1<=box.y0+3
+                        and sb.x0>=box.x0-1 and sb.x1<=box.x1+1):
+                    return False
+                if not any(el.element_type==ElementType.TEXT
+                           and el.bbox.overlaps(BBox(*sb))
+                           and value in compact(el.text) for el in text_elements):
+                    return False
+                spans.append(value)
+    if "".join(spans)!=expected:
+        return False
+    cells=[fitz.Rect(cell) for cell in table.cells]
+    widgets=[w for w in native_page.widgets() if w.rect.intersects(box)]
+    if len(cells)<2 or len(widgets)!=len(cells):
+        return False
+    if any(w.field_type!=fitz.PDF_WIDGET_TYPE_TEXT or w.field_value!="" for w in widgets):
+        return False
+    remaining=list(widgets)
+    for cell in cells:
+        matches=[i for i,w in enumerate(remaining)
+                 if abs(w.rect.x0-cell.x0)<=1 and abs(w.rect.x1-cell.x1)<=1
+                 and abs(w.rect.y0-cell.y0)<=2.5 and abs(w.rect.y1-cell.y1)<=2.5]
+        if len(matches)!=1:
+            return False
+        remaining.pop(matches[0])
+    return not remaining
+
+
 def _preserve_empty_table_candidate(table, raw, plumb_page, page_number: int,
                                     max_regions: int, retained_regions: int,
                                     *, candidate_index: int, native_page=None,
@@ -293,6 +353,8 @@ def _preserve_empty_table_candidate(table, raw, plumb_page, page_number: int,
                 coords, words, plumb_page, native_page, text_elements, valid_tables)
             or _verified_raster_caption_words(
                 coords, words, plumb_page, native_page, text_elements)
+            or _verified_blank_widget_boundary_words(
+                table, words, plumb_page, native_page, text_elements, valid_tables)
         ):
             raise ValueError("Unresolved table candidate contains source PDF words")
     except (TypeError, AttributeError) as exc:

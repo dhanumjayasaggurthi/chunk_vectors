@@ -119,6 +119,53 @@ class RichDocumentUnitTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,"source cell text"):
                     _preserve_empty_table_candidate(table,[["Dose 20 mg"]],pp,1,16,0,**kwargs)
 
+    def test_blank_widget_boundary_requires_exact_retained_labels_and_cells(self):
+        import fitz
+        import pdfplumber
+        from types import SimpleNamespace
+        from pdf_processor import (BBox,PageElement,ElementType,
+            _verified_blank_widget_boundary_words,_preserve_empty_table_candidate)
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"form.pdf"
+            with fitz.open() as pdf:
+                page=pdf.new_page(width=612,height=792)
+                page.insert_text((100,100),"Date (e.g., 01-Jan-1900)",fontsize=12)
+                block=page.get_text("blocks")[0]
+                top=block[3]-2
+                cells=[(99,top,300,top+24),(99,top+24,300,top+48)]
+                for i,cell in enumerate(cells):
+                    w=fitz.Widget()
+                    w.field_name=f"date_{i}"
+                    w.field_type=fitz.PDF_WIDGET_TYPE_TEXT
+                    w.field_value=""
+                    w.rect=fitz.Rect(*cell)
+                    page.add_widget(w)
+                pdf.save(path)
+            with fitz.open(path) as pdf,pdfplumber.open(path) as plumb:
+                page=pdf[0]
+                pp=plumb.pages[0]
+                table=SimpleNamespace(bbox=(99,top,300,top+48),cells=cells)
+                parent=SimpleNamespace(bbox=(50,60,500,400))
+                block=page.get_text("blocks")[0]
+                element=PageElement(ElementType.TEXT,BBox(*block[:4]),text=block[4])
+                words=pp.crop(table.bbox).extract_words()
+                def check(els=[element],parents=[parent],candidate=table,source_words=words):
+                    return _verified_blank_widget_boundary_words(candidate,source_words,pp,page,els,parents)
+                self.assertTrue(check())
+                self.assertFalse(check(els=[]))
+                self.assertFalse(check(parents=[]))
+                self.assertFalse(check(source_words=words[:-1]))
+                self.assertFalse(check(candidate=SimpleNamespace(bbox=table.bbox,cells=cells[:1])))
+                result=_preserve_empty_table_candidate(table,[[""],[""]],pp,1,10,0,
+                    candidate_index=1,native_page=page,text_elements=[element],valid_tables=[parent])
+                self.assertFalse(result.unresolved_region["structured_table_recovered"])
+                self.assertEqual(result.bbox,BBox(*table.bbox))
+                widget=next(page.widgets())
+                widget.field_value="01-Jan-2026"
+                widget.update()
+                self.assertFalse(check())
+
+
     def test_vector_preview_persists_with_checksum_and_review_label(self):
         import hashlib
         import io
