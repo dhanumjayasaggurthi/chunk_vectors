@@ -1,15 +1,23 @@
-"""Qualification-only table-negative geometry path; full parser remains default."""
+"""Opt-in table-negative geometry path; full parser remains default."""
 from __future__ import annotations
 
-# Version pairs observed in the earlier real-PDF detector comparison.
-_TESTED_PAIRS = {("0.11.9", "20251230"), ("0.11.10", "20260107")}
+# Only the dependency pair that passed all 80,312 complete page digests.
+# Earlier sampled experiments on 0.11.9 do not qualify that pair.
+_QUALIFIED_PAIRS = {("0.11.10", "20260107")}
+
+
+def qualified_runtime():
+    try:
+        import pdfminer
+        import pdfplumber
+        return (pdfplumber.__version__, pdfminer.__version__) in _QUALIFIED_PAIRS
+    except (ImportError, AttributeError):
+        return False
 
 
 def _eligible(page, settings):
-    import pdfminer
-    import pdfplumber
     from pdfplumber.page import Page
-    return ((pdfplumber.__version__, pdfminer.__version__) in _TESTED_PAIRS
+    return (qualified_runtime()
             and type(page) is Page and page.pdf.laparams is None
             and settings.get("vertical_strategy") == "lines"
             and settings.get("horizontal_strategy") == "lines")

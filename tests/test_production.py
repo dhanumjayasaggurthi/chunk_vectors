@@ -234,6 +234,27 @@ class DeploymentTests(unittest.TestCase):
                     resolve_configuration(path)
 
 
+    def test_native_prepass_opt_in_changes_only_capture_identity(self):
+        from page_stage import extraction_fingerprint, settings
+        with tempfile.TemporaryDirectory() as tmp:
+            path,c=fixture(Path(tmp))
+            default=resolve_configuration(path)
+            self.assertFalse(settings(default["capture"])["native_table_prepass"])
+            c["DEPLOYMENT"]["native_table_prepass"]="true"
+            save(path,c)
+            enabled=resolve_configuration(path)
+            self.assertTrue(settings(enabled["capture"])["native_table_prepass"])
+            self.assertNotEqual(extraction_fingerprint(default["capture"]),
+                                extraction_fingerprint(enabled["capture"]))
+            self.assertEqual(default["retrieval"]["_fingerprint"],enabled["retrieval"]["_fingerprint"])
+            self.assertTrue(plan(enabled)["native_table_prepass_requested"])
+            c["DEPLOYMENT"]["native_table_prepass"]="false"
+            save(path,c)
+            restored=resolve_configuration(path)
+            self.assertEqual(extraction_fingerprint(default["capture"]),
+                             extraction_fingerprint(restored["capture"]))
+            self.assertEqual(default["capture"]["_fingerprint"],restored["capture"]["_fingerprint"])
+
     def test_one_table_mapping_and_host_independent_retrieval_hash(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
@@ -362,6 +383,10 @@ class DeploymentPostgresTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             path,c=fixture(root)
+            # Exercise real production capture, evidence, replay and downstream
+            # publication with the new opt-in on disposable destination tables.
+            c["DEPLOYMENT"]["native_table_prepass"]="true"
+            save(path,c)
             d=resolve_configuration(path)
             p,q=d["capture"],d["retrieval"]
             conn=get_conn()
@@ -403,6 +428,11 @@ class DeploymentPostgresTests(unittest.TestCase):
                     record=json.loads(receipt.read_text())
                     self.assertEqual(record["native_status"],"SUCCESS" if i==0 else "SKIPPED")
                     self.assertEqual(record["rendered_pages"],1 if i==0 else 0)
+                    if i==0:
+                        from native_table_prepass import qualified_runtime
+                        counts=record["native_table_prepass_counts"]
+                        self.assertEqual(counts,{"NEGATIVE_PREPASS":1} if qualified_runtime()
+                                         else {"UNSUPPORTED":1})
                 # Directory mode requires neither deadline nor input inventory.
                 from retention_batch import run_root
                 extra=d["receipts"]/"directory-replay.jsonl"

@@ -33,6 +33,8 @@ preflight_min_free_gib = 10
 preflight_statement_timeout_ms = 15000
 ; Bounded document-stage overlap, independent of per-feature workers (1..8).
 finish_workers = 1
+; Opt-in qualification on isolated native/chunk tables. Changes native extraction identity.
+native_table_prepass = false
 materialize_workers = 2
 materialize_max_docs = 10000
 ocr_max_docs = 1000

@@ -143,7 +143,8 @@ def capture_one(row,profile,n,docx_config,cfg):
                     "local_content_verified":checked}
             # Preserve only numeric native telemetry; never include source text.
             for key in ("new_pages","reused_pages","failed_pages","new_pages_per_min",
-                        "source_hash_initial_seconds","stage_timings_seconds"):
+                        "source_hash_initial_seconds","stage_timings_seconds",
+                        "native_table_prepass_counts"):
                 if key in report:
                     fields[key]=report[key]
             if ev is not None:

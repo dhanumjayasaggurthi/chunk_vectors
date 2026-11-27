@@ -89,6 +89,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "embedding.max_attempts", "embedding.timeout_seconds",
             "embedding.lease_seconds", "embedding.enqueue_page_size",
             "extraction.schema", "extraction.table", "extraction.retained_evidence",
+            "extraction.native_table_prepass",
             "output.schema", "output.table", "output.text_contract", "embedding.dimensions",
             "deferred_ocr.render_dpi", "deferred_ocr.retained_evidence",
             "extracted_content.schema", "extracted_content.table",
@@ -162,7 +163,7 @@ def validate_profile(profile: dict) -> None:
             "capture_table_structure", "max_table_source_json_bytes",
             "visual_processing", "max_visual_regions_per_page",
             "worker_backend", "worker_recycle_documents", "profile_stage_timings",
-            "empty_table_policy", "retained_evidence",
+            "empty_table_policy", "retained_evidence", "native_table_prepass",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -331,6 +332,16 @@ def validate_profile(profile: dict) -> None:
         worker_backend=extract.get("worker_backend","threads")
         if worker_backend not in ("threads","processes"):
             raise ValueError("extraction.worker_backend must be threads or processes")
+        prepass=extract.get("native_table_prepass",False)
+        if type(prepass) is not bool:
+            raise ValueError("extraction.native_table_prepass must be boolean")
+        if prepass and (worker_backend!="processes"
+                        or extract.get("visual_processing","blocking")!="preserve_defer"
+                        or not extract.get("capture_table_structure",False)
+                        or extract.get("ocr_enabled",True)
+                        or extract.get("chart_descriptions_enabled",True)
+                        or extract.get("table_summaries_enabled",False)):
+            raise ValueError("native_table_prepass requires structured native preserve_defer process extraction")
         recycled=extract.get("worker_recycle_documents",0)
         if type(recycled) is not int or not 0<=recycled<=10000:
             raise ValueError("extraction.worker_recycle_documents must be 0..10000")

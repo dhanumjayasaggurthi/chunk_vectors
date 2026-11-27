@@ -108,9 +108,13 @@ def resolve_configuration(path="config.ini"):
     retrieval=load({})
     if retrieval["extraction"].get("retained_evidence") is not None or retrieval.get("deferred_ocr",{}).get("retained_evidence") is not None:
         raise ValueError("Configure evidence paths only in [RETENTION], not processing policy")
+    if "native_table_prepass" in retrieval["extraction"]:
+        raise ValueError("Configure native_table_prepass only in [DEPLOYMENT], not processing policy")
+    prepass=dep.getboolean("native_table_prepass",fallback=False)
     capture=load({"extraction.retained_evidence":retained,
                   "deferred_ocr.render_dpi":visual["dpi"],
-                  "deferred_ocr.retained_evidence":ocr_retained})
+                  "deferred_ocr.retained_evidence":ocr_retained,
+                  **({"extraction.native_table_prepass":True} if prepass else {})})
     batch=_json_profile(dep["batch_profile"])
     batch["authorized_receipt_storage"]=ret.getboolean("authorized_receipt_storage")
     batch["authorized_docx_derivatives"]=ret.getboolean("authorized_docx_derivatives")
@@ -175,6 +179,8 @@ def plan(d):
             "ocr_table":tables(d["capture"])["ocr"],
             "retrieval_tables":{k:output[k] for k in ("table","status","failures")},
             "native_fingerprint":extraction_fingerprint(d["capture"]),
+            "native_table_prepass_requested":d["capture"]["extraction"].get("native_table_prepass",False),
+            "native_table_prepass_qualified_runtime":__import__("native_table_prepass").qualified_runtime(),
             "retrieval_profile_hash":d["retrieval"]["_fingerprint"],
             "workers_max":d["batch"]["workers"],
             "finish_documents_max":d["limits"].get("finish_workers",1),"writes":False,

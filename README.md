@@ -179,6 +179,31 @@ not a 10-day SLA or semantic-accuracy certification. The same command runs
 in the public benchmark GitHub workflow; source download failures are
 reported, not replaced by duplicate copies or sampled pages.
 
+## Native table detection acceleration (opt-in qualification)
+
+The complete 100-PDF A/B benchmark processed 80,312 pages in both modes,
+with exact native page/TOC output parity: 26.046 vs 94.172 pages/sec.
+These are native parser rates only. The default remains the existing parser.
+
+For a **new isolated validation destination** (not an existing captured
+corpus), merge this setting into your existing config.ini:
+
+~~~ini
+[DEPLOYMENT]
+native_table_prepass = true
+~~~
+
+The fast path is qualified for pdfplumber 0.11.10 / pdfminer.six 20260107.
+Other versions, positive table detections and prepass exceptions use the
+original detector. Check `python production.py plan` for requested mode,
+qualified runtime and native fingerprint. Capture receipts report
+`native_table_prepass_counts` for newly processed pages. This option
+changes the native extraction fingerprint deliberately; switching it on
+against an existing destination can invalidate checkpoints and recapture
+documents. Keep it false for existing captured data; do not toggle it
+mid-run. No change to retrieval policy identity from the INI switch.
+The known complex-table reconstruction issue remains open.
+
 ## Worker tuning
 
 Use independent limits by feature, not one worker count for everything.

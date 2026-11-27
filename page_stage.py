@@ -75,10 +75,21 @@ def settings(profile):
         "worker_backend":"threads",
         "worker_recycle_documents":0,
         "profile_stage_timings":False,
+        "native_table_prepass":False,
         "empty_table_policy":"fail",
         "retained_evidence":None,
     }
     result.update(opts)
+    if type(result["native_table_prepass"]) is not bool:
+        raise ValueError("native_table_prepass must be boolean")
+    if result["native_table_prepass"] and (
+            result["worker_backend"]!="processes"
+            or result["visual_processing"]!="preserve_defer"
+            or not result["capture_table_structure"]
+            or result["ocr_enabled"]
+            or result["chart_descriptions_enabled"]
+            or result["table_summaries_enabled"]):
+        raise ValueError("native_table_prepass requires structured native preserve_defer process extraction")
     if result['retained_evidence'] is not None:
         from visual_evidence import native_capture_config
         result['retained_evidence']=native_capture_config(result['retained_evidence'])
@@ -117,6 +128,10 @@ def extraction_fingerprint(profile) -> str:
         "table_settings":TABLE_SETTINGS,
         "table_format":TABLE_FORMAT,
     }
+    # Deliberately isolate the opt-in detector from previous native checkpoints.
+    # The default identity remains byte-for-byte unchanged.
+    if cfg["native_table_prepass"]:
+        semantic["native_table_prepass_version"]=1
     # Deferred visual preservation changes page content; version it independently.
     if cfg["empty_table_policy"]!="fail":
         semantic["empty_table_policy"]=cfg["empty_table_policy"]
@@ -768,6 +783,7 @@ def stage_one(
             max_visual_regions_per_page=cfg["max_visual_regions_per_page"],
             empty_table_policy=cfg["empty_table_policy"],
             profile_page_timings=cfg["profile_stage_timings"],
+            experimental_table_prepass=cfg["native_table_prepass"],
         )
         # Existing native publication and evidence checkpoints are independent.
         evidence=None
@@ -881,6 +897,7 @@ def stage_one(
                 "ocr_images":images_processed,
                 "elapsed_seconds":round(time.monotonic()-started,2),
                 "reused_pages":len(done),
+                **({"native_table_prepass_counts":proc.table_prepass_stats} if cfg["native_table_prepass"] else {}),
                 **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
                 **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
                     "stage_timings_seconds":{key:round(value,3) for key,value in timings.items()}}
@@ -913,6 +930,7 @@ def stage_one(
             "native_extraction_complete":True,
             "visual_enrichment_complete":visuals_deferred==0,
             "visual_assets_deferred_this_run":visuals_deferred,
+            **({"native_table_prepass_counts":proc.table_prepass_stats} if cfg["native_table_prepass"] else {}),
             **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
             **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
                 "stage_timings_seconds":{key:round(value,3)
