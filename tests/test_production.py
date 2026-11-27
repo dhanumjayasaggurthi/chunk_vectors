@@ -62,14 +62,40 @@ class DeploymentTests(unittest.TestCase):
               patch("deferred_ocr.enqueue",return_value={"candidates":1,"inserted":0}) as enqueue,
               patch("deferred_ocr.retrieval_results",return_value=([],[7])),
               patch("deferred_ocr.run") as ocr_run,
-              patch("visual_enrichment.run_pages",return_value=[{"status":"FAILED","source_page":7,
-                                                                  "error_code":"HTTP_401"}]),
+              patch("visual_enrichment.run_pages",return_value=(x for x in [{"status":"FAILED","source_page":7,
+                                                                  "error_code":"HTTP_401"}])),
               self.assertLogs("production",level="INFO") as captured):
             result=finish_captured(d,None,records=records)
         self.assertEqual(result,{"FAILED":1})
         self.assertEqual(enqueue.call_count,1)
         ocr_run.assert_not_called()
         self.assertTrue(any("page=7 code=HTTP_401" in line for line in captured.output))
+
+    def test_finish_reuses_visual_pool_and_requires_all_selected_pages(self):
+        from production import finish_captured
+        d={"capture":{"extraction":{"retained_evidence":{"visual_settings":{}}}},
+           "retrieval":{},"visual_llm":({},{"max_pages":1}),"translation":{"model":"nmt"},
+           "gcp_key":"unused","authorized_ocr":True,"limits":{"ocr_max_jobs":100},
+           "evidence":"unused"}
+        records=[json.dumps({"doc_id":"d"*64,"status":"LOCAL_CAPTURE_VERIFIED",
+                     "format":"pdf","source_sha256":"a"*64,"capture_id":"b"*64})]
+        def outcome(number):
+            return {"status":"COMPLETED_UNVERIFIED","source_page":number,
+                    "verified_result":{"request_id":str(number),
+                        "result":{"observations":[],"limitations":["Requires review"]}}}
+        with (patch("visual_enrichment.LocalQuota"),patch("reuse_materialize.verify_output"),
+              patch("translation_stage.GoogleTranslation"),
+              patch("deferred_ocr.enqueue",return_value={"candidates":3,"inserted":0}),
+              patch("deferred_ocr.retrieval_results",return_value=([],[7,8,9])),
+              patch("visual_enrichment.run_pages",side_effect=lambda *a,**kw:iter(outcome(n) for n in (7,8,9))) as visual,
+              patch("reuse_materialize.run_one",return_value={"status":"SUCCESS"}) as publish):
+            self.assertEqual(finish_captured(d,None,records=records),{"SUCCESS":1})
+            visual.assert_called_once()
+            self.assertEqual(visual.call_args.kwargs["document_pages"],3)
+            self.assertEqual([part["page"] for part in publish.call_args.kwargs["enrichment"]],[7,8,9])
+            visual.side_effect=lambda *a,**kw:(outcome(n) for n in (7,))
+            self.assertEqual(finish_captured(d,None,records=records),{"FAILED":1})
+            self.assertEqual(publish.call_count,1)
 
     def test_optional_enrichment_rejects_invented_source(self):
         from optional_enrichment import validate

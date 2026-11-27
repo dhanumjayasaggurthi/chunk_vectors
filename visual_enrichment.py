@@ -490,16 +490,26 @@ def probe_page(root,capture_id,number,*,visual_settings,config,execution,apply=F
     return report
 
 
-def run_pages(root,pages,*,visual_settings,config,execution,include_result=False,quota=None):
+def run_pages(root,pages,*,visual_settings,config,execution,include_result=False,quota=None,
+              document_pages=None):
     """Bounded page enrichment for caller-selected (capture_id, physical_page).
 
     One local coordinator, one shared process pool for PyMuPDF, concurrent
     network workers. Results are stored beside existing evidence, not in new
     tables. Each yielded outcome is small; caller owns scheduling/reconciliation.
     Failures are explicit outcomes, never successful completion.
+
+    The standalone caller is limited by max_pages. The production document
+    coordinator can provide its already-selected physical page count instead:
+    the old coordinator processed every one of those pages in separate
+    max_pages windows, repeatedly spawning pools. The worker bound, quota,
+    cache identity, and source selection do not change.
     """
     cfg_model=settings(config)
     cfg=execution_settings(execution,cfg_model)
+    if document_pages is not None and (type(document_pages) is not int or document_pages<1):
+        raise ValueError("Invalid selected document page count")
+    page_limit=cfg["max_pages"] if document_pages is None else document_pages
     vs=_settings(visual_settings)
     root=Path(root).resolve(strict=True)
     if not root.is_dir():
@@ -525,7 +535,7 @@ def run_pages(root,pages,*,visual_settings,config,execution,include_result=False
                 exhausted=False
                 while pending or not exhausted:
                     while not exhausted and len(pending)<cfg["workers"]:
-                        if submitted>=cfg["max_pages"]:
+                        if submitted>=page_limit:
                             exhausted=True
                             break
                         try:

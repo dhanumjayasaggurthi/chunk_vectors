@@ -157,6 +157,21 @@ class VisualEnrichmentTests(unittest.TestCase):
                 replay=list(run_pages(retained,pages,visual_settings=vs,config=cfg,execution=exec_cfg))
                 self.assertTrue(all(x["status"]=="SKIPPED_VERIFIED" for x in replay))
                 self.assertEqual(api.call_count,3)
+                # Standalone cap remains unchanged. Full document selection
+                # reuses one reader/network pool for every selected page.
+                limited={**exec_cfg,"max_pages":1}
+                self.assertEqual(len(list(run_pages(retained,pages,visual_settings=vs,
+                                      config=cfg,execution=limited))),1)
+                import concurrent.futures
+                real_pool=concurrent.futures.ProcessPoolExecutor
+                with patch("visual_enrichment.concurrent.futures.ProcessPoolExecutor",
+                           wraps=real_pool) as pool:
+                    full=list(run_pages(retained,pages,visual_settings=vs,
+                              config=cfg,execution=limited,document_pages=len(pages)))
+                    self.assertEqual(len(full),3)
+                    pool.assert_called_once()
+                self.assertTrue(all(x["status"]=="SKIPPED_VERIFIED" for x in full))
+                self.assertEqual(api.call_count,3)
                 pkt=prepare_page(retained,cid,1,visual_settings=vs,config=cfg)
                 path=_cache_path(retained,pkt)
                 row=json.loads(path.read_text(encoding="utf-8"))

@@ -427,18 +427,21 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                         if not d["visual_llm"]:
                             raise PermissionError("Visual LLM authorization/configuration required")
                         model,execution=d["visual_llm"]
-                        # Chunk the page list using the configured bounded run size.
-                        limit=execution["max_pages"]
-                        for start in range(0,len(visual_pages),limit):
-                            selected=visual_pages[start:start+limit]
-                            for outcome in run_pages(d["evidence"],[(row["capture_id"],n) for n in selected],
-                                    visual_settings=p["extraction"]["retained_evidence"]["visual_settings"],
-                                    config=model,execution=execution,include_result=True,quota=quota):
+                        # One bounded pool for the selected pages of this document.
+                        # Explicitly close on error so no new work is admitted.
+                        observed_pages=set()
+                        outcomes=run_pages(d["evidence"],((row["capture_id"],n) for n in visual_pages),
+                                visual_settings=p["extraction"]["retained_evidence"]["visual_settings"],
+                                config=model,execution=execution,include_result=True,quota=quota,
+                                document_pages=len(visual_pages))
+                        with contextlib.closing(outcomes) as stream:
+                            for outcome in stream:
                                 if outcome["status"] not in ("COMPLETED_UNVERIFIED","SKIPPED_VERIFIED"):
                                     failure_code=outcome.get("error_code",outcome.get("error_type","VISUAL_FAILED"))
                                     log.error("finish doc=%s stage=visual_llm page=%s code=%s",
                                               doc[:12],outcome["source_page"],failure_code)
                                     raise RuntimeError("Visual model enrichment failed")
+                                observed_pages.add(outcome["source_page"])
                                 result=outcome["verified_result"]
                                 parts.append({"page":outcome["source_page"],"kind":"visual_model",
                                     "text":"\n".join(
@@ -446,6 +449,9 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                                         +["[MODEL LIMITATION] "+item for item in result["result"]["limitations"]]),
                                     "provenance":{"request_id":result["request_id"],"capture_id":row["capture_id"],
                                                   "source_facts_verified":False}})
+                        if observed_pages!=set(visual_pages):
+                            raise RuntimeError("Visual page coverage incomplete")
+                        log.info("finish doc=%s visual_pages_completed=%s",doc[:12],len(observed_pages))
                     log.info("finish doc=%s stage=%s elapsed=%.2fs",doc[:12],stage,time.monotonic()-tick)
                     stage="translation_materialize"
                     tick=time.monotonic()
