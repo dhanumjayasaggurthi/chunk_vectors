@@ -97,6 +97,111 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(finish_captured(d,None,records=records),{"FAILED":1})
             self.assertEqual(publish.call_count,1)
 
+    def test_finish_parallel_stages_keep_one_coordinator_per_feature(self):
+        import threading
+        import time
+        from collections import Counter
+        from production import finish_captured
+        d={"capture":{"extraction":{"retained_evidence":{"visual_settings":{}}}},
+           "retrieval":{},"visual_llm":({},{}),"translation":{"model":"nmt"},
+           "gcp_key":"unused","authorized_ocr":True,"limits":{"ocr_max_jobs":100,"finish_workers":3},
+           "evidence":"unused"}
+        # Include a duplicate document to test serialization of its full path.
+        records=[json.dumps({"doc_id":str(i)*64,"status":"LOCAL_CAPTURE_VERIFIED",
+                 "format":"pdf","source_sha256":"a"*64,"capture_id":str(i)*64}) for i in (1,2,3,1,4,5)]
+        active=Counter(); peaks=Counter(); total_peak=0
+        stages={}; live=set(); lock=threading.Lock()
+        def step(doc,kind):
+            nonlocal total_peak
+            with lock:
+                if kind=="ocr":
+                    if doc in live:
+                        raise AssertionError("Duplicate document admitted concurrently")
+                    live.add(doc)
+                    stages[doc]=[]
+                stages[doc].append(kind)
+                active[kind]+=1
+                peaks[kind]=max(peaks[kind],active[kind])
+                total_peak=max(total_peak,sum(active.values()))
+            time.sleep(.04)
+            with lock:
+                active[kind]-=1
+                if kind=="publish":
+                    live.remove(doc)
+        def enqueue(p,*,doc_id,**kw):
+            step(doc_id,"ocr")
+            return {"candidates":1,"inserted":0}
+        def visual(root,pages,**kw):
+            cid,number=next(iter(pages))
+            step(cid,"visual")
+            yield {"status":"COMPLETED_UNVERIFIED","source_page":number,
+                   "verified_result":{"request_id":cid,"result":{"observations":[],"limitations":[]}}}
+        def publish(doc,*args,**kw):
+            step(doc,"publish")
+            return {"status":"SUCCESS"}
+        with (patch("visual_enrichment.LocalQuota") as quota,patch("reuse_materialize.verify_output"),
+              patch("translation_stage.GoogleTranslation") as translator,
+              patch("deferred_ocr.enqueue",side_effect=enqueue),
+              patch("deferred_ocr.retrieval_results",side_effect=lambda *a:([],[7])),
+              patch("visual_enrichment.run_pages",side_effect=visual),
+              patch("reuse_materialize.run_one",side_effect=publish)):
+            self.assertEqual(finish_captured(d,None,records=records),{"SUCCESS":6})
+            quota.assert_called_once()
+            translator.assert_called_once()
+        self.assertEqual(dict(peaks),{"ocr":1,"visual":1,"publish":1})
+        self.assertGreater(total_peak,1)
+        self.assertTrue(all(v==["ocr","visual","publish"] for v in stages.values()))
+        self.assertFalse(live)
+
+    def test_parallel_finish_stops_new_visual_calls_on_systemic_error(self):
+        import threading
+        from production import finish_captured
+        d={"capture":{"extraction":{"retained_evidence":{"visual_settings":{}}}},
+           "retrieval":{},"visual_llm":({},{}),"translation":{"model":"nmt"},
+           "gcp_key":"unused","authorized_ocr":True,"limits":{"ocr_max_jobs":100,"finish_workers":3},
+           "evidence":"unused"}
+        records=[json.dumps({"doc_id":str(i)*64,"status":"LOCAL_CAPTURE_VERIFIED",
+                 "format":"pdf","source_sha256":"a"*64,"capture_id":str(i)*64}) for i in range(1,7)]
+        second=threading.Event()
+        def enqueue(p,*,doc_id,**kw):
+            if doc_id=="2"*64: second.set()
+            return {"candidates":1,"inserted":0}
+        def visual(*args,**kw):
+            self.assertTrue(second.wait(3))
+            yield {"status":"FAILED","source_page":7,"error_code":"HTTP_401"}
+        with (patch("visual_enrichment.LocalQuota"),patch("reuse_materialize.verify_output"),
+              patch("translation_stage.GoogleTranslation"),
+              patch("deferred_ocr.enqueue",side_effect=enqueue),
+              patch("deferred_ocr.retrieval_results",side_effect=lambda *a:([],[7])),
+              patch("visual_enrichment.run_pages",side_effect=visual) as model,
+              patch("reuse_materialize.run_one") as publish):
+            result=finish_captured(d,None,records=records)
+            self.assertEqual(result.get("FAILED"),1)
+            self.assertGreaterEqual(result.get("NOT_ADMITTED_SYSTEMIC",0),1)
+            model.assert_called_once()
+            publish.assert_not_called()
+
+    def test_finish_worker_configuration_and_reader_reservation(self):
+        from production import _overlap_batch
+        with tempfile.TemporaryDirectory() as tmp:
+            path,c=fixture(Path(tmp))
+            d=resolve_configuration(path)
+            self.assertEqual(d["limits"]["finish_workers"],1)
+            c["DEPLOYMENT"]["finish_workers"]="3"
+            save(path,c)
+            parallel=resolve_configuration(path)
+            self.assertEqual(parallel["limits"]["finish_workers"],3)
+            self.assertEqual(parallel["retrieval"]["_fingerprint"],d["retrieval"]["_fingerprint"])
+            self.assertEqual(parallel["capture"]["_fingerprint"],d["capture"]["_fingerprint"])
+            parallel["visual_llm"]=({}, {"read_workers":1})
+            cfg,readers=_overlap_batch(parallel)
+            self.assertEqual(readers,2)
+            self.assertEqual(cfg["workers"],parallel["batch"]["workers"]-2)
+            c["DEPLOYMENT"]["finish_workers"]="9"
+            save(path,c)
+            with self.assertRaisesRegex(ValueError,"finish_workers"):
+                resolve_configuration(path)
+
     def test_optional_enrichment_rejects_invented_source(self):
         from optional_enrichment import validate
         source=[{"chunk_id":"a","text":"A clinical study title\nDose 20 mg"}]

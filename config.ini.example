@@ -31,6 +31,8 @@ docx_profile = profiles/docx_evidence_example.json
 preflight_sample_files = 3
 preflight_min_free_gib = 10
 preflight_statement_timeout_ms = 15000
+; Bounded document-stage overlap, independent of per-feature workers (1..8).
+finish_workers = 1
 materialize_workers = 2
 materialize_max_docs = 10000
 ocr_max_docs = 1000

@@ -122,6 +122,11 @@ def resolve_configuration(path="config.ini"):
         ("materialize_max_docs",1,10000000),("ocr_max_docs",1,100000),
         ("ocr_max_jobs",1,1000000),("embedding_workers",1,128),
         ("embedding_max_chunks",0,1000000000))}
+    # Operational only: do not alter extraction or retrieval profile identity.
+    finish_workers=dep.getint("finish_workers",1)
+    if not 1<=finish_workers<=8:
+        raise ValueError("finish_workers must be 1..8")
+    limits["finish_workers"]=finish_workers
     if retrieval["embedding"]["enabled"] is not False:
         raise ValueError("Deployment policy embedding.enabled must remain false; use explicit embed command")
     vision=None
@@ -171,7 +176,8 @@ def plan(d):
             "retrieval_tables":{k:output[k] for k in ("table","status","failures")},
             "native_fingerprint":extraction_fingerprint(d["capture"]),
             "retrieval_profile_hash":d["retrieval"]["_fingerprint"],
-            "workers_max":d["batch"]["workers"],"writes":False,
+            "workers_max":d["batch"]["workers"],
+            "finish_documents_max":d["limits"].get("finish_workers",1),"writes":False,
             "cloud_calls":False}
 
 
@@ -363,8 +369,10 @@ def status(d):
 
 
 def finish_captured(d,receipt,*,records=None,admit=None):
-    """Process only the successful capture records from this invocation.
+    """Process a bounded window of successful records from this invocation.
 
+    Each feature keeps one coordinator; its internal worker limits and quotas
+    do not multiply with the number of in-flight documents.
     Source-native text is never replaced by model content. OCR and model
     results become separately labeled, page-linked chunks in the same table.
     """
@@ -381,27 +389,54 @@ def finish_captured(d,receipt,*,records=None,admit=None):
     translator=GoogleTranslation(d["gcp_key"],d["translation"])
     counts=Counter()
     log=logging.getLogger(__name__)
-    with (Path(receipt).open(encoding="utf-8") if records is None else contextlib.nullcontext(records)) as stream:
-        for line in stream:
-            row=json.loads(line)
-            if row["status"]!="LOCAL_CAPTURE_VERIFIED":
-                continue
-            doc=row["doc_id"]
-            started=time.monotonic()
-            stage="admission"
-            failure_code=None
-            log.info("finish doc=%s started",doc[:12])
+    workers=d["limits"].get("finish_workers",1)
+    if type(workers) is not int or not 1<=workers<=8:
+        raise ValueError("finish_workers must be 1..8")
+    if workers>1 and d.get("pool_enabled"):
+        from deferred_ocr import settings as ocr_settings
+        # Each OCR worker can hold one connection. Materialization holds a
+        # document advisory lock and needs a second connection for writes.
+        if d["pool_max_connections"]<ocr_settings(p)["workers"]+3:
+            raise ValueError("Parallel finish requires OCR workers + 3 pool connections")
+    if workers>1 and admit is None and d.get("batch",{}).get("resource_guard"):
+        admit=_enrichment_admission(d["batch"])
+    stopped=threading.Event()
+    systemic={"HTTP_401","HTTP_403","HTTP_404","MODEL_DEPLOYMENT_MISMATCH"}
+    ocr_gate,visual_gate,materialize_gate=(threading.Lock() for _ in range(3))
+
+    class _FinishStopped(Exception):
+        pass
+
+    @contextlib.contextmanager
+    def stage_gate(gate):
+        with gate:
+            if stopped.is_set():
+                raise _FinishStopped()
             try:
-                if admit is not None and not admit():
-                    counts["NOT_ADMITTED_RESOURCE"]+=1
-                    continue
-                if row["format"]=="docx":
-                    stage="docx_materialize"
+                yield
+            except Exception as exc:
+                if gate is visual_gate and safe_failure_code(exc) in systemic:
+                    stopped.set()
+                raise
+
+    def finish_one(row):
+        doc=row["doc_id"]
+        started=time.monotonic()
+        stage="admission"
+        failure_code=None
+        log.info("finish doc=%s started",doc[:12])
+        try:
+            if stopped.is_set():
+                return "NOT_ADMITTED_SYSTEMIC"
+            if row["format"]=="docx":
+                stage="docx_materialize"
+                with stage_gate(materialize_gate):
                     result=run_docx(d["evidence"],row["capture_id"],q,config=d["docx"],
                                     doc_id=doc,file_name=row["file_name"],allow_logical_locators=True,translator=translator)
-                else:
-                    stage="ocr_discovery"
-                    tick=time.monotonic()
+            else:
+                stage="ocr_discovery"
+                tick=time.monotonic()
+                with stage_gate(ocr_gate):
                     discovered=ocr.enqueue(p,doc_id=doc,max_docs=1,apply=True)
                     log.info("finish doc=%s stage=%s candidates=%s inserted=%s elapsed=%.2fs",
                              doc[:12],stage,discovered["candidates"],discovered["inserted"],time.monotonic()-tick)
@@ -422,9 +457,10 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                         parts,visual_pages=ocr.retrieval_results(p,doc,row["source_sha256"],discovered["candidates"])
                     log.info("finish doc=%s stage=%s elapsed=%.2fs visual_pages=%s",
                              doc[:12],stage,time.monotonic()-tick,len(visual_pages))
-                    stage="visual_llm"
-                    tick=time.monotonic()
-                    if visual_pages:
+                stage="visual_llm"
+                tick=time.monotonic()
+                if visual_pages:
+                    with stage_gate(visual_gate):
                         if not d["visual_llm"]:
                             raise PermissionError("Visual LLM authorization/configuration required")
                         model,execution=d["visual_llm"]
@@ -441,6 +477,8 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                                     failure_code=outcome.get("error_code",outcome.get("error_type","VISUAL_FAILED"))
                                     log.error("finish doc=%s stage=visual_llm page=%s code=%s",
                                               doc[:12],outcome["source_page"],failure_code)
+                                    if failure_code in systemic:
+                                        stopped.set()
                                     raise RuntimeError("Visual model enrichment failed")
                                 observed_pages.add(outcome["source_page"])
                                 result=outcome["verified_result"]
@@ -453,25 +491,65 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                         if observed_pages!=set(visual_pages):
                             raise RuntimeError("Visual page coverage incomplete")
                         log.info("finish doc=%s visual_pages_completed=%s",doc[:12],len(observed_pages))
-                    log.info("finish doc=%s stage=%s elapsed=%.2fs",doc[:12],stage,time.monotonic()-tick)
-                    stage="translation_materialize"
-                    tick=time.monotonic()
-                    parts.sort(key=lambda item:(item["page"],item["kind"],json.dumps(item["provenance"],sort_keys=True)))
+                log.info("finish doc=%s stage=%s elapsed=%.2fs",doc[:12],stage,time.monotonic()-tick)
+                stage="translation_materialize"
+                tick=time.monotonic()
+                parts.sort(key=lambda item:(item["page"],item["kind"],json.dumps(item["provenance"],sort_keys=True)))
+                with stage_gate(materialize_gate):
                     result=run_one(doc,q,names,enrichment=parts,expected_source_hash=row["source_sha256"],translator=translator)
-                counts[result["status"]]+=1
-                log.info("finish doc=%s stage=%s status=%s total_elapsed=%.2fs",
-                         doc[:12],stage,result["status"],time.monotonic()-started)
-            except Exception as exc:
-                code=failure_code or safe_failure_code(exc)
-                log.error("finish doc=%s stage=%s code=%s elapsed=%.2fs",
-                          doc[:12],stage,code,time.monotonic()-started)
-                counts["FAILED"]+=1
-                # These indicate a provider-wide authorization/deployment problem.
-                # Stop additional documents rather than spend more on doomed work.
-                if stage=="visual_llm" and code in ("HTTP_401","HTTP_403","HTTP_404",
-                                                     "MODEL_DEPLOYMENT_MISMATCH"):
-                    log.error("finish stopped: systemic visual provider error; fix configuration before retry")
-                    break
+            log.info("finish doc=%s stage=%s status=%s total_elapsed=%.2fs",
+                     doc[:12],stage,result["status"],time.monotonic()-started)
+            return result["status"]
+        except _FinishStopped:
+            return "NOT_ADMITTED_SYSTEMIC"
+        except Exception as exc:
+            code=failure_code or safe_failure_code(exc)
+            log.error("finish doc=%s stage=%s code=%s elapsed=%.2fs",
+                      doc[:12],stage,code,time.monotonic()-started)
+            # These indicate a provider-wide authorization/deployment problem.
+            # Stop additional documents rather than spend more on doomed work.
+            if stage=="visual_llm" and code in systemic:
+                log.error("finish stopped: systemic visual provider error; fix configuration before retry")
+                stopped.set()
+            return "FAILED"
+
+    def ready_rows(stream):
+        for line in stream:
+            if stopped.is_set():
+                return
+            row=json.loads(line)
+            if row["status"]=="LOCAL_CAPTURE_VERIFIED":
+                yield row
+
+    with (Path(receipt).open(encoding="utf-8") if records is None else contextlib.nullcontext(records)) as stream:
+        if workers==1:
+            for row in ready_rows(stream):
+                if admit is not None and not admit():
+                    counts["NOT_ADMITTED_RESOURCE"]+=1
+                    continue
+                counts[finish_one(row)]+=1
+        else:
+            # At most workers live documents, never a corpus-sized queue.
+            # Admission runs on the coordinator; provider gates are independent.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                pending={}
+                def drain():
+                    done,_=concurrent.futures.wait(pending,return_when=concurrent.futures.FIRST_COMPLETED)
+                    for future in done:
+                        pending.pop(future)
+                        counts[future.result()]+=1
+                for row in ready_rows(stream):
+                    # Duplicate doc IDs in a receipt must never finish concurrently.
+                    while pending and (len(pending)>=workers or row["doc_id"] in pending.values()):
+                        drain()
+                    if stopped.is_set():
+                        break
+                    if admit is not None and not admit():
+                        counts["NOT_ADMITTED_RESOURCE"]+=1
+                        continue
+                    pending[pool.submit(finish_one,row)]=row["doc_id"]
+                while pending:
+                    drain()
     return dict(counts)
 
 
@@ -480,7 +558,9 @@ def _overlap_batch(d):
     cfg=copy.deepcopy(d["batch"])
     readers=d["capture"]["deferred_ocr"]["retained_evidence"]["read_workers"]
     if d["visual_llm"]:
-        readers=max(readers,d["visual_llm"][1]["read_workers"])
+        visual_readers=d["visual_llm"][1]["read_workers"]
+        readers=(readers+visual_readers if d["limits"].get("finish_workers",1)>1
+                 else max(readers,visual_readers))
     if cfg["workers"]<=readers:
         raise ValueError("Overlap requires worker budget greater than OCR/LLM reader processes")
     cfg["workers"]-=readers
@@ -571,7 +651,7 @@ def run_capture_and_finish(d,receipt,*,overlap=False,finish=False):
             done.set()
         result["retrieval"]=future.result()
     result["overlap"]={"native_worker_max":cfg["workers"],"reserved_reader_processes":readers,
-                       "enrichment_documents_in_flight":1}
+                       "enrichment_documents_in_flight":d["limits"].get("finish_workers",1)}
     return result
 
 

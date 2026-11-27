@@ -164,6 +164,34 @@ tail -f ingestlogs.log
 Run one coordinator per server. See [production reference](docs/PRODUCTION_REFERENCE.md)
 for OS resource protection and advanced diagnostics.
 
+## Worker tuning
+
+Use independent limits by feature, not one worker count for everything.
+
+| Stage | Existing setting |
+| --- | --- |
+| Native text + tables | Batch JSON: workers |
+| Concurrent documents during finish | INI DEPLOYMENT: finish_workers (1..8, default 1) |
+| OCR network | YAML deferred_ocr.workers |
+| OCR retained-page readers | INI DEPLOYMENT: ocr_read_workers |
+| Visual network and readers | Visual execution JSON: workers, read_workers |
+| Translation | INI DEPLOYMENT: translation_workers, translation_rpm |
+| Standalone materialization | INI DEPLOYMENT: materialize_workers |
+| Embeddings | INI DEPLOYMENT: embedding_workers |
+| Optional LLM enrichment | One-document pilot; no independent worker pool yet |
+
+For qualification, start with finish_workers = 3. Different documents can
+overlap OCR, visual interpretation and translation/publication. Each feature
+keeps one coordinator, so nested pools do not multiply by document count.
+Native overlap reserves both reader process budgets when finish_workers > 1.
+With the PostgreSQL pool enabled, parallel finish requires at least OCR
+workers + 3 connections in the coordinator process. This is not a fleet
+connection budget: include native worker processes and all other clients.
+A larger finish window holds more document state in memory. Keep concurrency
+within measured CPU, RAM, DB capacity and provider quotas; do not run several
+coordinators against the same quota allocation. Settings are operational
+and do not change source or retrieval identities. No quality gate is bypassed.
+
 ## 5. Optional enrichment — independent pilot
 
 For an already-published PDF, merge [ENRICHMENT] from config.ini.example.
