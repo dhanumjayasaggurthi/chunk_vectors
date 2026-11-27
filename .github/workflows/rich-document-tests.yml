@@ -166,6 +166,10 @@ jobs:
   public-visual-evidence:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -186,11 +190,13 @@ jobs:
           [GCP]
           gcp_key_path=not-used.json
           EOF
-      - run: python tests/public_visual_evidence_benchmark.py tests/public_visual_evidence_sources.json public_visual_report.json
+      - run: >-
+          python tests/public_visual_evidence_benchmark.py tests/public_visual_evidence_sources.json
+          public_visual_report.json --shard-count 4 --shard-index ${{ matrix.shard }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: public-visual-evidence-report
+          name: public-visual-evidence-report-${{ matrix.shard }}
           path: public_visual_report.json
           if-no-files-found: error
 

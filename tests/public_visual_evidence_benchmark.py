@@ -7,7 +7,9 @@ This measures retained page evidence, NOT figure segmentation or OCR accuracy.
 """
 from __future__ import annotations
 
+import argparse
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -17,6 +19,38 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from visual_evidence import capture, verify, _paths, digest_file, read_region, read_raster, read_vectors, read_figures, _json_bytes, OpenPageCapture, _source_state
+
+
+def checked_pdf_hash(path, expected_sha256=None):
+    with path.open("rb") as stream:
+        if stream.read(5) != b"%PDF-":
+            raise ValueError("Public fixture is not a PDF")
+    sha256 = digest_file(path)
+    if expected_sha256 is not None and sha256 != expected_sha256:
+        raise ValueError("Public fixture SHA-256 changed")
+    return sha256
+
+
+def download_pdf(source, url, config, expected):
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    with requests.Session() as session:
+        session.mount("https://", HTTPAdapter(max_retries=Retry(
+            total=config['download_retries'], backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"])))
+        with session.get(url, stream=True, timeout=(config['connect_timeout'], config['read_timeout']),
+                         headers={"User-Agent": "Public regulatory extraction benchmark/1.0"}) as response:
+            response.raise_for_status()
+            size = 0
+            with source.open("wb") as stream:
+                for block in response.iter_content(1024*1024):
+                    size += len(block)
+                    if size > config['max_download_bytes']:
+                        raise ValueError("Public fixture exceeds download limit")
+                    stream.write(block)
+    return checked_pdf_hash(source, expected.get("sha256"))
 
 
 def check_table_continuation(source, source_hash, page_count, expected):
@@ -73,45 +107,24 @@ def check_table_continuation(source, source_hash, page_count, expected):
 
 def check(spec, config):
     import fitz
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
 
     name, url, first, last = spec
     expected = config.get("source_expectations", {}).get(name, {})
-    attempts = []
     with tempfile.TemporaryDirectory(prefix="public-visual-") as tmp:
         root = Path(tmp)
         source = root / "source.pdf"
         retained = root / "retained"
-        with requests.Session() as session:
-            session.mount("https://", HTTPAdapter(max_retries=Retry(
-                total=config['download_retries'], backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504],
-                allowed_methods=["GET"])))
-            for download_url in (url, *expected.get("alternate_urls", [])):
-                try:
-                    with session.get(download_url, stream=True, timeout=(config['connect_timeout'], config['read_timeout']),
-                                     headers={"User-Agent": "Public regulatory extraction benchmark/1.0"}) as response:
-                        response.raise_for_status()
-                        size = 0
-                        with source.open("wb") as stream:
-                            for block in response.iter_content(1024*1024):
-                                size += len(block)
-                                if size > config['max_download_bytes']:
-                                    raise ValueError("Public fixture exceeds download limit")
-                                stream.write(block)
-                    with source.open("rb") as stream:
-                        if stream.read(5) != b"%PDF-":
-                            raise ValueError("Public fixture is not a PDF")
-                    source_hash = digest_file(source)
-                    if "sha256" in expected and source_hash != expected["sha256"]:
-                        raise ValueError("Public fixture SHA-256 changed")
-                except (requests.RequestException, ValueError) as error:
-                    attempts.append({"url": download_url, "error": str(error)})
-                else:
-                    break
-            else:
-                raise ValueError(f"Public fixture acquisition failed: {attempts}")
+        fixture = expected.get("fixture")
+        if fixture is not None:
+            if Path(fixture).name != fixture:
+                raise ValueError("Expected a filename under tests/fixtures")
+            original = Path(__file__).resolve().parent / "fixtures" / fixture
+            if original.stat().st_size > config['max_download_bytes']:
+                raise ValueError("Public fixture exceeds byte limit")
+            shutil.copyfile(original, source)
+            source_hash = checked_pdf_hash(source, expected["sha256"])
+        else:
+            source_hash = download_pdf(source, url, config, expected)
         native_validation = None
         widget_counts = expected.get("widgets_by_page")
         verified_archived_form = False
@@ -461,7 +474,7 @@ def check(spec, config):
             raise AssertionError("Tampered evidence was accepted")
         return {
             "source": name, "url": url, "source_sha256": source_hash,
-            "download_url": download_url, "failed_download_attempts": attempts,
+            "fixture": fixture,
             "source_pages": count, "tested_pages": n, "first": first, "last": last,
             "interactive_widgets_by_page": widget_counts,
             "archived_interactive_original_verified": verified_archived_form,
@@ -559,14 +572,20 @@ def check_long(config):
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: public_visual_evidence_benchmark.py CONFIG REPORT")
-    config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    output = Path(sys.argv[2])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("config", type=Path)
+    parser.add_argument("report", type=Path)
+    parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
+    args = parser.parse_args()
+    config = json.loads(args.config.read_text(encoding="utf-8"))
+    if not 0 <= args.shard_index < args.shard_count <= len(config["sources"]):
+        parser.error("Expected a shard index within the source and shard counts")
+    fixtures = config["sources"][args.shard_index::args.shard_count]
     results, failures = [], []
     # Do not nest document pools and page pools. Benchmark fixed page-pool cap
     # per document, measuring serial vs parallel on the same runner.
-    for spec in config["sources"]:
+    for spec in fixtures:
         try:
             result = check(spec,config)
             serialized = json.dumps(result, allow_nan=False)
@@ -577,16 +596,17 @@ def main():
             failures.append(failure)
             print(json.dumps(failure), flush=True)
     stress = None
-    if "long_document_stress" in config:
+    if args.shard_index == 0 and "long_document_stress" in config:
         try:
             stress = check_long(config["long_document_stress"])
             print(json.dumps(stress), flush=True)
         except Exception as exc:
             failures.append({"source": "synthetic_long_document", "error": repr(exc), "traceback": traceback.format_exc()})
             print(json.dumps(failures[-1]), flush=True)
-    report = {"results":results,"long_document_stress":stress,"failures":failures,"passed":len(results)==len(config['sources']) and not failures,
+    report = {"shard_index":args.shard_index,"shard_count":args.shard_count,
+              "results":results,"long_document_stress":stress,"failures":failures,"passed":len(results)==len(fixtures) and not failures,
               "scope":"rendered-page integrity and replay only; not figure/OCR/LLM quality"}
-    output.write_text(json.dumps(report,indent=2),encoding="utf-8")
+    args.report.write_text(json.dumps(report,indent=2),encoding="utf-8")
     if not report["passed"]:
         raise SystemExit(1)
 

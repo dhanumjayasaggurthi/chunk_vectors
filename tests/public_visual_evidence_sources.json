@@ -90,7 +90,7 @@
     },
     "fda_medwatch_3500a": {
       "sha256": "d9f3e6b6b9fcd5c8d38fda4989c50e73ce77e15ef657476a5e04a968dc2bd382",
-      "alternate_urls": ["https://www.fda.gov/media/69876/download"],
+      "fixture": "fda_medwatch_3500a_2025-09.pdf",
       "widgets_by_page": [37, 2, 36, 34, 34, 41, 61, 71, 39]
     },
     "irs_w9": {
