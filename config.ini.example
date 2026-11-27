@@ -84,3 +84,12 @@ docs_root = /approved/input/server01
 ; Automatic embedding after successful capture/enrichment. Separate embed command remains available.
 enable_embeddings = false
 table_summaries_enabled = false
+
+[ENRICHMENT]
+; Independent, disabled-by-default, one-document optional review candidates.
+enabled = false
+metadata = false
+table_summaries = false
+first_pages = 10
+max_context_bytes = 16000
+max_requests = 10

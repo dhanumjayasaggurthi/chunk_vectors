@@ -71,6 +71,24 @@ class DeploymentTests(unittest.TestCase):
         ocr_run.assert_not_called()
         self.assertTrue(any("page=7 code=HTTP_401" in line for line in captured.output))
 
+    def test_optional_enrichment_rejects_invented_source(self):
+        from optional_enrichment import validate
+        source=[{"chunk_id":"a","text":"A clinical study title\nDose 20 mg"}]
+        good=json.dumps({"value":"A clinical study title","citations":[
+            {"chunk_id":"a","quote":"A clinical study title"}]})
+        self.assertEqual(validate(good,"document_title",source,10000)["status"],"REVIEW_REQUIRED")
+        for bad in (
+            {"value":"Other title","citations":[{"chunk_id":"a","quote":"A clinical study title"}]},
+            {"value":"Other title","citations":[{"chunk_id":"a","quote":"Other title"}]},
+            {"value":"Other title","citations":[]},
+        ):
+            with self.assertRaises(ValueError):
+                validate(json.dumps(bad),"document_title",source,10000)
+        with self.assertRaisesRegex(ValueError,"Numeric"):
+            validate(json.dumps({"value":"Dose 99 mg","citations":[{"chunk_id":"a","quote":"Dose 20 mg"}]}),
+                     "table_summary",source,10000)
+        self.assertEqual(validate('{"value":"","citations":[]}',"document_title",source,10000)["status"],"NOT_FOUND_IN_SCOPE")
+
     def test_missing_or_invalid_embedding_dimensions_has_actionable_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path,c=fixture(Path(tmp))
@@ -333,6 +351,26 @@ class DeploymentPostgresTests(unittest.TestCase):
                 self.assertGreater(report["retrieval"]["chunks"],0)
                 self.assertTrue(report["retrieval"]["profile_matches"])
                 self.assertEqual(report["ocr"]["statuses"],{"VISUAL_PENDING":1})
+                from optional_enrichment import run as enrich
+                d["optional_enrichment"]={"enabled":True,"metadata":True,"table_summaries":False,
+                     "first_pages":10,"max_context_bytes":16000,"max_requests":1}
+                conn=get_conn()
+                try:
+                    with conn:
+                        with conn.cursor() as cur:
+                            cur.execute(f"UPDATE {n['table']} SET document_metadata=document_metadata-'document_title' WHERE doc_id=%s",(doc_id,))
+                            cur.execute(f"SELECT chunk_id FROM {n['table']} WHERE doc_id=%s",(doc_id,))
+                            cid=cur.fetchone()[0]
+                finally:
+                    conn.close()
+                preview=enrich(d,doc_id)
+                self.assertEqual(preview["outcomes"],{"ELIGIBLE":1})
+                self.assertFalse(preview["writes"])
+                candidate=json.dumps({"value":"Test document","citations":[{"chunk_id":cid,"quote":"Test document"}]})
+                with patch("azure_client.call_visual_structured",return_value=(candidate,{})) as api:
+                    self.assertEqual(enrich(d,doc_id,apply=True)["outcomes"],{"REVIEW_REQUIRED":1})
+                    self.assertEqual(enrich(d,doc_id,apply=True)["outcomes"],{"SKIPPED":1})
+                    self.assertEqual(api.call_count,1)
                 other={**d,"retrieval":{**q,"_fingerprint":"0"*64}}
                 self.assertFalse(status(other)["retrieval"]["profile_matches"])
                 conn=get_conn()

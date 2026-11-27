@@ -143,11 +143,13 @@ def resolve_configuration(path="config.ini"):
             "max_chars":dep.getint("translation_max_chars",5000),
             "timeout_seconds":dep.getint("translation_timeout_seconds",60),
             "attempts":dep.getint("translation_attempts",3)})
+    from optional_enrichment import settings as optional_settings
+    optional=optional_settings(cfg["ENRICHMENT"] if cfg.has_section("ENRICHMENT") else cfg["DEFAULT"])
     overlap=dep.getboolean("overlap_enrichment",fallback=False)
     enable_embeddings=cfg["PIPELINE"].getboolean("enable_embeddings",fallback=False)
     if enable_embeddings and not dep.getboolean("authorized_embedding"):
         raise PermissionError("Embedding switch requires explicit provider authorization")
-    return {"overlap_enrichment":overlap,"enable_embeddings":enable_embeddings,"translation":translation,"visual_llm":vision,"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
+    return {"optional_enrichment":optional,"overlap_enrichment":overlap,"enable_embeddings":enable_embeddings,"translation":translation,"visual_llm":vision,"capture":capture,"retrieval":retrieval,"batch":batch,"docx":docx,
             "evidence":evidence,"source":source,"receipts":receipts,"inventory":inventory,
             "limits":limits,"relations":relations,
             "authorized_ocr":dep.getboolean("authorized_ocr"),
@@ -569,7 +571,7 @@ def run_capture_and_finish(d,receipt,*,overlap=False,finish=False):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",choices=("plan","status","preflight","init","run","capture","materialize","docx-preview","docx-publish",
-                                           "finish","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status",
+                                           "finish","enrich-preview","enrich","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status",
                                            "embed-preview","embed"))
     parser.add_argument("--before-init",action="store_true")
     parser.add_argument("--apply",action="store_true")
@@ -586,7 +588,7 @@ def main(argv=None):
         parser.error("--before-init applies only to preflight")
     if (args.retry_failed or args.rescan_source) and args.command!="embed":
         parser.error("Embedding retry/rescan options apply only to embed")
-    writes={"init","run","capture","finish","materialize","docx-publish","ocr-init","ocr-enqueue","ocr-run","embed"}
+    writes={"init","run","capture","finish","materialize","docx-publish","ocr-init","ocr-enqueue","ocr-run","embed","enrich"}
     if args.command in writes and not args.apply:
         parser.error("Explicit --apply required for writes or provider calls")
     # All existing modules and spawned workers read config.ini in the working
@@ -657,6 +659,12 @@ def main(argv=None):
         else:
             result=finish_captured(d,receipt)
         code=int(bool(result.get("FAILED") or result.get("BUSY") or result.get("NOT_ADMITTED_RESOURCE")))
+    elif cmd in ("enrich-preview","enrich"):
+        if not args.doc_id or args.all_docs:
+            parser.error("Optional enrichment requires one full --doc-id")
+        from optional_enrichment import run as enrich
+        result=enrich(d,args.doc_id,apply=cmd=="enrich")
+        code=int(bool(result["outcomes"].get("FAILED") or result["outcomes"].get("BUSY")))
     elif cmd=="materialize":
         if q["output"].get("text_contract")=="english_v1":
             parser.error("Use run or finish for English-only retrieval; native-only publication is disabled")

@@ -6,8 +6,7 @@ Use the existing legacy `main.py` and embedding launchers only for legacy jobs.
 > **Release gate:** This feature branch is still under validation. Native capture
 > succeeded on the local 14-document workload; full OCR/visual enrichment did not.
 > Do not run the full workload on the branch HEAD until the release gates in
-> [project state](docs/PIPELINE_PROJECT_STATE.md) pass. The independent optional
-> metadata/table/chart enrichment command is planned, not available yet.
+> [project state](docs/PIPELINE_PROJECT_STATE.md) pass. Optional text enrichment is experimental and requires its own qualification.
 
 ## 1. Configure once
 
@@ -122,7 +121,27 @@ tail -f ingestlogs.log
 Run one coordinator per server. See [production reference](docs/PRODUCTION_REFERENCE.md)
 for OS resource protection and advanced diagnostics.
 
-## 5. Embeddings — separate and optional
+## 5. Optional enrichment — independent pilot
+
+For an already-published PDF, merge [ENRICHMENT] from config.ini.example.
+Enable metadata and/or table_summaries explicitly. Use an approved Azure
+structured-response deployment and exclusive quota allocation.
+
+~~~bash
+python production.py enrich-preview --doc-id FULL_64_CHARACTER_ID
+python production.py enrich --doc-id FULL_64_CHARACTER_ID --apply
+~~~
+
+Preview is read-only. Apply performs bounded paid requests after qualification.
+Exact-quote title candidates and qualitative table descriptions go into
+chunk_metadata.optional_enrichment, labeled REVIEW_REQUIRED. Source text,
+canonical metadata, row counts and vectors are unchanged. Mixed/oversized
+groups are deferred. Identical committed requests skip on replay.
+Do not run concurrently with another visual coordinator on the same quota.
+Chart backfill, full introduction and corpus scheduling are still pending.
+JSONB descriptions are not automatically embedded.
+
+## 6. Embeddings — separate and optional
 
 After retrieval quality and provider quotas are approved:
 
@@ -144,7 +163,8 @@ See [embedding operations](docs/FAST_EMBEDDINGS.md) for legacy/distributed detai
 | Table continuity | YAML `chunking.table_continuation`; conservative, source rows retained |
 | Table summaries | YAML `chunking.table_summary_mode`; none/structural/extractive; not narrative |
 | OCR / translation / visual LLM / embedding | INI DEPLOYMENT authorization flags and existing provider profiles |
-| Optional LLM metadata, narrative table/chart summaries | Planned independent enrichment; not an executable command yet |
+| Optional LLM title / table summaries | Experimental INI ENRICHMENT; one-document preview/apply |
+| Chart backfill and complete introduction | Pending |
 
 Changing metadata or chunking policy can change the retrieval profile identity.
 Preserve the policy used by existing tables until an approved migration/backfill
