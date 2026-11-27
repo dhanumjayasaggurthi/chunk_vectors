@@ -82,6 +82,13 @@ def link_tables(struct, policy):
                == "table" and getattr(el,"source_table",None)
         ]
         for index,element in enumerate(page_tables):
+            if (policy.get("physical_table_body_mode","none")=="lines"
+                    and getattr(element,"physical_table_body",None) is not None):
+                # A recovered shallow header is not a complete logical grid.
+                # Break continuity rather than claiming its body is linked.
+                last_group=None
+                last_element=None
+                continue
             merged=False
             if (mode=="conservative" and index==0
                     and last_group is not None and last_element is not None

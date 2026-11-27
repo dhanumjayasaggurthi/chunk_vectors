@@ -33,6 +33,9 @@ class Unit:
     page_joined: bool = False
     near_top: bool = False
     near_bottom: bool = False
+    physical_body_info: dict | None = None
+    physical_line_index: int = 0  # positive=body, negative=detected header row
+
 
 
 def _paragraph_units(page, el, headings, known_titles, source_end,
@@ -84,6 +87,37 @@ def _has_header(el):
     return bool(re.search(r"(?m)^\|\s*-{3,}",str(el.text)))
 
 
+def _physical_body_units(struct,page,element,headings):
+    """Source-aligned layout, never a verified logical table projection."""
+    from open_grid_recovery import validate_physical_body
+    from table_extractor import validate_source_table
+    box=element.bbox
+    body=validate_physical_body(element.physical_table_body,
+                                header_bbox=[box.x0,box.y0,box.x1,box.y1],
+                                max_json_bytes=100_000_000)
+    source=validate_source_table(element.source_table)
+    identity=hashlib.sha256(
+        f"{struct.doc_id}:physical:{page.page_number}:{element.reading_order}:{body['sha256']}".encode()
+    ).hexdigest()
+    info={"body_id":identity,"format":body["format"],"source_page":page.page_number,
+          "source_element_reading_order":element.reading_order,
+          "source_header_sha256":source["sha256"],"physical_body_sha256":body["sha256"],
+          "header_bbox":body["header_bbox"],"column_boundaries":body["column_boundaries"],
+          "physical_line_count":len(body["physical_cells"]),
+          "detected_header_row_count":len(source["source_cells"]),
+          "logical_rows_verified":False}
+    for i,row in enumerate(source["source_cells"],1):
+        # The header may contain spans and nulls. Do not map its cells to
+        # body-column labels or repeat it as a fabricated logical header.
+        yield Unit("Detected header row "+str(i)+": "+_markdown_row(row,source["max_columns"]),
+                   page.page_number,page.page_number,tuple(headings),"physical_table_body",
+                   physical_body_info=info,physical_line_index=-i)
+    for i,row in enumerate(body["physical_cells"],1):
+        yield Unit("Physical line "+str(i)+": "+_markdown_row(row,len(body["column_boundaries"])-1),
+                   page.page_number,page.page_number,tuple(headings),"physical_table_body",
+                   physical_body_info=info,physical_line_index=i)
+
+
 def _units(struct,policy):
     known_titles={t.title.strip().casefold() for t in struct.toc}
     toc_by_page={}
@@ -114,6 +148,12 @@ def _units(struct,policy):
         for el in elements:
             kind=getattr(el.element_type,"value",str(el.element_type))
             source=getattr(el,"source_table",None)
+            if (kind=="table" and policy.get("physical_table_body_mode","none")=="lines"
+                    and getattr(el,"physical_table_body",None) is not None):
+                if not source:
+                    raise ValueError("Physical table body requires original source grid")
+                yield from _physical_body_units(struct,page,el,headings)
+                continue
             if kind=="table" and policy.get("table_row_mode","legacy")=="rows" and not source:
                 raise ValueError(
                     "table_row_mode=rows requires lossless source_table for each table; "
@@ -250,7 +290,8 @@ def _split(unit,budget,count):
         return [unit]
     pieces=[]
     buffer=""
-    reason="oversized_table_row" if unit.kind=="table" else "oversized_paragraph"
+    reason=("oversized_physical_line" if unit.physical_body_info else
+            "oversized_table_row" if unit.kind=="table" else "oversized_paragraph")
     for sentence in _sentences(unit.text):
         if count(sentence)>budget:
             if buffer:
@@ -301,6 +342,10 @@ def _pack_short_chunks(chunks, policy, count):
         if count(text_for(group))>=minimum:
             return False
         first,last=group[0],group[-1]
+        # Do not pack away the explicit physical layout warning/line citations.
+        if ("physical_table_body" in nxt.content_types
+                or any("physical_table_body" in c.content_types for c in group)):
+            return False
         if nxt._section_path!=first._section_path:
             return False
         if (not first._section_path
@@ -427,7 +472,8 @@ def chunk_semantic_v2(struct,policy):
     pending=[]
 
     def context_key(item):
-        return (item.path,item.table_id, item.kind=="table")
+        return (item.path,item.table_id, item.kind=="table",
+                (item.physical_body_info or {}).get("body_id"))
 
     def render(parts):
         first=parts[0]
@@ -437,6 +483,8 @@ def chunk_semantic_v2(struct,policy):
             heading=first.path[-1]
             if not body.casefold().startswith(heading.casefold()):
                 prefix.append(heading)
+        if first.physical_body_info:
+            prefix.append("Physical table layout; columns left to right; logical rows unverified.")
         if first.table_id:
             info=first.table_info or {}
             prefix.append(
@@ -483,6 +531,14 @@ def chunk_semantic_v2(struct,policy):
         reasons=sorted(set(x.split_reason for x in parts if x.split_reason))
         if reasons:
             item.chunk_metadata["exceptional_splits"]=reasons
+        if first.physical_body_info:
+            item.chunk_metadata["physical_table_body"]={
+                **first.physical_body_info,
+                "physical_line_indices":sorted({x.physical_line_index for x in parts
+                                                if x.physical_line_index>0}),
+                "detected_header_row_indices":sorted({-x.physical_line_index for x in parts
+                                                       if x.physical_line_index<0}),
+            }
         if first.table_id:
             item.chunk_metadata.update({
                 "table_id":first.table_id,
@@ -522,7 +578,7 @@ def chunk_semantic_v2(struct,policy):
                 old=pending
                 emit(old)
                 pending=[]
-                if overflow and not new_context and not part.table_id and overlap:
+                if overflow and not new_context and not part.table_id and not part.physical_body_info and overlap:
                     # Carry a COMPLETE sentence only. Never copy a partial
                     # tokenizer slice or duplicate a table row.
                     tail=_sentences(old[-1].text)[-1]

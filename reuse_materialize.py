@@ -466,6 +466,15 @@ def quality_summary(rows, policy):
                 issues.append(f"broken neighbor links chunk {index}")
             if not meta.get("section_id"):
                 issues.append(f"missing section_id chunk {index}")
+        if "physical_table_body" in json.loads(row[14]):
+            body=meta.get("physical_table_body")
+            if (not isinstance(body,dict) or body.get("logical_rows_verified") is not False
+                    or body.get("source_page")!=start or start!=end
+                    or not re.fullmatch(r"[0-9a-f]{64}",body.get("physical_body_sha256",""))
+                    or not re.fullmatch(r"[0-9a-f]{64}",body.get("source_header_sha256",""))
+                    or meta.get("table_id") or meta.get("table_ids")
+                    or not (body.get("physical_line_indices") or body.get("detected_header_row_indices"))):
+                issues.append(f"invalid physical table layout provenance chunk {index}")
         for tid in meta.get("table_ids") or (
                 [meta["table_id"]] if meta.get("table_id") else []):
             table_ids.add(tid)

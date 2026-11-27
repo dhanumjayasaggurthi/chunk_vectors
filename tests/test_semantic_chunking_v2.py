@@ -54,6 +54,79 @@ def config(**overrides):
 
 
 class SemanticChunkV2Tests(unittest.TestCase):
+    def test_physical_body_retrieval_is_versioned_and_never_logical(self):
+        from configurable_chunking import chunk_with_profile
+        from open_grid_recovery import FORMAT, _canonical
+        from table_extractor import _json_bytes
+        from processing_profile import validate_profile, load_profile
+        from reuse_materialize import prepare_document, quality_summary
+        import hashlib
+        import tiktoken
+        doc=document_with_continued_table()
+        table=doc.pages[0].elements[1]
+        table.bbox=BBox(40,50,550,120)
+        cells=[["Code","Description","Rate"]]
+        grid={"format":"pdfplumber_cells_v1","source_cells":cells,
+              "cell_bboxes":[[[40,50,100,120],[100,50,400,120],[400,50,550,120]]],
+              "row_count":1,"max_columns":3,"sha256":hashlib.sha256(_json_bytes(cells)).hexdigest()}
+        table.source_table=grid
+        table.text="| Code | Description | Rate |\n| --- | --- | --- |"
+        body_cells=[[f"PHYSICAL_{i:02d}","multilingual 日本語 dose example",""] for i in range(1,13)]
+        body={"format":FORMAT,"logical_rows_verified":False,"header_bbox":[40,50,550,120],
+              "column_boundaries":[40,100,400,550],"line_boundaries":[120+20*i for i in range(13)],
+              "physical_cells":body_cells,
+              "nonspace_characters":sum(sum(not x.isspace() for x in cell) for row in body_cells for cell in row)}
+        body["sha256"]=hashlib.sha256(_canonical(body)).hexdigest()
+        table.physical_table_body=body
+        original=json.dumps([grid,body],sort_keys=True)
+        policy=config(max_tokens=100,min_tokens=60,overlap_tokens=20,
+                      small_section_policy="merge_forward",table_summary_mode="extractive")
+        off=chunk_with_profile(doc,policy)
+        self.assertFalse(any("PHYSICAL_01" in c.chunk_text for c in off))
+        active={**policy,"physical_table_body_mode":"lines"}
+        chunks=chunk_with_profile(doc,active)
+        physical=[c for c in chunks if "physical_table_body" in c.content_types]
+        self.assertGreater(len(physical),1)
+        enc=tiktoken.get_encoding("cl100k_base")
+        indices=[]
+        for c in physical:
+            self.assertLessEqual(len(enc.encode(c.chunk_text)),100)
+            self.assertEqual(c.content_types,["physical_table_body"])
+            self.assertIn("logical rows unverified",c.chunk_text)
+            self.assertEqual((c.page_start,c.page_end),(1,1))
+            meta=c.chunk_metadata
+            self.assertNotIn("table_id",meta)
+            self.assertNotIn("table_summaries",meta)
+            self.assertFalse(meta["overlap_copied"])
+            info=meta["physical_table_body"]
+            self.assertFalse(info["logical_rows_verified"])
+            self.assertEqual(info["physical_body_sha256"],body["sha256"])
+            self.assertEqual(info["source_header_sha256"],grid["sha256"])
+            indices.extend(info["physical_line_indices"])
+        self.assertEqual(indices,list(range(1,13)))
+        text="\n".join(c.chunk_text for c in physical)
+        for i in range(1,13):
+            self.assertEqual(text.count(f"PHYSICAL_{i:02d}"),1)
+        self.assertIn("日本語",text)
+        self.assertEqual(json.dumps([grid,body],sort_keys=True),original)
+        self.assertFalse(any(c.chunk_metadata.get("table_source_pages")==[1,2,3,4] for c in chunks))
+        p=load_profile("profiles/regulatory_semantic_v2_example.yml")
+        p["chunking"].update(active)
+        validate_profile(p)
+        rows=prepare_document(doc,p)
+        self.assertEqual(quality_summary(rows,p["chunking"])["structural_errors"],0)
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"profile.json"
+            raw={k:v for k,v in p.items() if k!="_fingerprint"}
+            path.write_text(json.dumps(raw),encoding="utf-8")
+            enabled=load_profile(str(path))
+            raw["chunking"].pop("physical_table_body_mode")
+            path.write_text(json.dumps(raw),encoding="utf-8")
+            self.assertNotEqual(enabled["_fingerprint"],load_profile(str(path))["_fingerprint"])
+        p["chunking"]["table_row_mode"]="legacy"
+        with self.assertRaises(ValueError):
+            validate_profile(p)
+
     def test_optional_extractive_summary_once_per_table_and_lossless(self):
         from configurable_chunking import chunk_with_profile
         doc=document_with_continued_table()

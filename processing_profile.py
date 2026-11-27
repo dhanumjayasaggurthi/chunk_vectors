@@ -128,7 +128,7 @@ def validate_profile(profile: dict) -> None:
                      "small_section_policy", "preserve_headers", "tokenizer",
                      "boundary_mode", "table_continuation", "table_row_mode",
                      "max_table_pages", "table_edge_fraction", "table_x_tolerance",
-                     "table_summary_mode", "merge_cross_page_paragraphs", "page_join_edge_fraction",
+                     "table_summary_mode", "physical_table_body_mode", "merge_cross_page_paragraphs", "page_join_edge_fraction",
                      "small_chunk_max_pages", "small_chunk_max_tables"},
         "embedding": {"enabled", "reuse_existing", "batch_size",
                       "dimensions", "deployment", "model", "progress_every_batches",
@@ -194,6 +194,11 @@ def validate_profile(profile: dict) -> None:
             or mode!="semantic_v2" and (continuation!="none" or row_mode!="legacy")
             or continuation!="none" and row_mode!="rows"):
         raise ValueError("semantic-v2 table row mode and continuity require toc_then_semantic")
+    physical_mode=chunking.get("physical_table_body_mode","none")
+    if physical_mode not in ("none","lines"):
+        raise ValueError("Invalid chunking.physical_table_body_mode")
+    if physical_mode=="lines" and (mode!="semantic_v2" or row_mode!="rows"):
+        raise ValueError("Physical table bodies require semantic-v2 source rows")
     summary_mode=chunking.get("table_summary_mode","structural")
     if summary_mode not in ("none","structural","extractive"):
         raise ValueError("Invalid chunking.table_summary_mode")

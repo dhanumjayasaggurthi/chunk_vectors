@@ -217,6 +217,17 @@ used for logical table continuation, row counts or automatic summaries.
 Ambiguous candidates remain in the original extraction output. This
 option is a fidelity qualification step, not a complete HTS table fix.
 
+To make recovered bodies searchable, use a **new isolated retrieval policy**
+with `chunking.physical_table_body_mode: lines` (default none), alongside
+`boundary_mode: semantic_v2` and `table_row_mode: rows`. This is a separate
+retrieval profile identity. Physical-layout chunks have an explicit logical
+row warning, source page/element, body and header hashes, column boundaries
+and physical line indices in existing chunk_metadata. They do not participate
+in logical-table linking, table summaries, short-chunk packing or overlap.
+The original page text and grids stay unchanged. Do not treat the resulting
+physical lines as verified tariff records. Existing retrieval policies remain
+unchanged.
+
 ## Worker tuning
 
 Use independent limits by feature, not one worker count for everything.
