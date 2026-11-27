@@ -958,8 +958,8 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
         import multiprocessing
         executor_type=concurrent.futures.ProcessPoolExecutor
         executor_kwargs={"mp_context":multiprocessing.get_context("spawn")}
-        if cfg["worker_recycle_documents"]:
-            executor_kwargs["max_tasks_per_child"]=cfg["worker_recycle_documents"]
+        # Recycle the entire pool at a bounded wave boundary, not individual
+        # workers with pending futures (CPython gh-115634).
         ocr_gate=None
         chart_gate=None
     else:
@@ -980,47 +980,57 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
     files=[file_path] if file_path else iter_pdf_files(root)
     counts={"SUCCESS":0,"SKIPPED":0,"BUSY":0,"INCOMPLETE":0,
             "REVIEW_REQUIRED":0,"FAILED":0}
+    from itertools import islice
     pending={}
-    with executor_type(max_workers=doc_workers,**executor_kwargs) as pool:
-        def collect(done):
-            for future in done:
-                path=pending.pop(future)
+    def collect(done):
+        for future in done:
+            path=pending.pop(future)
+            try:
+                result=future.result()
+                LOG.info("FILE %s %s",path,result)
+                status=result["status"]
+            except Exception as exc:
+                LOG.exception("PDF staging failed for %s",path)
                 try:
-                    result=future.result()
-                    LOG.info("FILE %s %s",path,result)
-                    status=result["status"]
-                except Exception as exc:
-                    LOG.exception("PDF staging failed for %s",path)
-                    try:
-                        record_document_failure(path,profile,n,exc)
-                    except Exception:
-                        LOG.exception(
-                            "Could not persist document-level failure for %s",path
-                        )
-                        raise  # fail the batch if durable error logging is unavailable
-                    status="FAILED"
-                counts[status]+=1
-        for index, path in enumerate(files):
-            if index>=max_docs:
-                break
-            if backend=="processes":
-                future=pool.submit(stage_one,path,profile,n,None)
-            else:
-                future=pool.submit(
-                    stage_one,path,profile,n,limiter,
-                    ocr_gate=ocr_gate,chart_gate=chart_gate,
-                )
-            pending[future]=path
-            if len(pending)>=doc_workers*2:
+                    record_document_failure(path,profile,n,exc)
+                except Exception:
+                    LOG.exception(
+                        "Could not persist document-level failure for %s",path
+                    )
+                    raise  # fail the batch if durable error logging is unavailable
+                status="FAILED"
+            counts[status]+=1
+    files=iter(islice(files,max_docs))
+    recycle=cfg["worker_recycle_documents"] if backend=="processes" else 0
+    # With recycling disabled, use a single lazy wave; otherwise retain
+    # bounded memory and let all outstanding futures finish before shutdown.
+    def waves():
+        if not recycle:
+            yield files
+            return
+        while wave:=list(islice(files,doc_workers*recycle)):
+            yield wave
+    for wave in waves():
+        with executor_type(max_workers=doc_workers,**executor_kwargs) as pool:
+            for path in wave:
+                if backend=="processes":
+                    future=pool.submit(stage_one,path,profile,n,None)
+                else:
+                    future=pool.submit(
+                        stage_one,path,profile,n,limiter,
+                        ocr_gate=ocr_gate,chart_gate=chart_gate,
+                    )
+                pending[future]=path
+                if len(pending)>=doc_workers*2:
+                    done,_=concurrent.futures.wait(
+                        pending,return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    collect(done)
+            while pending:
                 done,_=concurrent.futures.wait(
                     pending,return_when=concurrent.futures.FIRST_COMPLETED,
                 )
                 collect(done)
-        while pending:
-            done,_=concurrent.futures.wait(
-                pending,return_when=concurrent.futures.FIRST_COMPLETED,
-            )
-            collect(done)
     return counts
 
 

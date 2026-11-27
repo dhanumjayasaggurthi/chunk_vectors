@@ -177,6 +177,13 @@ class NativeProcessWorkerTests(unittest.TestCase):
                     doc.save(new)
                 fresh=run(profile,file_path=str(new),max_docs=1,doc_workers=1)
                 self.assertEqual(fresh["SUCCESS"],1,fresh)
+                # Three documents exceed the two-worker wave of one task
+                # per worker. Replay must drain and reopen the whole pool.
+                profile["extraction"]["worker_recycle_documents"]=1
+                recycled=run(profile,root=str(root),max_docs=3,doc_workers=2)
+                self.assertEqual(recycled["SKIPPED"],3,recycled)
+                self.assertEqual(recycled["FAILED"],0,recycled)
+                profile["extraction"]["worker_recycle_documents"]=0
                 cid=_capture_id(capture_identity(digest_file(new),cfg["visual_settings"],
                                                  cfg["policy_id"],cfg["renderer"]))
                 self.assertEqual(verify(evidence_root,cid,1,1,

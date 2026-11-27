@@ -1,0 +1,43 @@
+name: Native worker scaling on fixed public PDFs
+
+on:
+  push:
+    branches: [feat/rich-document-multilingual-v2]
+    paths:
+      - tests/native_worker_scaling_benchmark.py
+      - .github/workflows/native-worker-scaling.yml
+  workflow_dispatch:
+
+jobs:
+  scaling:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install "PyMuPDF>=1.24,<2" "pdfplumber>=0.11,<1" "pillow>=10,<13" "requests>=2.32,<3"
+      - name: CI-only config
+        run: |
+          cat > config.ini <<'EOF'
+          [POSTGRES]
+          host=localhost
+          port=5432
+          database=embedding_test
+          user=postgres
+          password=test
+          schema=intake_ci
+          folder=ci
+          [GCP]
+          gcp_key_path=not-used.json
+          EOF
+      - name: Compare 1 2 4 and 8 workers on identical original PDF bytes
+        timeout-minutes: 110
+        run: python tests/native_worker_scaling_benchmark.py --workers 1 2 4 8 --report native_scaling.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-scaling-${{ github.run_id }}
+          path: native_scaling.json
+          if-no-files-found: warn
