@@ -530,6 +530,58 @@ def complete(profile,job,*,status,text="",regions=None,confidence=None,
         conn.close()
 
 
+def complete_recognition_batch(profile,entries):
+    """Commit one bounded successful provider response, with per-asset leases.
+
+    A lost lease rolls back the whole response; no stale result is published.
+    The existing single-result path remains available for isolated failures.
+    """
+    if not 1<=len(entries)<=16:
+        raise ValueError("Invalid OCR result batch size")
+    ids=[job[0] for job,_ in entries]
+    if len(set(ids))!=len(ids):
+        raise ValueError("Duplicate OCR result asset")
+    if len(entries)==1:
+        job,fields=entries[0]
+        complete(profile,job,**fields)
+        return
+    from db import get_conn
+    n=tables(profile)
+    params=[]
+    for job,fields in entries:
+        if fields["status"] not in ("TEXT_READY","VISUAL_PENDING"):
+            raise ValueError("Invalid OCR recognition batch state")
+        params.extend((job[0],job[8],fields["status"],fields.get("text",""),
+                       _canonical(fields.get("regions") or []),fields.get("confidence"),
+                       fields.get("language",""),fields.get("error_code")))
+    values=",".join(["(%s::text,%s::text,%s::text,%s::text,%s::jsonb,%s::float8,%s::text,%s::text)"]*len(entries))
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""UPDATE {n['ocr']} AS j
+                SET status=v.status,ocr_text=v.ocr_text,ocr_regions=v.ocr_regions,
+                    confidence=v.confidence,language=v.language,error_code=v.error_code,
+                    error_message='',lease_token=NULL,lease_until=NULL,
+                    next_attempt_at=now(),updated_at=now()
+                FROM (VALUES {values}) AS v(asset_id,lease_token,status,ocr_text,
+                    ocr_regions,confidence,language,error_code)
+                WHERE j.asset_id=v.asset_id AND j.lease_token=v.lease_token
+                    AND j.status='RUNNING' AND j.lease_until>now()
+                RETURNING j.asset_id""",tuple(params))
+            if {row[0] for row in cur.fetchall()}!=set(ids):
+                raise RuntimeError("OCR lease ownership lost; stale batch rejected")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+class _OcrPersistenceError(RuntimeError):
+    """A database failure is not an OCR or rendering failure."""
+
+
 def render_clipped(pdf,page_number,bbox,cfg):
     """Raster only the authoritative source clip; never alter native pages."""
     import fitz
@@ -829,9 +881,9 @@ def _ocr_input(profile,group,cfg,verifier,reader_pool):
 def run_group(profile,group,cfg,limiter,verifier,reader_pool=None):
     """Own one PDF handle per thread and complete every claimed asset.
 
-    The cloud batch and each persisted result are handled separately. A DB
-    failure cannot be turned into a successful job by a generic exception
-    handler; a crashed worker's lease remains recoverable.
+    Persist successful recognitions once per bounded provider batch; keep
+    independent asset identities and lease checks. Database failures escape
+    the OCR error handlers; uncommitted claims remain recoverable.
     """
     from vision_ocr import batch_document_text_detection
     counts=Counter()
@@ -840,34 +892,26 @@ def run_group(profile,group,cfg,limiter,verifier,reader_pool=None):
     def fail(job,exc,terminal=False):
         if job[0] in finished:
             return
-        status=_mark_failure(profile,job,cfg,exc,terminal=terminal)
+        try:
+            status=_mark_failure(profile,job,cfg,exc,terminal=terminal)
+        except Exception as db_exc:
+            raise _OcrPersistenceError("OCR failure persistence failed") from db_exc
         finished.add(job[0])
         counts[status]+=1
 
-    def finalize(job,result):
-        if job[0] in finished:
-            return
-        if (result.success and result.text.strip()
-                and not result.error):
-            complete(profile,job,status="TEXT_READY",text=result.text,
-                     regions=result.regions,confidence=result.confidence,
-                     language=result.language)
+    def recognition_fields(result):
+        if result.success and result.text.strip() and not result.error:
             status="TEXT_READY"
+            error=None
         elif result.success and (
                 not result.text.strip() or result.error.startswith((
                     "low_confidence_","missing_word_confidence"))):
-            # OCR transcription is not evidence of successful chart/table
-            # interpretation. Keep its complete, unchanged response.
-            complete(profile,job,status="VISUAL_PENDING",text=result.text,
-                     regions=result.regions,confidence=result.confidence,
-                     language=result.language,
-                     error_code=result.error or "NO_OCR_TEXT")
             status="VISUAL_PENDING"
+            error=result.error or "NO_OCR_TEXT"
         else:
-            fail(job,RuntimeError(result.error or "OCR unsuccessful"))
-            return
-        finished.add(job[0])
-        counts[status]+=1
+            return None
+        return dict(status=status,text=result.text,regions=result.regions,
+                    confidence=result.confidence,language=result.language,error_code=error)
 
     try:
         with _ocr_input(profile,group,cfg,verifier,reader_pool) as (render,ensure_unchanged):
@@ -882,10 +926,11 @@ def run_group(profile,group,cfg,limiter,verifier,reader_pool=None):
                 current=[]
                 byte_count=0
                 ensure_unchanged()
-                renew_leases(
-                    profile,[j for j in group if j[0] not in finished],
-                    cfg["lease_seconds"],
-                )
+                try:
+                    renew_leases(profile,[j for j in group if j[0] not in finished],
+                                 cfg["lease_seconds"])
+                except Exception as exc:
+                    raise _OcrPersistenceError("OCR lease renewal failed") from exc
                 # Exact byte equality only, scoped to the current bounded
                 # batch. Same pixels/encoding => same OCR input coordinates.
                 # Each source occurrence still owns its original asset ID,
@@ -908,11 +953,25 @@ def run_group(profile,group,cfg,limiter,verifier,reader_pool=None):
                     for job,_ in batch:
                         fail(job,exc)
                     return
+                recognized=[]
+                rejected=[]
                 for occurrences,result in zip(by_image.values(),responses):
+                    fields=recognition_fields(result)
                     for job in occurrences:
-                        # Persist each occurrence under its own lease token.
-                        # Do NOT convert database failures to OCR failures.
-                        finalize(job,result)
+                        if fields is None:
+                            rejected.append((job,RuntimeError(result.error or "OCR unsuccessful")))
+                        else:
+                            recognized.append((job,fields))
+                if recognized:
+                    try:
+                        complete_recognition_batch(profile,recognized)
+                    except Exception as exc:
+                        raise _OcrPersistenceError("OCR recognition batch persistence failed") from exc
+                    for job,fields in recognized:
+                        finished.add(job[0])
+                        counts[fields["status"]]+=1
+                for job,exc in rejected:
+                    fail(job,exc)
 
             for job in group:
                 try:
@@ -923,11 +982,15 @@ def run_group(profile,group,cfg,limiter,verifier,reader_pool=None):
                         flush()
                     current.append((job,png))
                     byte_count+=len(png)
+                except _OcrPersistenceError:
+                    raise
                 except ValueError as exc:
                     fail(job,exc,terminal=True)
                 except Exception as exc:
                     fail(job,exc)
             flush()
+    except _OcrPersistenceError:
+        raise
     except Exception as exc:
         # Persist failures only for leases not already completed. If DB
         # persistence itself is down this must propagate to the caller.

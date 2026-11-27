@@ -100,6 +100,7 @@ class DeferredOcrUnitTests(unittest.TestCase):
             with (patch("visual_evidence._verify_page",wraps=_verify_page) as verify,
                   patch("deferred_ocr.renew_leases"),
                   patch("deferred_ocr.complete",side_effect=lambda p,j,**kw:completed.append((j[0],kw["status"]))),
+                  patch("deferred_ocr.complete_recognition_batch",side_effect=lambda p,entries:completed.extend((j[0],kw["status"]) for j,kw in entries)),
                   patch("vision_ocr.batch_document_text_detection",
                         return_value=[OcrResult("source",.98,1,"en",True),
                                       OcrResult("",0,0,"",True)]) as api):
@@ -262,8 +263,8 @@ class DeferredOcrUnitTests(unittest.TestCase):
             completed=[]
             with (patch("deferred_ocr._file_path",return_value=path),
                   patch("deferred_ocr.renew_leases"),
-                  patch("deferred_ocr.complete",
-                        side_effect=lambda p,j,**kw:completed.append((j[0],kw))),
+                  patch("deferred_ocr.complete_recognition_batch",
+                        side_effect=lambda p,entries:completed.extend((j[0],kw) for j,kw in entries)) as persist,
                   patch("vision_ocr.batch_document_text_detection",
                         return_value=results) as api):
                 summary=ocr.run_group(
@@ -272,6 +273,7 @@ class DeferredOcrUnitTests(unittest.TestCase):
             self.assertEqual(summary["TEXT_READY"],1)
             self.assertEqual(summary["VISUAL_PENDING"],1)
             self.assertEqual(api.call_count,1)
+            persist.assert_called_once()
             self.assertEqual(completed[0][1]["text"],"Dose 20 mg")
             self.assertEqual(completed[1][1]["error_code"],"NO_OCR_TEXT")
 
@@ -287,8 +289,8 @@ class DeferredOcrUnitTests(unittest.TestCase):
             completed=[]
             with (patch("deferred_ocr._file_path",return_value=path),
                   patch("deferred_ocr.renew_leases"),
-                  patch("deferred_ocr.complete",
-                        side_effect=lambda p,j,**kw:completed.append((j[0],j[8],kw))),
+                  patch("deferred_ocr.complete_recognition_batch",
+                        side_effect=lambda p,entries:completed.extend((j[0],j[8],kw) for j,kw in entries)),
                   patch("vision_ocr.batch_document_text_detection",
                         return_value=[OcrResult("Dose 20 mg",.98,3,"en",True),
                                       OcrResult("",0,0,"",True)]) as api):
@@ -300,6 +302,38 @@ class DeferredOcrUnitTests(unittest.TestCase):
                              [(f"job-{i}",f"lease-{i}") for i in range(3)])
             self.assertEqual(completed[0][2]["text"],completed[1][2]["text"])
             self.assertEqual(completed[2][2]["error_code"],"NO_OCR_TEXT")
+
+    def test_batch_persistence_failure_is_not_reclassified_as_ocr_error(self):
+        from vision_ocr import OcrResult
+        from contextlib import nullcontext
+        jobs=[(str(i),"d"*64,"a"*64,"b"*64,1,"image",[0,0,10,10],1,"lease") for i in range(2)]
+        with (patch("deferred_ocr._ocr_input",return_value=nullcontext((lambda j:j[0].encode(),lambda:None))),
+              patch("deferred_ocr.renew_leases"),
+              patch("deferred_ocr.complete_recognition_batch",side_effect=RuntimeError("DB unavailable")),
+              patch("deferred_ocr._mark_failure") as fail,
+              patch("vision_ocr.batch_document_text_detection",
+                    return_value=[OcrResult("one",.99,1,"en",True),OcrResult("two",.99,1,"en",True)])):
+            with self.assertRaises(ocr._OcrPersistenceError):
+                ocr.run_group(profile(),jobs,ocr.settings(profile()),None,ocr._SourceVerifier())
+            fail.assert_not_called()
+
+    def test_recognition_batch_single_statement_and_rollback_on_stale_lease(self):
+        from unittest.mock import MagicMock
+        jobs=[(str(i),"d"*64,"a"*64,"b"*64,1,"image",[0,0,10,10],1,"lease") for i in range(2)]
+        entries=[(j,dict(status="TEXT_READY",text="Dose 20 mg",regions=[],confidence=.99,language="en")) for j in jobs]
+        conn=MagicMock()
+        cur=conn.cursor.return_value.__enter__.return_value
+        with patch("db.get_conn",return_value=conn):
+            cur.fetchall.return_value=[("0",),("1",)]
+            ocr.complete_recognition_batch(profile(),entries)
+            cur.execute.assert_called_once()
+            conn.commit.assert_called_once()
+            conn.reset_mock()
+            cur.fetchall.return_value=[("0",)]
+            with self.assertRaisesRegex(RuntimeError,"stale batch"):
+                ocr.complete_recognition_batch(profile(),entries)
+            conn.commit.assert_not_called()
+            conn.rollback.assert_called_once()
 
     def test_retryable_cloud_failure_never_looks_like_success(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -397,6 +431,43 @@ class DeferredOcrPostgresTests(unittest.TestCase):
                     cur.execute(f"DROP TABLE IF EXISTS {name}")
             conn.commit()
         finally:
+            conn.close()
+
+    def test_recognition_batch_rollback_and_success_on_postgresql(self):
+        from db import get_conn
+        doc_id="8"*64
+        conn=get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    for i in range(2):
+                        cur.execute(f"""INSERT INTO {self.n['ocr']} (
+                            asset_id,doc_id,source_hash,extraction_hash,ocr_hash,page_number,
+                            kind,bbox,source_ref,status,attempts,lease_token,lease_until)
+                            VALUES (%s,%s,%s,%s,%s,1,'image','[0,0,10,10]'::jsonb,
+                                    '{{}}'::jsonb,'RUNNING',1,%s,now()+interval '1 hour')""",
+                            (f"batch-test-{i}",doc_id,"a"*64,"b"*64,"c"*64,f"lease-{i}"))
+            jobs=[(f"batch-test-{i}",doc_id,"a"*64,"b"*64,1,"image",[0,0,10,10],1,f"lease-{i}") for i in range(2)]
+            fields=[dict(status="TEXT_READY",text="Dose 20 mg",regions=[],confidence=.99,language="en"),
+                    dict(status="VISUAL_PENDING",text="",error_code="NO_OCR_TEXT")]
+            stale=(*jobs[1][:-1],"stale-lease")
+            with self.assertRaisesRegex(RuntimeError,"stale batch"):
+                ocr.complete_recognition_batch(self.p,[(jobs[0],fields[0]),(stale,fields[1])])
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT status,ocr_text FROM {self.n['ocr']} WHERE doc_id=%s ORDER BY asset_id",(doc_id,))
+                    self.assertEqual(cur.fetchall(),[("RUNNING",""),("RUNNING","")])
+            ocr.complete_recognition_batch(self.p,list(zip(jobs,fields)))
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT status,ocr_text,error_code,lease_token FROM {self.n['ocr']} WHERE doc_id=%s ORDER BY asset_id",(doc_id,))
+                    self.assertEqual(cur.fetchall(),[("TEXT_READY","Dose 20 mg",None,None),
+                                      ("VISUAL_PENDING","","NO_OCR_TEXT",None)])
+        finally:
+            conn.rollback()
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"DELETE FROM {self.n['ocr']} WHERE doc_id=%s",(doc_id,))
             conn.close()
 
     def test_idempotent_enqueue_claim_version_filter_and_result(self):
