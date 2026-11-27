@@ -103,7 +103,7 @@ class RichDocumentUnitTests(unittest.TestCase):
                 pp=plumb.pages[0]
                 block=page.get_text("blocks",flags=fitz.TEXTFLAGS_TEXT)[0]
                 caption=PageElement(ElementType.TEXT,BBox(*block[:4]),text=block[4].strip())
-                box=(53,caption.bbox.y1-1,558,451)
+                box=(53,caption.bbox.y1-2,558,451)
                 words=pp.crop(box).extract_words()
                 self.assertTrue(words)
                 self.assertTrue(_verified_raster_caption_words(box,words,pp,page,[caption]))
