@@ -132,6 +132,16 @@ class VisualEnrichmentTests(unittest.TestCase):
                 list(run_pages(retained,[(cid,1)],visual_settings=vs,config=cfg,
                                execution={**exec_cfg,"authorized_result_storage":False}))
 
+    def test_safe_failure_codes_do_not_expose_provider_content(self):
+        import requests
+        from visual_enrichment import safe_failure_code
+        response=requests.Response()
+        response.status_code=401
+        self.assertEqual(safe_failure_code(requests.HTTPError("private body",response=response)),"HTTP_401")
+        self.assertEqual(safe_failure_code(ValueError("private text")),"ValueError")
+        self.assertEqual(safe_failure_code(ValueError("Numeric observation prohibited; retain source quote separately")),
+                         "VISUAL_NUMERIC_OBSERVATION")
+
     def test_retry_limits_and_quota_budget(self):
         import requests
         from visual_enrichment import LocalQuota,_retry_delay

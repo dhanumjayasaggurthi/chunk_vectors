@@ -308,7 +308,7 @@ def finish_captured(d,receipt,*,records=None,admit=None):
     from collections import Counter
     import deferred_ocr as ocr
     from reuse_materialize import run_one,run_docx,verify_output
-    from visual_enrichment import run_pages,LocalQuota
+    from visual_enrichment import run_pages,LocalQuota,safe_failure_code
     p,q=d["capture"],d["retrieval"]
     quota=LocalQuota(d["visual_llm"][1]) if d["visual_llm"] else None
     names=verify_output(q)
@@ -317,26 +317,50 @@ def finish_captured(d,receipt,*,records=None,admit=None):
         raise PermissionError("English retrieval requires authorized_translation=true")
     translator=GoogleTranslation(d["gcp_key"],d["translation"])
     counts=Counter()
+    log=logging.getLogger(__name__)
     with (Path(receipt).open(encoding="utf-8") if records is None else contextlib.nullcontext(records)) as stream:
         for line in stream:
             row=json.loads(line)
             if row["status"]!="LOCAL_CAPTURE_VERIFIED":
                 continue
             doc=row["doc_id"]
+            started=time.monotonic()
+            stage="admission"
+            failure_code=None
+            log.info("finish doc=%s started",doc[:12])
             try:
                 if admit is not None and not admit():
                     counts["NOT_ADMITTED_RESOURCE"]+=1
                     continue
                 if row["format"]=="docx":
+                    stage="docx_materialize"
                     result=run_docx(d["evidence"],row["capture_id"],q,config=d["docx"],
                                     doc_id=doc,file_name=row["file_name"],allow_logical_locators=True,translator=translator)
                 else:
+                    stage="ocr_discovery"
+                    tick=time.monotonic()
                     discovered=ocr.enqueue(p,doc_id=doc,max_docs=1,apply=True)
-                    if discovered["candidates"]:
+                    log.info("finish doc=%s stage=%s candidates=%s inserted=%s elapsed=%.2fs",
+                             doc[:12],stage,discovered["candidates"],discovered["inserted"],time.monotonic()-tick)
+                    stage="ocr"
+                    tick=time.monotonic()
+                    # Complete OCR does not need another provider pool on replay.
+                    try:
+                        parts,visual_pages=ocr.retrieval_results(p,doc,row["source_sha256"],discovered["candidates"])
+                        log.info("finish doc=%s OCR coverage already complete",doc[:12])
+                    except ValueError as exc:
+                        if str(exc)!="OCR coverage incomplete; retry before enriched publication":
+                            raise
                         if not d["authorized_ocr"]:
                             raise PermissionError("OCR provider approval required for visual source")
-                        ocr.run(p,max_jobs=d["limits"]["ocr_max_jobs"],doc_id=doc)
-                    parts,visual_pages=ocr.retrieval_results(p,doc,row["source_sha256"],discovered["candidates"])
+                        report=ocr.run(p,max_jobs=d["limits"]["ocr_max_jobs"],doc_id=doc)
+                        log.info("finish doc=%s OCR processed=%s statuses=%s",
+                                 doc[:12],report["processed"],report["statuses"])
+                        parts,visual_pages=ocr.retrieval_results(p,doc,row["source_sha256"],discovered["candidates"])
+                    log.info("finish doc=%s stage=%s elapsed=%.2fs visual_pages=%s",
+                             doc[:12],stage,time.monotonic()-tick,len(visual_pages))
+                    stage="visual_llm"
+                    tick=time.monotonic()
                     if visual_pages:
                         if not d["visual_llm"]:
                             raise PermissionError("Visual LLM authorization/configuration required")
@@ -349,6 +373,9 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                                     visual_settings=p["extraction"]["retained_evidence"]["visual_settings"],
                                     config=model,execution=execution,include_result=True,quota=quota):
                                 if outcome["status"] not in ("COMPLETED_UNVERIFIED","SKIPPED_VERIFIED"):
+                                    failure_code=outcome.get("error_code",outcome.get("error_type","VISUAL_FAILED"))
+                                    log.error("finish doc=%s stage=visual_llm page=%s code=%s",
+                                              doc[:12],outcome["source_page"],failure_code)
                                     raise RuntimeError("Visual model enrichment failed")
                                 result=outcome["verified_result"]
                                 parts.append({"page":outcome["source_page"],"kind":"visual_model",
@@ -357,12 +384,25 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                                         +["[MODEL LIMITATION] "+item for item in result["result"]["limitations"]]),
                                     "provenance":{"request_id":result["request_id"],"capture_id":row["capture_id"],
                                                   "source_facts_verified":False}})
+                    log.info("finish doc=%s stage=%s elapsed=%.2fs",doc[:12],stage,time.monotonic()-tick)
+                    stage="translation_materialize"
+                    tick=time.monotonic()
                     parts.sort(key=lambda item:(item["page"],item["kind"],json.dumps(item["provenance"],sort_keys=True)))
                     result=run_one(doc,q,names,enrichment=parts,expected_source_hash=row["source_sha256"],translator=translator)
                 counts[result["status"]]+=1
+                log.info("finish doc=%s stage=%s status=%s total_elapsed=%.2fs",
+                         doc[:12],stage,result["status"],time.monotonic()-started)
             except Exception as exc:
-                logging.getLogger(__name__).error("Post-capture document %s failed: %s",doc,type(exc).__name__)
+                code=failure_code or safe_failure_code(exc)
+                log.error("finish doc=%s stage=%s code=%s elapsed=%.2fs",
+                          doc[:12],stage,code,time.monotonic()-started)
                 counts["FAILED"]+=1
+                # These indicate a provider-wide authorization/deployment problem.
+                # Stop additional documents rather than spend more on doomed work.
+                if stage=="visual_llm" and code in ("HTTP_401","HTTP_403","HTTP_404",
+                                                     "MODEL_DEPLOYMENT_MISMATCH"):
+                    log.error("finish stopped: systemic visual provider error; fix configuration before retry")
+                    break
     return dict(counts)
 
 
@@ -543,7 +583,17 @@ def main(argv=None):
         receipt=Path(args.receipt).resolve(strict=True)
         if not receipt.is_relative_to(d["receipts"].resolve(strict=True)):
             parser.error("Receipt must be in approved receipt directory")
-        result=finish_captured(d,receipt)
+        if args.doc_id:
+            if not re.fullmatch(r"[0-9a-f]{64}",args.doc_id):
+                parser.error("finish --doc-id requires the full 64-character ID")
+            with receipt.open(encoding="utf-8") as stream:
+                selected=[line for line in stream if (row:=json.loads(line)).get("doc_id")==args.doc_id
+                          and row.get("status")=="LOCAL_CAPTURE_VERIFIED"]
+            if len(selected)!=1:
+                parser.error("Expected exactly one verified capture record for --doc-id")
+            result=finish_captured(d,receipt,records=selected)
+        else:
+            result=finish_captured(d,receipt)
         code=int(bool(result.get("FAILED") or result.get("BUSY") or result.get("NOT_ADMITTED_RESOURCE")))
     elif cmd=="materialize":
         if q["output"].get("text_contract")=="english_v1":

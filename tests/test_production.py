@@ -46,6 +46,31 @@ def save(path,c):
     with path.open("w") as f:c.write(f)
 
 class DeploymentTests(unittest.TestCase):
+    def test_finish_reports_visual_failure_and_stops_systemic_error(self):
+        from production import finish_captured
+        from unittest.mock import Mock
+        d={"capture":{},"retrieval":{},"visual_llm":({},{}),"translation":{},
+           "gcp_key":"unused","authorized_ocr":True,"limits":{"ocr_max_jobs":100},
+           "evidence":"unused"}
+        d["translation"]={"model":"nmt"}
+        d["capture"]={"extraction":{"retained_evidence":{"visual_settings":{}}}}
+        d["visual_llm"]=({},{"max_pages":100})
+        records=[json.dumps({"doc_id":str(i)*64,"status":"LOCAL_CAPTURE_VERIFIED",
+                     "format":"pdf","source_sha256":"a"*64,"capture_id":"b"*64}) for i in (1,2)]
+        with (patch("visual_enrichment.LocalQuota"),patch("reuse_materialize.verify_output"),
+              patch("translation_stage.GoogleTranslation"),
+              patch("deferred_ocr.enqueue",return_value={"candidates":1,"inserted":0}) as enqueue,
+              patch("deferred_ocr.retrieval_results",return_value=([],[7])),
+              patch("deferred_ocr.run") as ocr_run,
+              patch("visual_enrichment.run_pages",return_value=[{"status":"FAILED","source_page":7,
+                                                                  "error_code":"HTTP_401"}]),
+              self.assertLogs("production",level="INFO") as captured):
+            result=finish_captured(d,None,records=records)
+        self.assertEqual(result,{"FAILED":1})
+        self.assertEqual(enqueue.call_count,1)
+        ocr_run.assert_not_called()
+        self.assertTrue(any("page=7 code=HTTP_401" in line for line in captured.output))
+
     def test_missing_or_invalid_embedding_dimensions_has_actionable_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path,c=fixture(Path(tmp))

@@ -413,6 +413,46 @@ def _execute_page(root,prepared,config,cfg,quota,locks):
     raise RuntimeError("Unreachable enrichment attempt state")
 
 
+def safe_failure_code(exc):
+    """Actionable allowlisted diagnostics; never emit provider bodies or source text."""
+    import requests
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = getattr(exc.response, "status_code", None)
+        return "HTTP_" + str(status) if type(status) is int and 100 <= status <= 599 else "HTTP_ERROR"
+    known = {
+        "Configured model/deployment differs from requested enrichment identity": "MODEL_DEPLOYMENT_MISMATCH",
+        "Incomplete or refused structured visual response": "VISUAL_RESPONSE_INCOMPLETE_OR_REFUSED",
+        "Numeric observation prohibited; retain source quote separately": "VISUAL_NUMERIC_OBSERVATION",
+        "Caption quote not found in source candidate": "VISUAL_CAPTION_MISMATCH",
+        "Unknown evidence target": "VISUAL_UNKNOWN_TARGET",
+        "Invalid observation": "VISUAL_INVALID_OBSERVATION",
+        "Invalid enrichment response structure": "VISUAL_INVALID_STRUCTURE",
+        "Invalid enrichment response size/type": "VISUAL_RESPONSE_SIZE",
+        "Duplicate observation": "VISUAL_DUPLICATE_OBSERVATION",
+        "Duplicate response key": "VISUAL_DUPLICATE_KEY",
+        "Empty result requires explicit limitation": "VISUAL_EMPTY_RESULT",
+        "Visual enrichment quota wait exceeded": "VISUAL_QUOTA_WAIT",
+        "Enrichment request byte budget exceeded": "VISUAL_REQUEST_BYTES",
+        "Enrichment token reservation exceeds TPM": "VISUAL_TOKEN_BUDGET",
+        "Enrichment cache checksum mismatch": "VISUAL_CACHE_CHECKSUM",
+        "Enrichment cache identity mismatch": "VISUAL_CACHE_IDENTITY",
+        "Enrichment cache result mismatch": "VISUAL_CACHE_RESULT",
+        "ENRICHMENT_CONTEXT_LIMIT: no silent truncation": "VISUAL_CONTEXT_LIMIT",
+        "Page evidence image checksum/size mismatch": "VISUAL_EVIDENCE_MISMATCH",
+        "NO_RETAINED_PIXELS": "NO_RETAINED_PIXELS",
+        "OCR coverage incomplete; retry before enriched publication": "OCR_COVERAGE_INCOMPLETE",
+        "Visual LLM authorization/configuration required": "VISUAL_AUTH_REQUIRED",
+        "Invalid translation response": "TRANSLATION_RESPONSE_INVALID",
+        "Translation response count mismatch": "TRANSLATION_COUNT_MISMATCH",
+        "Visual enrichment coordinator already active or lock unavailable": "VISUAL_LOCK_UNAVAILABLE",
+    }
+    if isinstance(exc, KeyError):
+        return "MISSING_CONFIGURATION_OR_RESPONSE_KEY"
+    if isinstance(exc, json.JSONDecodeError):
+        return "INVALID_JSON"
+    return known.get(str(exc), type(exc).__name__)
+
+
 def run_pages(root,pages,*,visual_settings,config,execution,include_result=False,quota=None):
     """Bounded page enrichment for caller-selected (capture_id, physical_page).
 
@@ -470,7 +510,8 @@ def run_pages(root,pages,*,visual_settings,config,execution,include_result=False
                             outcome=future.result()
                         except Exception as exc:
                             # Do not include provider response bodies or source text.
-                            outcome={"status":"FAILED","error_type":type(exc).__name__}
+                            outcome={"status":"FAILED","error_type":type(exc).__name__,
+                                     "error_code":safe_failure_code(exc)}
                         if not include_result:
                             outcome.pop("verified_result",None)
                         yield {"capture_id":cid,"source_page":number,**outcome}
