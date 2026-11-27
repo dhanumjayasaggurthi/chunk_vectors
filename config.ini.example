@@ -35,6 +35,8 @@ preflight_statement_timeout_ms = 15000
 finish_workers = 1
 ; Opt-in qualification on isolated native/chunk tables. Changes native extraction identity.
 native_table_prepass = false
+; Separate source-linked physical lines, not logical rows. Isolated qualification only.
+native_open_grid_body = false
 materialize_workers = 2
 materialize_max_docs = 10000
 ocr_max_docs = 1000

@@ -234,6 +234,21 @@ class DeploymentTests(unittest.TestCase):
                     resolve_configuration(path)
 
 
+    def test_open_grid_opt_in_changes_only_capture_identity(self):
+        from page_stage import extraction_fingerprint, settings
+        with tempfile.TemporaryDirectory() as tmp:
+            path,c=fixture(Path(tmp))
+            default=resolve_configuration(path)
+            self.assertFalse(settings(default["capture"])["native_open_grid_body"])
+            c["DEPLOYMENT"]["native_open_grid_body"]="true"
+            save(path,c)
+            enabled=resolve_configuration(path)
+            self.assertTrue(settings(enabled["capture"])["native_open_grid_body"])
+            self.assertNotEqual(extraction_fingerprint(default["capture"]),
+                                extraction_fingerprint(enabled["capture"]))
+            self.assertEqual(default["retrieval"]["_fingerprint"],enabled["retrieval"]["_fingerprint"])
+            self.assertTrue(plan(enabled)["native_open_grid_body_requested"])
+
     def test_native_prepass_opt_in_changes_only_capture_identity(self):
         from page_stage import extraction_fingerprint, settings
         with tempfile.TemporaryDirectory() as tmp:

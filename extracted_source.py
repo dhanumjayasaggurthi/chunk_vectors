@@ -213,6 +213,12 @@ def load_extracted_document(profile: dict, document_key):
                         raise ValueError("Source table attached to non-table element")
                     from table_extractor import validate_source_table
                     el.source_table=validate_source_table(item["source_table"])
+                if "physical_table_body" in item:
+                    from open_grid_recovery import validate_physical_body
+                    if "source_table" not in item or item["type"]!=ElementType.TABLE.value:
+                        raise ValueError("Physical body requires original source header grid")
+                    el.physical_table_body=validate_physical_body(
+                        item["physical_table_body"],header_bbox=coords,max_json_bytes=100_000_000)
                 if "approved_asset" in item:
                     import re as _re
                     approval=item["approved_asset"]

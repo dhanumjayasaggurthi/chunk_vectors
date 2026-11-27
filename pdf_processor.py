@@ -563,11 +563,18 @@ class PDFProcessor:
         empty_table_policy: str = "fail",
         profile_page_timings: bool = False,
         experimental_table_prepass: bool = False,
+        recover_open_grid_body: bool = False,
     ):
         if type(experimental_table_prepass) is not bool:
             raise ValueError("experimental_table_prepass must be a boolean")
         self.experimental_table_prepass = experimental_table_prepass
         self.table_prepass_stats = {}
+        if type(recover_open_grid_body) is not bool:
+            raise ValueError("recover_open_grid_body must be boolean")
+        if recover_open_grid_body and not (strict and capture_table_structure and preserve_uninterpreted_visuals):
+            raise ValueError("Physical grid recovery requires strict structured native preservation")
+        self.recover_open_grid_body = recover_open_grid_body
+        self.open_grid_stats = {}
         self.strict = strict
         self.capture_rich_text = capture_rich_text
         self.approved_image_assets = approved_image_assets or {}
@@ -998,6 +1005,7 @@ class PDFProcessor:
         # tables, the exact source bbox, and raw cell content. No second
         # pdfplumber open / find_tables during later OCR-table assembly.
         staged_table_results = None
+        physical_body = None
         vector_elements: list[PageElement] = []
         if self.strict and plumb_page is not None:
             from table_extractor import TableExtractor
@@ -1087,6 +1095,13 @@ class PDFProcessor:
                         max_json_bytes=self.max_table_source_json_bytes,
                     )
                 staged_table_results.append(result)
+            if self.recover_open_grid_body and detected:
+                status="NOT_SINGLE_VALID_GRID"
+                if len(detected)==len(staged_table_results)==1 and not page.rotation and page.cropbox==page.mediabox:
+                    from open_grid_recovery import recover_open_grid
+                    status,physical_body=recover_open_grid(
+                        plumb_page,detected,max_json_bytes=self.max_table_source_json_bytes)
+                self.open_grid_stats[status]=self.open_grid_stats.get(status,0)+1
             table_bboxes = [BBox(*result.bbox) for result in staged_table_results]
         else:
             table_bboxes = self._detect_table_regions(page, plumb_page=plumb_page)
@@ -1096,6 +1111,8 @@ class PDFProcessor:
                 element_type=ElementType.TABLE,
                 bbox=tb,
             )
+            if physical_body is not None:
+                el.physical_table_body=physical_body
             table_elements.append(el)
 
         # ── 6. Blank page check ──────────────────────────────────────────────

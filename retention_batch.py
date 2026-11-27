@@ -144,7 +144,7 @@ def capture_one(row,profile,n,docx_config,cfg):
             # Preserve only numeric native telemetry; never include source text.
             for key in ("new_pages","reused_pages","failed_pages","new_pages_per_min",
                         "source_hash_initial_seconds","stage_timings_seconds",
-                        "native_table_prepass_counts"):
+                        "native_table_prepass_counts","native_open_grid_counts"):
                 if key in report:
                     fields[key]=report[key]
             if ev is not None:

@@ -204,6 +204,19 @@ documents. Keep it false for existing captured data; do not toggle it
 mid-run. No change to retrieval policy identity from the INI switch.
 The known complex-table reconstruction issue remains open.
 
+## Partially bordered table body preservation (opt-in qualification)
+
+For NEW isolated validation destinations only, merge [DEPLOYMENT]
+`native_open_grid_body = true`. This changes native extraction identity;
+keep it false on existing captured data. The recovery requires a single
+valid shallow header and continuous original vertical column rules; it
+preserves source-aligned physical cells and geometric boundaries separately
+in the existing page element JSON. The original header grid and native
+text are unchanged. Physical lines are NOT logical records and are not
+used for logical table continuation, row counts or automatic summaries.
+Ambiguous candidates remain in the original extraction output. This
+option is a fidelity qualification step, not a complete HTS table fix.
+
 ## Worker tuning
 
 Use independent limits by feature, not one worker count for everything.

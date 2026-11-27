@@ -76,20 +76,22 @@ def settings(profile):
         "worker_recycle_documents":0,
         "profile_stage_timings":False,
         "native_table_prepass":False,
+        "native_open_grid_body":False,
         "empty_table_policy":"fail",
         "retained_evidence":None,
     }
     result.update(opts)
-    if type(result["native_table_prepass"]) is not bool:
-        raise ValueError("native_table_prepass must be boolean")
-    if result["native_table_prepass"] and (
+    for flag in ("native_table_prepass","native_open_grid_body"):
+        if type(result[flag]) is not bool:
+            raise ValueError(flag+" must be boolean")
+    if (result["native_table_prepass"] or result["native_open_grid_body"]) and (
             result["worker_backend"]!="processes"
             or result["visual_processing"]!="preserve_defer"
             or not result["capture_table_structure"]
             or result["ocr_enabled"]
             or result["chart_descriptions_enabled"]
             or result["table_summaries_enabled"]):
-        raise ValueError("native_table_prepass requires structured native preserve_defer process extraction")
+        raise ValueError("Native table options require structured native preserve_defer process extraction")
     if result['retained_evidence'] is not None:
         from visual_evidence import native_capture_config
         result['retained_evidence']=native_capture_config(result['retained_evidence'])
@@ -132,6 +134,8 @@ def extraction_fingerprint(profile) -> str:
     # The default identity remains byte-for-byte unchanged.
     if cfg["native_table_prepass"]:
         semantic["native_table_prepass_version"]=1
+    if cfg["native_open_grid_body"]:
+        semantic["native_open_grid_body_version"]=1
     # Deferred visual preservation changes page content; version it independently.
     if cfg["empty_table_policy"]!="fail":
         semantic["empty_table_policy"]=cfg["empty_table_policy"]
@@ -355,6 +359,12 @@ def _page_row(page, struct, source, extraction_hash):
             if entry["type"]!="table":
                 raise ValueError("Source table attached to non-table element")
             entry["source_table"]=validate_source_table(element.source_table)
+        if getattr(element,"physical_table_body",None) is not None:
+            from open_grid_recovery import validate_physical_body
+            if "source_table" not in entry:
+                raise ValueError("Physical body requires original source header grid")
+            entry["physical_table_body"]=validate_physical_body(
+                element.physical_table_body,header_bbox=entry["bbox"],max_json_bytes=100_000_000)
         if getattr(element, "approved_asset", None):
             metadata=element.approved_asset
             if (not isinstance(metadata,dict)
@@ -784,6 +794,7 @@ def stage_one(
             empty_table_policy=cfg["empty_table_policy"],
             profile_page_timings=cfg["profile_stage_timings"],
             experimental_table_prepass=cfg["native_table_prepass"],
+            recover_open_grid_body=cfg["native_open_grid_body"],
         )
         # Existing native publication and evidence checkpoints are independent.
         evidence=None
@@ -898,6 +909,7 @@ def stage_one(
                 "elapsed_seconds":round(time.monotonic()-started,2),
                 "reused_pages":len(done),
                 **({"native_table_prepass_counts":proc.table_prepass_stats} if cfg["native_table_prepass"] else {}),
+                **({"native_open_grid_counts":proc.open_grid_stats} if cfg["native_open_grid_body"] else {}),
                 **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
                 **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
                     "stage_timings_seconds":{key:round(value,3) for key,value in timings.items()}}
@@ -931,6 +943,7 @@ def stage_one(
             "visual_enrichment_complete":visuals_deferred==0,
             "visual_assets_deferred_this_run":visuals_deferred,
             **({"native_table_prepass_counts":proc.table_prepass_stats} if cfg["native_table_prepass"] else {}),
+                **({"native_open_grid_counts":proc.open_grid_stats} if cfg["native_open_grid_body"] else {}),
             **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
             **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
                 "stage_timings_seconds":{key:round(value,3)
