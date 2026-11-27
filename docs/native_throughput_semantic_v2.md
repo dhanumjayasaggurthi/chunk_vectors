@@ -1,13 +1,13 @@
 # Native throughput and semantic chunking v2
 
-**Always start from the [living project state and handoff](PIPELINE_PROJECT_STATE.md).** That file records verified original-PDF evidence, code changes, passing CI, 15-day capacity targets, outstanding OCR/streaming work and the next safe action.
+**Always start from the [living project state and handoff](PIPELINE_PROJECT_STATE.md).** That file records verified original-PDF evidence, code changes, passing CI, 10-day capacity targets, outstanding OCR/streaming work and the next safe action.
 
 ## Scope and compatibility
 
 Implemented as **explicit opt-in settings inside the existing Python pipeline**.
 
 - PostgreSQL: bounded process-local pool, connection acquisition limits, session reset and automatic rollback on return.
-- Native extraction: process-based PDF parsing, with per-worker process recycling. The old thread backend remains available for synchronous OCR.
+- Native extraction: process-based PDF parsing, with bounded whole-pool recycling. The old thread backend remains available for synchronous OCR.
 - Semantic chunks: paragraph-first, then sentence-aware overflow, with Unicode-safe fallback for indivisible text and an exact configured token limit.
 - Table chunks: complete source rows grouped under repeated table headers. Consecutive page-edge table fragments link only with matching column geometry and repeated source headers.
 - Cross-page paragraphs: optionally join when the source clearly continues the same sentence across adjacent pages.
@@ -50,8 +50,7 @@ profile_stage_timings: true
 
 This process backend requires visual_processing=preserve_defer and
 ocr_enabled=false, chart_descriptions_enabled=false and
-table_summaries_enabled=false. Synchronous OCR remains on the existing thread
-path; a separate deferred OCR worker is not implemented in this increment.
+table_summaries_enabled=false. Synchronous OCR remains on the existing thread path. The production wrapper also supports the existing independent deferred OCR and retained-page visual processing, with bounded document-stage overlap. See the living project state for operational configuration and qualification limits.
 
 These runtime-only settings do not change the native extraction semantic
 fingerprint. Already published PDFs will SKIP on replay. Do not delete
@@ -149,17 +148,16 @@ Before creating the versioned validation chunk destination:
 Review the destination, then initialize explicitly using --apply. The existing
 validated page content remains unchanged.
 
-## 15-day rollout acceptance
+## 10-day rollout acceptance
 
-3.2 million files / 15 days = **2.47 documents/sec fleet-wide**, sustained.
-An initial planning target of >=5 docs/sec allows headroom but is **not a
-measured guarantee**. Characterize corpus page-count distribution, OCR rate,
+1.3 million documents / 10 days = **1.505 documents/sec fleet-wide**, sustained (90.28 documents/minute).
+A 50% throughput headroom target is 2.257 documents/sec, not a measured guarantee.
+The completed 100-document native-only benchmark processed 80,312 physical pages at 18.451 pages/sec with four isolated process workers; it does not certify end-to-end capacity or semantic accuracy. Characterize corpus page-count distribution, OCR rate,
 table density, encoding anomalies and retries; benchmark multiple nodes and
 100+ representative original PDFs with p95 latency and peak RSS.
 
 **Known remaining risks:** extracted_source.py still accumulates full-document
 content in memory before chunking, chunk materialization still replaces chunks
-per document, and asynchronous OCR enrichment is not yet connected to the
-native output. Benchmark outlier 25k-page PDFs, PostgreSQL WAL/commit latency,
+per document, and deferred OCR/visual enrichment requires full provider, storage and publication throughput qualification. Benchmark outlier 25k-page PDFs, PostgreSQL WAL/commit latency,
 memory, sustained parallel extraction and cloud quotas before treating the
-15-day production SLA as validated.
+10-day production SLA as validated.
