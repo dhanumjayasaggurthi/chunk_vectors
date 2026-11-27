@@ -63,7 +63,7 @@ jobs:
       - name: Full original 4000-plus-page public tariff schedule
         if: always()
         run: |
-          python tests/online_public_regulatory_benchmark.py --large-hts --documents 1 --min-pages 4001 --max-pages 0 --workers 1 --process-pool --batch-size 16 --max-download-mb 64 --download-timeout 120 --report large_hts_report.json
+          python tests/online_public_regulatory_benchmark.py --large-hts --documents 1 --min-pages 4001 --max-pages 0 --workers 1 --process-pool --batch-size 16 --max-download-mb 256 --download-timeout 120 --report large_hts_report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

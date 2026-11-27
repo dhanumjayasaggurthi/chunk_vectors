@@ -115,6 +115,8 @@ def extract(item, *, max_pages, batch_size, production_tables=False):
     processed = style_pages = table_pages = image_pages = mixed_pages = 0
     bold_runs = italic_runs = 0
     table_fragments=source_rows=continuation_candidates=0
+    tariff_header_pages=header_only_candidates=0
+    header_only_examples=[]
     prior_page=prior_table=None
     if production_tables:
         from table_extractor import inject_table_text_into_elements
@@ -141,6 +143,16 @@ def extract(item, *, max_pages, batch_size, production_tables=False):
                     prior_page,prior_table=page,fragments[-1] if fragments else None
                     table_fragments+=len(fragments)
                     source_rows+=sum(len(el.source_table["source_cells"]) for el in fragments)
+                    # Fixture-specific diagnostic, not production classification.
+                    # HTS pages use vertical rules without horizontal body rows.
+                    native=" ".join(page.raw_text.split()).casefold()
+                    if ("rates of duty" in native and "article description" in native
+                            and ("stat." in native or "unit of quantity" in native)):
+                        tariff_header_pages+=1
+                        if len(native)>500 and not any(el.bbox.y1>page.height*.25 for el in fragments):
+                            header_only_candidates+=1
+                            if len(header_only_examples)<20:
+                                header_only_examples.append(page.page_number)
                 except Exception as exc:
                     prior_page=prior_table=None
                     errors.append({"page":page.page_number,"error":str(exc)[:250]})
@@ -169,6 +181,9 @@ def extract(item, *, max_pages, batch_size, production_tables=False):
         "production_table_validation":production_tables,
         "structured_table_fragments":table_fragments,"source_table_rows":source_rows,
         "adjacent_continuation_candidates":continuation_candidates,
+        "tariff_header_pages":tariff_header_pages,
+        "suspected_header_only_table_pages":header_only_candidates,
+        "suspected_header_only_examples":header_only_examples,
         "image_pages": image_pages, "same_page_text_table_image": mixed_pages,
         "bold_runs": bold_runs, "italic_runs": italic_runs,
         "errors": errors, "seconds": round(time.monotonic() - start, 3),
@@ -252,6 +267,8 @@ def main():
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--process-pool", action="store_true",
                         help="Spawn isolated PDF worker processes instead of threads")
+    parser.add_argument("--local-pdf", action="append", default=[],
+                        help="Use original local approved public PDF(s), no download")
     parser.add_argument("--large-hts", action="store_true",
                         help="Full original USITC tariff PDF, at least 4001 pages")
     parser.add_argument("--report", required=True)
@@ -259,7 +276,7 @@ def main():
     if not (1 <= args.documents <= 180
             and 1 <= args.min_pages <= 5000 and 0 <= args.max_pages <= 25000
             and 1 <= args.workers <= 16 and 1 <= args.download_workers <= 6
-            and 1 <= args.batch_size <= 32 and 1 <= args.max_download_mb <= 64
+            and 1 <= args.batch_size <= 32 and 1 <= args.max_download_mb <= 256
             and 1 <= args.download_timeout <= 120
             and 1 <= args.max_candidates <= 190
             and 1 <= args.shard_count <= 16
@@ -268,10 +285,30 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="regulatory-online-") as temp:
-        if args.large_hts:
-            if args.documents!=1 or args.max_pages!=0 or args.min_pages<4001:
-                parser.error("Large HTS requires --documents 1 --min-pages 4001 --max-pages 0")
-            item=download(("USITC-HTS-2025-REV5",
+        if args.large_hts and (args.documents!=1 or args.max_pages!=0 or args.min_pages<4001):
+            parser.error("Large HTS requires --documents 1 --min-pages 4001 --max-pages 0")
+        if args.local_pdf:
+            import fitz
+            if len(args.local_pdf)!=args.documents:
+                parser.error("--documents must equal the number of --local-pdf arguments")
+            accepted=[]
+            for name in args.local_pdf:
+                path=Path(name).resolve(strict=True)
+                if path.stat().st_size>args.max_download_mb*1024*1024:
+                    parser.error("Local PDF exceeds configured byte limit")
+                with fitz.open(path) as pdf:
+                    if pdf.is_encrypted or pdf.page_count<args.min_pages:
+                        parser.error("Local PDF encrypted or below required page count")
+                    count=pdf.page_count
+                sha=hashlib.sha256()
+                with path.open("rb") as stream:
+                    for block in iter(lambda:stream.read(1024*1024),b""):
+                        sha.update(block)
+                accepted.append({"name":path.name,"url":None,"path":str(path),
+                                 "pages":count,"bytes":path.stat().st_size,"sha256":sha.hexdigest()})
+            rejected={"rejected_sample":[],"rejections_by_reason":{}}
+        elif args.large_hts:
+            item=download(("USITC-HTS",
                 "https://learning.usitc.gov/hts-docs/documents/finalCopy.pdf"),
                 Path(temp),min_pages=args.min_pages,
                 max_bytes=args.max_download_mb*1024*1024,timeout=args.download_timeout)
@@ -299,10 +336,10 @@ def main():
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=args.workers)
         with executor:
             work=partial(extract, max_pages=args.max_pages,
-                         batch_size=args.batch_size,production_tables=args.large_hts)
+                         batch_size=args.batch_size,production_tables=bool(args.large_hts or args.local_pdf))
             results=list(executor.map(work, accepted, chunksize=1))
         report = {
-            "kind": "public_usitc_large_native_extraction" if args.large_hts else "public_official_cfr_fda_native_extraction",
+            "kind": "public_usitc_large_native_extraction" if args.large_hts else ("local_public_native_extraction" if args.local_pdf else "public_official_cfr_fda_native_extraction"),
             "tested_full_documents": args.max_pages == 0,
             "requested_documents": args.documents,
             "shard_index": args.shard_index,
@@ -342,7 +379,8 @@ def main():
              if k not in ("documents", "rejected_sources", "limitations")},
             sort_keys=True))
         if (len(accepted) < args.documents or report["page_errors"]
-                or (args.large_hts and report["total_extracted_pages"]!=report["total_source_pages"])):
+                or (args.large_hts and (report["total_extracted_pages"]!=report["total_source_pages"]
+                    or any(item["suspected_header_only_table_pages"] for item in results)))):
             raise SystemExit(2)
 
 

@@ -81,6 +81,44 @@ class RichDocumentUnitTests(unittest.TestCase):
         self.assertFalse(_is_nested_empty_table_artifact(
             oversized, [[None]], [outer], FakePlumber(), []))
 
+    def test_raster_caption_boundary_preserves_unresolved_region(self):
+        import fitz
+        import pdfplumber
+        from types import SimpleNamespace
+        from PIL import Image
+        import io
+        from pdf_processor import (BBox,PageElement,ElementType,
+            _verified_raster_caption_words,_preserve_empty_table_candidate)
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"caption.pdf"
+            raster=io.BytesIO()
+            Image.new("RGB",(600,300),"white").save(raster,format="PNG")
+            with fitz.open() as pdf:
+                page=pdf.new_page(width=612,height=792)
+                page.insert_image(fitz.Rect(54,200,554,450),stream=raster.getvalue())
+                page.insert_text((54,198),"FIGURE 9: Example of an HTML table",fontsize=12)
+                pdf.save(path)
+            with fitz.open(path) as pdf,pdfplumber.open(path) as plumb:
+                page=pdf[0]
+                pp=plumb.pages[0]
+                block=page.get_text("blocks",flags=fitz.TEXTFLAGS_TEXT)[0]
+                caption=PageElement(ElementType.TEXT,BBox(*block[:4]),text=block[4].strip())
+                box=(53,caption.bbox.y1-1,558,451)
+                words=pp.crop(box).extract_words()
+                self.assertTrue(words)
+                self.assertTrue(_verified_raster_caption_words(box,words,pp,page,[caption]))
+                self.assertFalse(_verified_raster_caption_words(box,words[:-1],pp,page,[caption]))
+                self.assertFalse(_verified_raster_caption_words(box,words,pp,page,[]))
+                self.assertFalse(_verified_raster_caption_words((53,180,558,451),words,pp,page,[caption]))
+                table=SimpleNamespace(bbox=box)
+                kwargs=dict(candidate_index=1,native_page=page,text_elements=[caption])
+                result=_preserve_empty_table_candidate(table,[["",None]],pp,1,16,0,**kwargs)
+                self.assertEqual(result.element_type,ElementType.VECTOR_REGION)
+                self.assertFalse(result.unresolved_region["structured_table_recovered"])
+                self.assertEqual(result.bbox,BBox(*box))
+                with self.assertRaisesRegex(ValueError,"source cell text"):
+                    _preserve_empty_table_candidate(table,[["Dose 20 mg"]],pp,1,16,0,**kwargs)
+
     def test_vector_preview_persists_with_checksum_and_review_label(self):
         import hashlib
         import io

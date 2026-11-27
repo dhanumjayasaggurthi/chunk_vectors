@@ -229,11 +229,42 @@ def _verified_nested_candidate_words(coords, words, plumb_page, native_page,
     ) == "".join(expected)
 
 
+def _verified_raster_caption_words(coords, words, plumb_page, native_page, text_elements):
+    """A caption touching a raster-backed empty candidate is not a lost cell."""
+    import fitz
+    if native_page is None or native_page.rotation != 0:
+        return False
+    if (any(abs(a-b)>0.1 for a,b in zip(native_page.rect,plumb_page.bbox))
+            or native_page.cropbox!=native_page.mediabox):
+        return False
+    box=fitz.Rect(*coords)
+    if box.is_empty or box.is_infinite:
+        return False
+    def compact(text):
+        return "".join(text.split())
+    expected="".join(compact(w["text"]) for w in words)
+    if not expected or compact(native_page.get_textbox(box))!=expected:
+        return False
+    # Require a single retained native caption, crossing the top edge by at
+    # most three PDF points. Interior text or partial captions fail closed.
+    captions=[el for el in text_elements if el.element_type==ElementType.TEXT
+              and re.match(r"(?i)^\s*(?:figure|fig\.?)\s+\d+[a-z]?\s*[:.]",el.text)
+              and compact(el.text)==expected
+              and el.bbox.y0<box.y0<el.bbox.y1<=box.y0+3
+              and el.bbox.x0>=box.x0-0.1 and el.bbox.x1<=box.x1+0.1]
+    if len(captions)!=1:
+        return False
+    # A displayed raster must account for nearly all candidate geometry.
+    # Keep the entire candidate as unresolved evidence, including its caption.
+    return any((fitz.Rect(item["bbox"]) & box).get_area()>=0.90*box.get_area()
+               for item in native_page.get_image_info())
+
+
 def _preserve_empty_table_candidate(table, raw, plumb_page, page_number: int,
                                     max_regions: int, retained_regions: int,
                                     *, candidate_index: int, native_page=None,
                                     text_elements=(), valid_tables=()) -> PageElement:
-    """Defer empty candidates with no words or verified nested native words.
+    """Defer empty candidates with no words or verified native caption/nested words.
 
     Original PDF bytes + exact page and bbox remain authoritative. We never
     fabricate table cells or store duplicate raster PNGs in native mode.
@@ -257,8 +288,12 @@ def _preserve_empty_table_candidate(table, raw, plumb_page, page_number: int,
                 or coords[3]>float(plumb_page.height)+1):
             raise ValueError("Unresolved region outside the original PDF page")
         words = plumb_page.crop(coords).extract_words()
-        if words and not _verified_nested_candidate_words(
-                coords, words, plumb_page, native_page, text_elements, valid_tables):
+        if words and not (
+            _verified_nested_candidate_words(
+                coords, words, plumb_page, native_page, text_elements, valid_tables)
+            or _verified_raster_caption_words(
+                coords, words, plumb_page, native_page, text_elements)
+        ):
             raise ValueError("Unresolved table candidate contains source PDF words")
     except (TypeError, AttributeError) as exc:
         raise ValueError("Cannot verify original PDF candidate bounds") from exc
