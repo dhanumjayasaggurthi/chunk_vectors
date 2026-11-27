@@ -127,7 +127,7 @@ def validate_profile(profile: dict) -> None:
                      "small_section_policy", "preserve_headers", "tokenizer",
                      "boundary_mode", "table_continuation", "table_row_mode",
                      "max_table_pages", "table_edge_fraction", "table_x_tolerance",
-                     "merge_cross_page_paragraphs", "page_join_edge_fraction",
+                     "table_summary_mode", "merge_cross_page_paragraphs", "page_join_edge_fraction",
                      "small_chunk_max_pages", "small_chunk_max_tables"},
         "embedding": {"enabled", "reuse_existing", "batch_size",
                       "dimensions", "deployment", "model", "progress_every_batches",
@@ -193,6 +193,11 @@ def validate_profile(profile: dict) -> None:
             or mode!="semantic_v2" and (continuation!="none" or row_mode!="legacy")
             or continuation!="none" and row_mode!="rows"):
         raise ValueError("semantic-v2 table row mode and continuity require toc_then_semantic")
+    summary_mode=chunking.get("table_summary_mode","structural")
+    if summary_mode not in ("none","structural","extractive"):
+        raise ValueError("Invalid chunking.table_summary_mode")
+    if "table_summary_mode" in chunking and (mode!="semantic_v2" or row_mode!="rows"):
+        raise ValueError("Table summary mode requires semantic-v2 source rows")
     max_table_pages=chunking.get("max_table_pages",8)
     edge=chunking.get("table_edge_fraction",0.25)
     x_tolerance=chunking.get("table_x_tolerance",0.05)

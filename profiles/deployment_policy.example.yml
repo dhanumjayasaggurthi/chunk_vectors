@@ -58,6 +58,9 @@ chunking:
   boundary_mode: semantic_v2
   merge_cross_page_paragraphs: true
   table_row_mode: rows
+  # none | structural | extractive (bounded original row examples).
+  # Narrative LLM summaries are not yet qualified.
+  table_summary_mode: extractive
   table_continuation: conservative
   max_table_pages: 8
   table_edge_fraction: 0.25

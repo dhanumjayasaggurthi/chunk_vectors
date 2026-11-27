@@ -54,6 +54,26 @@ def config(**overrides):
 
 
 class SemanticChunkV2Tests(unittest.TestCase):
+    def test_optional_extractive_summary_once_per_table_and_lossless(self):
+        from configurable_chunking import chunk_with_profile
+        doc=document_with_continued_table()
+        original=json.dumps([page.elements[1].source_table for page in doc.pages],sort_keys=True)
+        baseline=chunk_with_profile(doc,config())
+        with_summary=chunk_with_profile(doc,config(table_summary_mode="extractive"))
+        disabled=chunk_with_profile(doc,config(table_summary_mode="none"))
+        self.assertEqual([c.chunk_text for c in baseline],[c.chunk_text for c in with_summary])
+        self.assertEqual([c.chunk_text for c in baseline],[c.chunk_text for c in disabled])
+        summaries=[s for c in with_summary for s in c.chunk_metadata.get("table_summaries",[])]
+        self.assertEqual(len(summaries),1)
+        summary=summaries[0]
+        self.assertEqual(summary["projected_rows"],29)
+        self.assertEqual(summary["status"],"EXTRACTIVE_SAMPLES_ONLY")
+        for sample in summary["samples"]:
+            self.assertEqual(sample["cells"],doc.pages[sample["page"]-1].elements[1].source_table["source_cells"][sample["row_index"]])
+        self.assertIn("ROW-4-6",summary["text"])
+        self.assertFalse(any("table_summaries" in c.chunk_metadata or "table_structure_summary" in c.chunk_metadata for c in disabled))
+        self.assertEqual(json.dumps([page.elements[1].source_table for page in doc.pages],sort_keys=True),original)
+
     def test_pack_small_tables_preserves_every_source_table_identity(self):
         from configurable_chunking import chunk_with_profile
         import tiktoken

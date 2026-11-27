@@ -176,3 +176,34 @@ def iter_logical_table_rows(fragments):
                 if first_row==header:
                     continue
             yield page_number,row_index,row
+
+
+def extractive_table_summary(fragments):
+    """Bounded description of source rows, not an interpretation of trends."""
+    import json
+    info=fragments[0].table_continuity
+    first=last=None
+    count=0
+    for page,row_index,row in iter_logical_table_rows(fragments):
+        count+=1
+        # The first row may be a header; never label it as a clinical result.
+        encoded=json.dumps(row,ensure_ascii=False,separators=(",",":"))
+        sample={"page":page,"row_index":row_index,"cells":row} if len(encoded)<=400 else None
+        if count==1:
+            first=sample
+        last=sample
+    samples=[]
+    for sample in (first,last):
+        if sample is not None and sample not in samples:
+            samples.append(sample)
+    text=(f"Source table: {info['column_count']} columns and {count} projected rows "
+          f"on physical pages {info['page_start']}–{info['page_end']}.")
+    for sample in samples:
+        text+=(" Source row on page "+str(sample["page"])+", row index "+
+               str(sample["row_index"])+": "+
+               json.dumps(sample["cells"],ensure_ascii=False,separators=(",",":"))+".")
+    return {"table_id":info["table_id"],"status":"EXTRACTIVE_SAMPLES_ONLY",
+            "page_start":info["page_start"],"page_end":info["page_end"],
+            "projected_rows":count,"columns":info["column_count"],
+            "samples":samples,"text":text,
+            "limitations":"Representative source rows only; no inferred trends, comparisons or clinical conclusions."}

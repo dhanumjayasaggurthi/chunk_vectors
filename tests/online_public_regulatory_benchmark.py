@@ -103,14 +103,22 @@ def download(item, directory, *, min_pages, max_bytes, timeout):
     return {"name": name, "url": url, "error": error}
 
 
-def extract(item, *, max_pages, batch_size):
+def extract(item, *, max_pages, batch_size, production_tables=False):
     """Full-document extraction unless max_pages imposes an explicit smoke cap."""
     from pdf_processor import PDFProcessor
     start = time.monotonic()
-    proc = PDFProcessor(item["path"], item["sha256"][:24], item["name"],
-                        strict=True, capture_rich_text=True)
+    options=dict(strict=True,capture_rich_text=True)
+    if production_tables:
+        options.update(capture_table_structure=True,preserve_uninterpreted_visuals=True,
+                       empty_table_policy="preserve_defer")
+    proc = PDFProcessor(item["path"], item["sha256"][:24], item["name"],**options)
     processed = style_pages = table_pages = image_pages = mixed_pages = 0
     bold_runs = italic_runs = 0
+    table_fragments=source_rows=continuation_candidates=0
+    prior_page=prior_table=None
+    if production_tables:
+        from table_extractor import inject_table_text_into_elements
+        from table_continuity import _candidate
     errors = []
     # Process the full PDF for production evidence; use a configurable page
     # cap only for deliberately labeled fast-smoke runs.
@@ -122,6 +130,21 @@ def extract(item, *, max_pages, batch_size):
             if page.error:
                 errors.append({"page": page.page_number, "error": page.error[:250]})
                 continue
+            if production_tables:
+                try:
+                    if page.has_tables:
+                        inject_table_text_into_elements(page.elements,page.staged_table_results,strict=True)
+                    fragments=[el for el in page.elements if getattr(el,"source_table",None)]
+                    if fragments and prior_table is not None and page.page_number==prior_page.page_number+1:
+                        continuation_candidates+=int(_candidate(prior_page,prior_table,page,fragments[0],
+                                                                edge_fraction=.25,x_tolerance=.05))
+                    prior_page,prior_table=page,fragments[-1] if fragments else None
+                    table_fragments+=len(fragments)
+                    source_rows+=sum(len(el.source_table["source_cells"]) for el in fragments)
+                except Exception as exc:
+                    prior_page=prior_table=None
+                    errors.append({"page":page.page_number,"error":str(exc)[:250]})
+                    continue
             text_runs = [run for element in page.elements
                          for run in getattr(element, "runs", [])]
             style_pages += int(bool(text_runs))
@@ -143,6 +166,9 @@ def extract(item, *, max_pages, batch_size):
         "source_sha256": item["sha256"], "bytes": item["bytes"],
         "source_pages": item["pages"], "extracted_pages": processed,
         "style_pages": style_pages, "table_pages": table_pages,
+        "production_table_validation":production_tables,
+        "structured_table_fragments":table_fragments,"source_table_rows":source_rows,
+        "adjacent_continuation_candidates":continuation_candidates,
         "image_pages": image_pages, "same_page_text_table_image": mixed_pages,
         "bold_runs": bold_runs, "italic_runs": italic_runs,
         "errors": errors, "seconds": round(time.monotonic() - start, 3),
@@ -273,7 +299,7 @@ def main():
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=args.workers)
         with executor:
             work=partial(extract, max_pages=args.max_pages,
-                         batch_size=args.batch_size)
+                         batch_size=args.batch_size,production_tables=args.large_hts)
             results=list(executor.map(work, accepted, chunksize=1))
         report = {
             "kind": "public_usitc_large_native_extraction" if args.large_hts else "public_official_cfr_fda_native_extraction",

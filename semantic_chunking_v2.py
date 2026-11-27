@@ -13,7 +13,7 @@ import re
 
 from chunker import Chunk, _make_chunk_id
 from configurable_chunking import _heading
-from table_continuity import link_tables
+from table_continuity import link_tables, extractive_table_summary
 
 _SENTENCES = re.compile(r"(?<=[.!?。！？।؟।])\s+(?=[^\s])")
 
@@ -536,6 +536,23 @@ def chunk_semantic_v2(struct,policy):
                 raise ValueError("Single semantic unit exceeded token budget")
     emit(pending)
     chunks=_pack_short_chunks(chunks,policy,count)
+    summary_mode=policy.get("table_summary_mode","structural")
+    if summary_mode=="none":
+        for chunk in chunks:
+            chunk.chunk_metadata.pop("table_summary_status",None)
+            chunk.chunk_metadata.pop("table_structure_summary",None)
+    elif summary_mode=="extractive":
+        # One bounded description per logical group, not one per row chunk.
+        # Source text and embedding inputs are unchanged.
+        emitted_summaries=set()
+        for chunk in chunks:
+            meta=chunk.chunk_metadata
+            ids=meta.get("table_ids") or ([meta["table_id"]] if "table_id" in meta else [])
+            for table_id in ids:
+                if table_id in links and table_id not in emitted_summaries:
+                    meta.setdefault("table_summaries",[]).append(
+                        extractive_table_summary(links[table_id]))
+                    emitted_summaries.add(table_id)
     section_key=None
     section_id=""
     section_ordinal=0
