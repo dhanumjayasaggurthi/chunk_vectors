@@ -204,7 +204,7 @@ class DeploymentTests(unittest.TestCase):
     "Only disposable PostgreSQL integration")
 class DeploymentPostgresTests(unittest.TestCase):
     def test_config_to_preflight_capture_replay_and_chunk_publication(self):
-        from production import _database
+        from production import _database,status
         from page_stage import init
         from reuse_materialize import init_output,run_one,verify_output
         from retention_batch import run_batch
@@ -228,6 +228,12 @@ class DeploymentPostgresTests(unittest.TestCase):
                 conn.close()
             try:
                 before=_database(d,before_init=True)
+                empty=status(d)
+                self.assertIsNone(empty["native"])
+                self.assertIsNone(empty["retrieval"])
+                self.assertIsNone(empty["ocr"])
+                self.assertFalse(empty["writes"])
+                self.assertFalse(empty["cloud_calls"])
                 self.assertFalse(before["native_tables_ready"])
                 self.assertFalse(before["retrieval_tables_ready"])
                 with self.assertRaisesRegex(ValueError,"absent"):
@@ -237,6 +243,10 @@ class DeploymentPostgresTests(unittest.TestCase):
                 ready=_database(d)
                 self.assertTrue(ready["native_tables_ready"])
                 self.assertTrue(ready["retrieval_tables_ready"])
+                empty=status(d)
+                self.assertEqual(empty["native"]["documents"],0)
+                self.assertEqual(empty["retrieval"]["chunks"],0)
+                self.assertIsNone(empty["ocr"])
                 for i in range(2):
                     receipt=d["receipts"]/f"run-{i}.jsonl"
                     report=run_batch(d["inventory"],receipt,p,docx_config=d["docx"],config=d["batch"])
@@ -316,6 +326,15 @@ class DeploymentPostgresTests(unittest.TestCase):
                     second=finish_captured(d,receipt)
                     self.assertEqual(second,{"SKIPPED":2},second)
                     self.assertEqual((vision.call_count,llm.call_count,session.post.call_count),counts)
+                report=status(d)
+                self.assertEqual(report["native"]["documents"],2)
+                self.assertEqual(report["native"]["pages"],2)
+                self.assertEqual(report["retrieval"]["documents"],2)
+                self.assertGreater(report["retrieval"]["chunks"],0)
+                self.assertTrue(report["retrieval"]["profile_matches"])
+                self.assertEqual(report["ocr"]["statuses"],{"VISUAL_PENDING":1})
+                other={**d,"retrieval":{**q,"_fingerprint":"0"*64}}
+                self.assertFalse(status(other)["retrieval"]["profile_matches"])
                 conn=get_conn()
                 try:
                     with conn.cursor() as cur:

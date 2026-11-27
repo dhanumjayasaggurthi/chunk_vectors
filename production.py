@@ -299,6 +299,66 @@ def preflight(d,*,before_init=False):
     return report
 
 
+def status(d):
+    """Read-only operational counts from existing manifests and the OCR queue.
+
+    No page/chunk payload scans, provider calls, schema initialization, or
+    assumption that retrieval's materialization digest equals the PDF hash.
+    Counts cover the configured tables, not source inventory or semantic QA.
+    """
+    from db import get_conn
+    from page_stage import names as native_names, extraction_fingerprint
+    from reuse_materialize import identifiers
+    from deferred_ocr import tables as ocr_tables, settings as ocr_settings, ocr_fingerprint
+    native=native_names(d["capture"])
+    retrieval=identifiers(d["retrieval"])
+    ocr=ocr_tables(d["capture"])["ocr"]
+    native_hash=extraction_fingerprint(d["capture"])
+    retrieval_hash=d["retrieval"]["_fingerprint"]
+    current_ocr_hash=ocr_fingerprint(ocr_settings(d["capture"]))
+    report={"writes":False,"cloud_calls":False,"native":None,"retrieval":None,
+            "ocr":None,"scope":"Stored manifest totals and current-version OCR jobs; not semantic quality or source freshness certification"}
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            cur.execute("SELECT set_config('statement_timeout',%s,true)",
+                        (str(d["limits"]["preflight_statement_timeout_ms"]),))
+            def exists(relation):
+                cur.execute("SELECT to_regclass(%s)",(relation,))
+                return cur.fetchone()[0] is not None
+            if exists(native["docs"]):
+                cur.execute(f"""SELECT extraction_hash,COUNT(*),COALESCE(SUM(page_count),0)
+                    FROM {native['docs']} GROUP BY extraction_hash ORDER BY extraction_hash""")
+                versions=[{"extraction_hash":h,"documents":int(n),"pages":int(v)}
+                          for h,n,v in cur.fetchall()]
+                report["native"]={"documents":sum(v["documents"] for v in versions),
+                                  "pages":sum(v["pages"] for v in versions),
+                                  "configured_extraction_hash":native_hash,
+                                  "versions":versions}
+            if exists(retrieval["status"]):
+                cur.execute(f"""SELECT profile_hash,COUNT(*),COALESCE(SUM(chunk_count),0)
+                    FROM {retrieval['status']} GROUP BY profile_hash ORDER BY profile_hash""")
+                versions=[{"profile_hash":h,"documents":int(n),"chunks":int(v)}
+                          for h,n,v in cur.fetchall()]
+                report["retrieval"]={"documents":sum(v["documents"] for v in versions),
+                    "chunks":sum(v["chunks"] for v in versions),
+                    "configured_profile_hash":retrieval_hash,
+                    "profile_matches":all(v["profile_hash"]==retrieval_hash for v in versions),
+                    "versions":versions}
+            if report["native"] is not None and exists(ocr):
+                cur.execute(f"""SELECT j.status,COUNT(*) FROM {ocr} j
+                    JOIN {native['docs']} n ON n.doc_id=j.doc_id
+                     AND n.source_hash=j.source_hash AND n.extraction_hash=j.extraction_hash
+                    WHERE n.extraction_hash=%s AND j.ocr_hash=%s
+                    GROUP BY j.status ORDER BY j.status""",(native_hash,current_ocr_hash))
+                report["ocr"]={"ocr_hash":current_ocr_hash,"statuses":dict(cur.fetchall())}
+    finally:
+        conn.rollback()
+        conn.close()
+    return report
+
+
 def finish_captured(d,receipt,*,records=None,admit=None):
     """Process only the successful capture records from this invocation.
 
@@ -508,7 +568,7 @@ def run_capture_and_finish(d,receipt,*,overlap=False,finish=False):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command",choices=("plan","preflight","init","run","capture","materialize","docx-preview","docx-publish",
+    parser.add_argument("command",choices=("plan","status","preflight","init","run","capture","materialize","docx-preview","docx-publish",
                                            "finish","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status",
                                            "embed-preview","embed"))
     parser.add_argument("--before-init",action="store_true")
@@ -542,6 +602,8 @@ def main(argv=None):
     code=0
     if cmd=="plan":
         result=plan(d)
+    elif cmd=="status":
+        result=status(d)
     elif cmd=="preflight":
         result=preflight(d,before_init=args.before_init)
     elif cmd=="init":
