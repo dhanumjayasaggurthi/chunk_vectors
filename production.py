@@ -577,7 +577,7 @@ def run_capture_and_finish(d,receipt,*,overlap=False,finish=False):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command",choices=("plan","status","preflight","init","run","capture","materialize","docx-preview","docx-publish",
+    parser.add_argument("command",choices=("plan","status","census","preflight","init","run","capture","materialize","docx-preview","docx-publish",
                                            "finish","enrich-preview","enrich","ocr-init","ocr-discover","ocr-enqueue","ocr-run","ocr-status","ocr-recover-crops","visual-plan","visual-probe",
                                            "embed-preview","embed"))
     parser.add_argument("--before-init",action="store_true")
@@ -616,6 +616,12 @@ def main(argv=None):
         result=plan(d)
     elif cmd=="status":
         result=status(d)
+    elif cmd=="census":
+        if args.apply:
+            parser.error("census is read-only")
+        from corpus_census import run as census
+        result=census(d)
+        code=int(bool(result["errors"]))
     elif cmd=="preflight":
         result=preflight(d,before_init=args.before_init)
     elif cmd=="init":

@@ -37,6 +37,21 @@ pilot; ensure the maximum-document cap covers the assigned folder for a full run
 Repeated capped runs revisit the same source prefix. Keep server source
 assignments disjoint. Use the exact approved renderer version throughout.
 
+## Size the assigned workload (read-only)
+
+~~~bash
+python production.py census
+~~~
+
+Reads PDF page counts and file sizes from the assigned source root or
+configured inventory. Counts DOCX separately, reports unreadable PDFs,
+and uses existing batch worker settings. Does not extract page contents,
+write a database, or call providers. Counts are for the assigned shard;
+unique/disjoint inventory entries are the upstream responsibility.
+For 10-day sizing, use actual PDF pages divided by 864000 seconds and
+include headroom, DOCX workload, provider quotas and storage constraints.
+Do not infer content quality or duplicate-document detection from this census.
+
 ## 2. Initialize a NEW destination
 
 ~~~bash
