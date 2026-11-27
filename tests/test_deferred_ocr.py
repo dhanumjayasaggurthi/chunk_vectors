@@ -75,6 +75,40 @@ class DeferredOcrUnitTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,"outside retained page"):
                     read_region(root/"retained",cid,1,bbox,settings=visual)
 
+    def test_same_page_crops_share_verification_without_changing_bytes(self):
+        import fitz
+        from visual_evidence import capture,read_region
+        from vision_ocr import OcrResult
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            source=make_pdf(folder)
+            sha=hashlib.sha256(source.read_bytes()).hexdigest()
+            visual={"dpi":200,"workers":1}
+            captured=capture(source,root/"retained",1,1,settings=visual,
+                             policy_id="synthetic-test",authorized_page_derivatives=True)
+            p={**profile(),"deferred_ocr":{"retained_evidence":{
+                "root":str(root/"retained"),"policy_id":"synthetic-test",
+                "renderer":str(fitz.VersionBind),"visual_settings":visual,"read_workers":1}}}
+            cfg=ocr.settings(p)
+            boxes=[[45,50,200,190],[45,50,999,190],[45,100,200,190]]
+            jobs=[(str(i),"d"*64,sha,"e"*64,1,"image",box,1,str(i)) for i,box in enumerate(boxes)]
+            expected=[read_region(root/"retained",captured["capture_id"],1,boxes[i],
+                                  settings=visual)[0] for i in (0,2)]
+            source.unlink()
+            from visual_evidence import _verify_page
+            completed=[]
+            with (patch("visual_evidence._verify_page",wraps=_verify_page) as verify,
+                  patch("deferred_ocr.renew_leases"),
+                  patch("deferred_ocr.complete",side_effect=lambda p,j,**kw:completed.append((j[0],kw["status"]))),
+                  patch("vision_ocr.batch_document_text_detection",
+                        return_value=[OcrResult("source",.98,1,"en",True),
+                                      OcrResult("",0,0,"",True)]) as api):
+                result=ocr.run_group(p,jobs,cfg,None,ocr._SourceVerifier())
+                self.assertEqual(verify.call_count,1)
+                self.assertEqual(api.call_args.args[0],expected)
+            self.assertEqual(result,{"TEXT_READY":1,"FAILED_TERMINAL":1,"VISUAL_PENDING":1})
+            self.assertEqual(dict(completed),{"0":"TEXT_READY","1":"FAILED_TERMINAL","2":"VISUAL_PENDING"})
+
     def test_retained_ocr_uses_existing_queue_without_original_or_cloud(self):
         import concurrent.futures
         import multiprocessing

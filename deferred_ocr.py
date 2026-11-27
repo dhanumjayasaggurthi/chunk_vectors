@@ -651,6 +651,10 @@ def _retained_png(job,cfg):
     capture_id=_capture_id(identity)
     png, meta=read_region(retained["root"],capture_id,job[4],job[6],
                           settings=retained["visual_settings"])
+    return _validate_ocr_png(job,cfg,png,meta)
+
+
+def _validate_ocr_png(job,cfg,png,meta):
     if meta["source_pdf_sha256"]!=job[2] or meta["source_page"]!=job[4] or meta["dpi"]!=cfg["render_dpi"]:
         raise ValueError("Retained OCR evidence source/page/DPI mismatch")
     x0,y0,x1,y1=meta["pixel_bbox"]
@@ -670,16 +674,77 @@ def _retained_png(job,cfg):
     return png
 
 
+def _retained_page_pngs(jobs,cfg):
+    """One verified page per bounded task; preserve individual crop failures.
+
+    Return only as many encoded inputs as fit the existing request-byte budget.
+    A caller may request the remainder in a later task. No persistent cache.
+    """
+    from visual_evidence import capture_identity, _capture_id, _load_region_page, _read_loaded_region
+    if not 1 <= len(jobs) <= cfg["batch_images"]:
+        raise ValueError("Invalid retained OCR page group")
+    first=jobs[0]
+    key=lambda j:(j[1],j[2],j[3],j[4])
+    if any(key(j)!=key(first) for j in jobs):
+        raise ValueError("Mixed retained OCR page group")
+    retained=cfg["retained_evidence"]
+    identity=capture_identity(first[2],retained["visual_settings"],
+                              retained["policy_id"],retained["renderer"])
+    loaded=_load_region_page(retained["root"],_capture_id(identity),first[4],
+                             retained["visual_settings"])
+    results={}
+    used=0
+    for job in jobs:
+        try:
+            png,meta=_read_loaded_region(loaded,job[6])
+            png=_validate_ocr_png(job,cfg,png,meta)
+            if used+len(png)>cfg["max_batch_bytes"]:
+                break
+            results[job[0]]=png
+            used+=len(png)
+        except Exception as exc:
+            # Preserve terminal geometry/validation vs retryable runtime failure.
+            results[job[0]]=exc
+    return results
+
+
 @contextlib.contextmanager
 def _ocr_input(profile,group,cfg,verifier,reader_pool):
     if cfg.get("retained_evidence") is not None:
         # Strict mode: never consult original paths or archive fallback.
         # Production run() supplies a single shared process pool. The direct
         # path is for synchronous unit tests and other single-thread callers.
+        pending={j[0]:j for j in group}
+        prepared={}
         def render(job):
-            if reader_pool is None:
-                return _retained_png(job,cfg)
-            return reader_pool.submit(_retained_png,job,cfg).result()
+            aid=job[0]
+            if aid not in prepared:
+                # Same-page crops share verification and decode only within
+                # this claim group. Prefer the current asset first.
+                # Do not prefetch a second page while prior outputs are held.
+                if prepared:
+                    pending.pop(aid,None)
+                    if reader_pool is None:
+                        return _retained_png(job,cfg)
+                    return reader_pool.submit(_retained_png,job,cfg).result()
+                peers=[job]+[j for j in pending.values()
+                             if j[0]!=aid and j[1:5]==job[1:5]]
+                try:
+                    if len(peers)==1:
+                        if reader_pool is None:
+                            return _retained_png(job,cfg)
+                        return reader_pool.submit(_retained_png,job,cfg).result()
+                    found=(_retained_page_pngs(peers,cfg) if reader_pool is None else
+                           reader_pool.submit(_retained_page_pngs,peers,cfg).result())
+                    prepared.update(found)
+                    for completed in found:
+                        pending.pop(completed,None)
+                finally:
+                    pending.pop(aid,None)
+            result=prepared.pop(aid)
+            if isinstance(result,Exception):
+                raise result
+            return result
         yield render, lambda: None
         return
     import fitz

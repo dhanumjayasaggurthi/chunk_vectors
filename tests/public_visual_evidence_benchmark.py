@@ -330,8 +330,23 @@ def check(spec, config):
             data,meta=read_raster(root/"rasters",rid,i,index,mask=is_mask,settings=raster_settings)
             assert hashlib.sha256(data).hexdigest()==digest
             assert not meta["original_required"]
+        batched_region_matches=0
+        batched_region_seconds=0.0
+        independent_region_seconds=0.0
+        from visual_evidence import _load_region_page, _read_loaded_region
         for i,box,w,h,digest in region_references:
-            output,meta=read_region(retained,cid,i,box,settings=config["visual_evidence"])
+            tick=time.monotonic()
+            independent=[read_region(retained,cid,i,b,settings=config["visual_evidence"])
+                         for b in (box,None,box)]
+            independent_region_seconds+=time.monotonic()-tick
+            tick=time.monotonic()
+            loaded=_load_region_page(retained,cid,i,config["visual_evidence"])
+            grouped=[_read_loaded_region(loaded,b) for b in (box,None,box)]
+            batched_region_seconds+=time.monotonic()-tick
+            assert grouped==independent, f"Grouped retained crops differ on page {i}"
+            batched_region_matches+=len(grouped)
+            del loaded,grouped
+            output,meta=independent[0]
             pix=fitz.Pixmap(output)
             assert (pix.width,pix.height)==(w,h), f"Region dimensions mismatch {i}"
             assert hashlib.sha256(pix.samples).hexdigest()==digest, f"Region pixel mismatch {i}"
@@ -367,6 +382,9 @@ def check(spec, config):
             "verified_after_source_removal": restored["verified_pages"],
             "tamper_rejected": True, "selective":selective_result,
             "post_source_region_pixel_matches":len(region_references),
+            "grouped_region_byte_matches":batched_region_matches,
+            "independent_region_read_seconds":round(independent_region_seconds,3),
+            "grouped_region_read_seconds":round(batched_region_seconds,3),
             "raster_sample_pages":len(raster_ranges),"raster_occurrences":raster_occurrences,
             "raster_fallbacks":raster_fallbacks,"post_source_raster_asset_matches":len(raster_refs),
             "vector_sample_pages":len(vector_refs),

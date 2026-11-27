@@ -415,15 +415,9 @@ def _verify_page(root, capture_id, number, *, max_pixels=MAX_PIXELS, max_png_byt
 
 
 
-def read_region(root, capture_id, number, bbox=None, *, settings=None):
-    """Return (PNG bytes, provenance) for a verified retained page or region.
-
-    bbox is an optional unrotated PyMuPDF page rectangle in points, NOT raw PDF
-    bottom-left coordinates. No resampling, source access or persistent writes.
-    The caller supplies a region; this is not automatic figure segmentation.
-    """
+def _load_region_page(root, capture_id, number, settings=None):
+    """Verify one immutable page buffer for a bounded group of local crops."""
     import fitz
-    import math
     settings = _settings({} if settings is None else settings)
     _full_range(number, number)
     record = _verify_page(root, capture_id, number,
@@ -438,6 +432,15 @@ def read_region(root, capture_id, number, bbox=None, *, settings=None):
         data = stream.read(settings["max_png_bytes"] + 1)
     if len(data) != record["image_bytes"] or _sha(data) != record["image_sha256"]:
         raise ValueError("Page evidence image checksum/size mismatch")
+    pix = fitz.Pixmap(data)
+    return record, data, pix, settings
+
+
+def _read_loaded_region(loaded, bbox):
+    import fitz
+    import math
+    record, data, pix, settings = loaded
+    capture_id, number = record["capture_id"], record["source_page"]
     dpi = record["identity"]["dpi"]
     width, height = record["pixel_width"], record["pixel_height"]
     requested = None
@@ -479,7 +482,6 @@ def read_region(root, capture_id, number, bbox=None, *, settings=None):
         w, h = x1-x0, y1-y0
         if w*h > settings["max_pixels"]:
             raise ValueError("Region pixel limit exceeded")
-        pix = fitz.Pixmap(data)
         if pix.n != 3 or pix.alpha:
             raise ValueError("Expected retained RGB image")
         samples = pix.samples_mv
@@ -500,6 +502,11 @@ def read_region(root, capture_id, number, bbox=None, *, settings=None):
         "quality_policy": "SOURCE_ONLY_UNINTERPRETED",
         "original_required": False, "writes": False,
     }
+
+
+def read_region(root, capture_id, number, bbox=None, *, settings=None):
+    """Return verified PNG bytes and provenance for a page or unrotated point bbox."""
+    return _read_loaded_region(_load_region_page(root, capture_id, number, settings), bbox)
 
 
 def _report(capture_id, first, last, source_count, total, started):
