@@ -36,6 +36,10 @@
 
 
 
+## P0 — YAML regression corrected (2026-11-26)
+
+CI for 12d5852 (45929337504) failed because the example YAML indication regex edit accidentally duplicated trailing sections. Corrected literal regex/section boundaries and checked exactly one embedding/deferred_ocr root; no silent relaxation. Latest implementation still requires CI validation. Existing production YAML on user's VM unchanged; do not run yet.
+
 ## P0 — optional extractive table summaries and production-path giant benchmark (2026-11-26)
 
 Follow-up to 12d5852. YAML chunking.table_summary_mode none|structural|extractive (existing default structural, example opts into extractive), only semantic-v2 source row mode. Deterministic summary stored once per linked logical table in existing chunk_metadata.table_summaries; physical page/row sample references, projected row/column counts, first/last complete source rows only if bounded, explicit EXTRACTIVE_SAMPLES_ONLY limitation. Does not change source rows, native/English text, chunk boundaries, or automatically enter vector input. This is a safe baseline, not final GPT narrative/table/chart integration. Narrative must be separately labeled, source-cited, bounded, quota-aware and opt-in; chart existing visual model path not live-qualified. Regression checks one summary per four-page group, exact sampled row provenance, disabled mode and unchanged source/chunk text. Example YAML changes retrieval profile when adopted; no native/OCR changes. Full large HTS benchmark now uses preserve_defer, capture_table_structure and strict table injection, counts structured fragments/source rows and adjacent continuation candidates across page windows, reports errors and memory; not full logical table publication/summary quality test, not guarantee 3000 table pages or 4001 physical count until actual CI passes. No local commands or provider calls. Main 86e48c8 reviewed before implementation. Public binary blocked in assistant container (DNS), GitHub workflow used for real execution. Keep public Reagan-Udall page24 failure and FDA source block visible; no weakening of guard. CI pending.
