@@ -6,11 +6,26 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from native_prepass_qualification import extract_document
+from native_prepass_qualification import extract_document, load_manifest
 from native_table_prepass import detect_tables
 
 
 class NativePrepassQualificationTests(unittest.TestCase):
+    def test_fixed_manifest_refuses_unknown_duplicate_and_invalid_sources(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"manifest.json"
+            urls={"a":"https://example.test/a.pdf","b":"https://example.test/b.pdf"}
+            valid=[{"name":"b","pages":200},{"name":"a","pages":100}]
+            path.write_text(json.dumps(valid),encoding="utf-8")
+            self.assertEqual(load_manifest(path,urls),list(reversed(valid)))
+            for rows in ([valid[0],valid[0]], [{"name":"missing","pages":100}],
+                         [{"name":"a","pages":99}], [{"name":"a","pages":True}],
+                         [{"name":"a","pages":100,"url":"other"}], []):
+                path.write_text(json.dumps(rows),encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_manifest(path,urls)
+
     def test_fallbacks_are_authoritative_and_full_errors_propagate(self):
         page=Mock()
         sentinel=[object()]
