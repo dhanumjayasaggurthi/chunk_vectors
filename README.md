@@ -228,6 +228,16 @@ The original page text and grids stay unchanged. Do not treat the resulting
 physical lines as verified tariff records. Existing retrieval policies remain
 unchanged.
 
+## Real retained-capture qualification (CI only)
+
+The dedicated `real-capture-db.yml` workflow tests eight whole public PDFs
+(6,353 pages) with actual 300-DPI retained evidence and disposable PostgreSQL,
+then read-only OCR discovery and native-only source-language chunk publication.
+It is intentionally not a production English retrieval or embedding test.
+Reports separate download/capture/materialization wall time and worker-stage
+totals, disk/DB bytes and verified page/chunk coverage. No user database or
+paid provider is used. Do not run this CI-only harness against production.
+
 ## Worker tuning
 
 Use independent limits by feature, not one worker count for everything.
