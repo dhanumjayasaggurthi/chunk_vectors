@@ -22,6 +22,15 @@ from profile_store import _safe_identifier, profile_document_lock
 LOG = logging.getLogger("epod.page_stage")
 
 
+class VisualReviewRequired(RuntimeError):
+    """The full document is checkpointed but must not be published yet."""
+
+    def __init__(self, review_pages: int):
+        super().__init__(f"{review_pages} pages contain unreviewed vector regions")
+        self.review_pages = review_pages
+
+
+
 def names(profile):
     opts = profile.get("extraction") or {}
     if opts.get("enabled") is not True:
@@ -56,8 +65,40 @@ def settings(profile):
         "max_window_raster_bytes":160_000_000,
         "max_render_pixels":50_000_000,
         "ocr_enabled":True,
+        "capture_rich_text":False,
+        "publish_unreviewed_vector_regions":False,
+        "approved_image_manifest":"",
+        "capture_table_structure":False,
+        "max_table_source_json_bytes":8_000_000,
+        "visual_processing":"blocking",
+        "max_visual_regions_per_page":256,
+        "worker_backend":"threads",
+        "worker_recycle_documents":0,
+        "profile_stage_timings":False,
+        "native_table_prepass":False,
+        "native_open_grid_body":False,
+        "empty_table_policy":"fail",
+        "retained_evidence":None,
     }
     result.update(opts)
+    for flag in ("native_table_prepass","native_open_grid_body"):
+        if type(result[flag]) is not bool:
+            raise ValueError(flag+" must be boolean")
+    if (result["native_table_prepass"] or result["native_open_grid_body"]) and (
+            result["worker_backend"]!="processes"
+            or result["visual_processing"]!="preserve_defer"
+            or not result["capture_table_structure"]
+            or result["ocr_enabled"]
+            or result["chart_descriptions_enabled"]
+            or result["table_summaries_enabled"]):
+        raise ValueError("Native table options require structured native preserve_defer process extraction")
+    if result['retained_evidence'] is not None:
+        from visual_evidence import native_capture_config
+        result['retained_evidence']=native_capture_config(result['retained_evidence'])
+        if (result['worker_backend']!='processes' or result['visual_processing']!='preserve_defer'
+                or result['ocr_enabled'] or result['chart_descriptions_enabled']
+                or result['table_summaries_enabled']):
+            raise ValueError('Retained evidence requires native preserve_defer process workers without inline AI')
     return result
 
 
@@ -74,7 +115,11 @@ def extraction_fingerprint(profile) -> str:
     )
     cfg=settings(profile)
     semantic={
-        "stage_format_version":2,
+        "stage_format_version":4 if cfg["capture_rich_text"] else 3,
+        "unclassified_vector_preview_version":1,
+        "capture_rich_text":cfg["capture_rich_text"],
+        "capture_table_structure":cfg["capture_table_structure"],
+        "source_table_format_version":1 if cfg["capture_table_structure"] else 0,
         "ocr_enabled":cfg["ocr_enabled"],
         "ocr_bbox_detail":cfg["ocr_bbox_detail"],
         "ocr_confidence_min":cfg["ocr_confidence_min"],
@@ -85,6 +130,25 @@ def extraction_fingerprint(profile) -> str:
         "table_settings":TABLE_SETTINGS,
         "table_format":TABLE_FORMAT,
     }
+    # Deliberately isolate the opt-in detector from previous native checkpoints.
+    # The default identity remains byte-for-byte unchanged.
+    if cfg["native_table_prepass"]:
+        semantic["native_table_prepass_version"]=1
+    if cfg["native_open_grid_body"]:
+        semantic["native_open_grid_body_version"]=1
+    # Deferred visual preservation changes page content; version it independently.
+    if cfg["empty_table_policy"]!="fail":
+        semantic["empty_table_policy"]=cfg["empty_table_policy"]
+        semantic["unresolved_source_region_format"]=1
+    if cfg["visual_processing"] != "blocking":
+        semantic["visual_processing"]=cfg["visual_processing"]
+        semantic["visual_source_reference_format"]=1
+    # The approved-asset manifest changes extraction meaning and must never
+    # reuse checkpoints produced under an older approval policy.
+    if cfg["approved_image_manifest"]:
+        from approved_images import read_approved_image_manifest
+        _,manifest_hash=read_approved_image_manifest(cfg["approved_image_manifest"])
+        semantic["approved_image_manifest_sha256"]=manifest_hash
     payload=json.dumps(semantic,sort_keys=True,separators=(",",":"),
                        allow_nan=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -260,7 +324,13 @@ def _page_row(page, struct, source, extraction_hash):
     from chunker import _page_full_text
     text=_page_full_text(page)
     if not page.is_blank and not text.strip():
-        raise ValueError("Nonblank page has no recoverable text")
+        # An image-only page may be indexed later by OCR. Retain its
+        # original source references; never invent a textual transcription.
+        if not any(
+            getattr(el,"visual_asset",None) or getattr(el,"unresolved_region",None)
+            for el in page.elements
+        ):
+            raise ValueError("Nonblank page has no recoverable text or source visual evidence")
     geometry=[]
     for element in page.elements:
         box=element.bbox
@@ -270,6 +340,58 @@ def _page_row(page, struct, source, extraction_hash):
             "text":element.text, "confidence":round(float(element.confidence),5),
             "reading_order":element.reading_order,
         }
+        if getattr(element, "visual_asset", None):
+            if entry["type"] not in ("image","chart") or element.image_bytes:
+                raise ValueError("Invalid preserved visual source reference")
+            from pdf_processor import validate_visual_asset
+            entry["visual_asset"]=validate_visual_asset(
+                element.visual_asset, page_number=page.page_number,
+            )
+        if getattr(element, "unresolved_region", None):
+            from pdf_processor import validate_unresolved_region
+            if entry["type"]!="vector_region" or element.vector_png:
+                raise ValueError("Invalid unresolved table/graphic region")
+            entry["unresolved_region"]=validate_unresolved_region(
+                element.unresolved_region,page_number=page.page_number
+            )
+        if getattr(element, "source_table", None) is not None:
+            from table_extractor import validate_source_table
+            if entry["type"]!="table":
+                raise ValueError("Source table attached to non-table element")
+            entry["source_table"]=validate_source_table(element.source_table)
+        if getattr(element,"physical_table_body",None) is not None:
+            from open_grid_recovery import validate_physical_body
+            if "source_table" not in entry:
+                raise ValueError("Physical body requires original source header grid")
+            entry["physical_table_body"]=validate_physical_body(
+                element.physical_table_body,header_bbox=entry["bbox"],max_json_bytes=100_000_000)
+        if getattr(element, "approved_asset", None):
+            metadata=element.approved_asset
+            if (not isinstance(metadata,dict)
+                    or metadata.get("approval_status")!="approved"
+                    or metadata.get("text") != element.text
+                    or element.image_bytes):
+                raise ValueError("Approved asset metadata or OCR policy invalid")
+            entry["approved_asset"]=metadata
+        if getattr(element, "vector_png", b""):
+            import base64
+            png = element.vector_png
+            if not 0 < len(png) <= 128_000 or not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("Invalid bounded vector preview PNG")
+            entry["vector_preview"]={
+                "format":"png", "dpi":144,
+                "sha256":hashlib.sha256(png).hexdigest(),
+                "base64":base64.b64encode(png).decode("ascii"),
+                "review_required":True,
+            }
+        if cfg_rich := getattr(element, "runs", None):
+            from rich_document import validate_runs
+            entry["runs"]=validate_runs(cfg_rich)
+            if getattr(element,"semantic_role",""):
+                entry["semantic_role"]=element.semantic_role
+                entry["heading_level"]=element.heading_level
+        if getattr(element, "language", ""):
+            entry["language"]=element.language
         if getattr(element,"ocr_regions",None):
             entry["ocr_regions"]=element.ocr_regions
             entry["ocr_render_dpi"]=OCR_RENDER_DPI
@@ -335,7 +457,7 @@ def _persist_window(rows, errors, doc_id, source, fingerprint, n):
         conn.close()
 
 
-def _publish(doc_id, source, fingerprint, page_count, n):
+def _publish(doc_id, source, fingerprint, page_count, n, *, allow_unreviewed=False):
     """Atomically swap ONLY complete document pages into the visible table."""
     conn=get_conn()
     try:
@@ -350,6 +472,19 @@ def _publish(doc_id, source, fingerprint, page_count, n):
                 raise RuntimeError(
                     f"Cannot publish incomplete document: {count}/{page_count} pages"
                 )
+            # JSONB containment is exact on type. A completed page can still
+            # require visual review: preserve work checkpoints and refuse
+            # publication until explicitly approved. This check is durable
+            # across resumed invocations, not just the current worker state.
+            if not allow_unreviewed:
+                cur.execute(f"""
+                    SELECT COUNT(*) FROM {n['work']}
+                    WHERE doc_id=%s AND source_hash=%s AND extraction_hash=%s
+                      AND elements @> '[{{"type":"vector_region"}}]'::jsonb
+                """,(doc_id,source,fingerprint))
+                review_pages=cur.fetchone()[0]
+                if review_pages:
+                    raise VisualReviewRequired(review_pages)
             cur.execute(f"DELETE FROM {n['published']} WHERE doc_id=%s",(doc_id,))
             cur.execute(f"""
                 INSERT INTO {n['published']} (
@@ -396,6 +531,27 @@ def _images_in_groups(pages, cfg):
         for element in page.elements:
             if element.element_type not in (ElementType.IMAGE,ElementType.CHART):
                 continue
+            if getattr(element, "visual_asset", None):
+                # Native-only publication is an explicit, provenance-backed
+                # state. OCR and chart interpretation are pending, not faked.
+                asset=element.visual_asset
+                if (cfg["visual_processing"]!="preserve_defer"
+                        or element.image_bytes or element.text
+                        or asset.get("source")!="original_pdf"
+                        or asset.get("status")!="PENDING_OCR_OR_VISUAL_ENRICHMENT"):
+                    errors[page.page_number]=ValueError(
+                        "Invalid deferred visual reference or quality policy"
+                    )
+                continue
+            if getattr(element, "approved_asset", None):
+                if element.text and not element.image_bytes:
+                    # Exact, manually approved source-image digest, not a
+                    # general skip for small/non-text images.
+                    continue
+                errors[page.page_number]=ValueError(
+                    "Approved image lost its provenance or text"
+                )
+                continue
             if not element.image_bytes:
                 errors[page.page_number]=ValueError("Image region could not render")
                 continue
@@ -429,6 +585,9 @@ def _ocr_pages(pages, cfg, limiter, *, ocr_gate=None, chart_gate=None):
         batch_document_text_detection, _describe_chart_with_gpt4o,
     )
     groups,errors=_images_in_groups(pages,cfg)
+    if not groups and not errors and not any(page.needs_ocr for page in pages):
+        # High-throughput native path: no thread pool, raster or cloud work.
+        return {},0
     if groups and not cfg["ocr_enabled"]:
         for group in groups:
             for page,_ in group:
@@ -471,6 +630,7 @@ def _ocr_pages(pages, cfg, limiter, *, ocr_gate=None, chart_gate=None):
                         continue
                     element.text=response.text
                     element.confidence=response.confidence
+                    element.language=getattr(response,"language","") or ""
                     element.ocr_regions=response.regions
                     if (element.element_type==ElementType.IMAGE
                             and not response.text.strip()):
@@ -594,7 +754,7 @@ def _tables(pages, path, cfg):
 
 def stage_one(
     file_path, profile, n, limiter=None, *,
-    doc_id=None, ocr_gate=None, chart_gate=None,
+    doc_id=None, ocr_gate=None, chart_gate=None, expected_source_sha256=None,
 ):
     from pdf_processor import PDFProcessor
     cfg=settings(profile)
@@ -605,8 +765,18 @@ def stage_one(
         str(path).encode("utf-8")
     ).hexdigest())
     before=path.stat()
+    retained_cfg=cfg['retained_evidence']
+    evidence_state=(before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)
+    source_hash_started=time.monotonic()
     source=source_hash(str(path))
+    if expected_source_sha256 is not None and source!=expected_source_sha256:
+        raise ValueError('Intake PDF source version mismatch')
+    initial_hash_seconds=time.monotonic()-source_hash_started
     fingerprint=extraction_fingerprint(profile)
+    from approved_images import read_approved_image_manifest
+    approved_images, _ = read_approved_image_manifest(
+        cfg["approved_image_manifest"]
+    )
     started=time.monotonic()
     with profile_document_lock(doc_id,fingerprint) as acquired:
         if not acquired:
@@ -615,32 +785,68 @@ def stage_one(
         proc=PDFProcessor(
             str(path),doc_id,path.name,strict=True,
             max_render_pixels=cfg["max_render_pixels"],
+            capture_rich_text=cfg["capture_rich_text"],
+            approved_image_assets=approved_images,
+            capture_table_structure=cfg["capture_table_structure"],
+            max_table_source_json_bytes=cfg["max_table_source_json_bytes"],
+            preserve_uninterpreted_visuals=cfg["visual_processing"]=="preserve_defer",
+            max_visual_regions_per_page=cfg["max_visual_regions_per_page"],
+            empty_table_policy=cfg["empty_table_policy"],
+            profile_page_timings=cfg["profile_stage_timings"],
+            experimental_table_prepass=cfg["native_table_prepass"],
+            recover_open_grid_body=cfg["native_open_grid_body"],
         )
-        # Header-only read is cheap; don't render completed pages during resume.
+        # Existing native publication and evidence checkpoints are independent.
+        evidence=None
         with __import__("fitz").open(str(path)) as pdf:
             page_count=pdf.page_count
             if pdf.is_encrypted:
                 raise ValueError("Encrypted PDF")
-        if published==(source,fingerprint,page_count):
-            return {"doc_id":doc_id,"status":"SKIPPED",
-                    "pages":page_count,"elapsed_seconds":0}
+            if retained_cfg is not None:
+                from visual_evidence import OpenPageCapture
+                evidence=OpenPageCapture(path,source,evidence_state,page_count,retained_cfg,
+                                         profile_timings=cfg['profile_stage_timings'])
+            if published==(source,fingerprint,page_count):
+                if evidence is None:
+                    return {"doc_id":doc_id,"status":"SKIPPED","pages":page_count,"elapsed_seconds":0}
+                # Backfill/verify evidence without parsing native rows or touching
+                # previously published tables. No nested process pool.
+                for number in range(1,page_count+1):
+                    evidence.consume(pdf,number)
+                if source_hash(str(path))!=source:
+                    raise RuntimeError("Source PDF changed during evidence backfill")
+                report=evidence.report()
+                return {"doc_id":doc_id,"status":"SKIPPED","pages":page_count,
+                        "elapsed_seconds":round(time.monotonic()-started,2),
+                        "retained_evidence":report}
         errors_total=0
         pages_processed=0
         images_processed=0
+        visuals_deferred=0
+        timings={"pdf_parse":0.0,"ocr":0.0,"table_postprocessing":0.0,
+                 "checkpoint_sql":0.0,"publish_sql":0.0,
+                 "source_verification":0.0}
+        parse_started=time.monotonic()
         for window in proc.iter_page_batches(
             cfg["page_batch_size"],completed_pages=done,
             max_window_raster_bytes=cfg["max_window_raster_bytes"],
+            **({"page_observer":evidence.consume} if evidence is not None else {}),
         ):
+            timings["pdf_parse"]+=time.monotonic()-parse_started
             invalid={
                 page.page_number:RuntimeError(page.error)
                 for page in window.pages if page.error
             }
             active=[page for page in window.pages if not page.error]
+            phase_started=time.monotonic()
             ocr_errors,ocr_count=_ocr_pages(
                 active,cfg,limiter,ocr_gate=ocr_gate,chart_gate=chart_gate
             )
+            timings["ocr"]+=time.monotonic()-phase_started
             invalid.update(ocr_errors)
+            phase_started=time.monotonic()
             table_errors=_tables(active,str(path),cfg)
+            timings["table_postprocessing"]+=time.monotonic()-phase_started
             invalid.update(table_errors)
             rows=[]
             for page in active:
@@ -650,7 +856,16 @@ def stage_one(
                     rows.append(_page_row(page,window,source,fingerprint))
                 except Exception as exc:
                     invalid[page.page_number]=exc
+            phase_started=time.monotonic()
             _persist_window(rows,invalid,doc_id,source,fingerprint,n)
+            timings["checkpoint_sql"]+=time.monotonic()-phase_started
+            visuals_deferred+=sum(
+                1 for page in active if page.page_number not in invalid
+                for element in page.elements if (
+                    getattr(element,"visual_asset",None)
+                    or getattr(element,"unresolved_region",None)
+                )
+            )
             # No page data or raster buffers are retained across windows.
             pages_processed+=len(rows)
             images_processed+=ocr_count
@@ -662,21 +877,61 @@ def stage_one(
                 doc_id[:12],len(done)+pages_processed,page_count,
                 errors_total,images_processed,(pages_processed*60)/elapsed,
             )
+            parse_started=time.monotonic()
         # Full content hash protects against a PDF being modified during
         # a long-running extraction, including changes undetected by mtime.
+        verification_started=time.monotonic()
         after=path.stat()
         if (before.st_size!=after.st_size
             or before.st_mtime_ns!=after.st_mtime_ns
             or source_hash(str(path))!=source):
             raise RuntimeError("Source PDF changed during extraction; no publication")
+        evidence_report=evidence.report() if evidence is not None else None
+        timings["source_verification"]+=time.monotonic()-verification_started
+        if cfg["profile_stage_timings"]:
+            timings["pdf_table_detection"]=proc.profiled_table_detection_seconds
+            timings["pdf_table_cell_extraction"]=proc.profiled_table_extraction_seconds
+            timings["pdf_other_parse"]=max(
+                0.0, timings["pdf_parse"]-
+                timings["pdf_table_detection"]-timings["pdf_table_cell_extraction"]
+            )
+        if cfg["profile_stage_timings"] and evidence_report is not None:
+            # pdf_parse includes the synchronous evidence observer. Keep the
+            # legacy metric and expose its evidence/non-evidence components.
+            timings["retained_evidence"]=evidence_report["elapsed_seconds"]
+            timings["pdf_parse_excluding_evidence"]=max(
+                0.0, timings["pdf_parse"]-timings["retained_evidence"]
+            )
         if errors_total:
             return {
                 "doc_id":doc_id,"status":"INCOMPLETE","pages":page_count,
                 "new_pages":pages_processed,"failed_pages":errors_total,
                 "ocr_images":images_processed,
                 "elapsed_seconds":round(time.monotonic()-started,2),
+                "reused_pages":len(done),
+                **({"native_table_prepass_counts":proc.table_prepass_stats} if cfg["native_table_prepass"] else {}),
+                **({"native_open_grid_counts":proc.open_grid_stats} if cfg["native_open_grid_body"] else {}),
+                **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
+                **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
+                    "stage_timings_seconds":{key:round(value,3) for key,value in timings.items()}}
+                   if cfg["profile_stage_timings"] else {}),
             }
-        _publish(doc_id,source,fingerprint,page_count,n)
+        try:
+            publication_started=time.monotonic()
+            _publish(
+                doc_id,source,fingerprint,page_count,n,
+                allow_unreviewed=(cfg["publish_unreviewed_vector_regions"]
+                                  or cfg["visual_processing"]=="preserve_defer"),
+            )
+            timings["publish_sql"]+=time.monotonic()-publication_started
+        except VisualReviewRequired as pending:
+            return {
+                "doc_id":doc_id, "status":"REVIEW_REQUIRED",
+                "pages":page_count, "review_pages":pending.review_pages,
+                "new_pages":pages_processed, "reused_pages":len(done),
+                "elapsed_seconds":round(time.monotonic()-started,2),
+                **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
+            }
         elapsed=max(0.001,time.monotonic()-started)
         return {
             "doc_id":doc_id,"status":"SUCCESS","pages":page_count,
@@ -685,6 +940,16 @@ def stage_one(
             "elapsed_seconds":round(elapsed,2),
             "new_pages_per_min":round(60.0*pages_processed/elapsed,1),
             "ocr_images_per_min":round(60.0*images_processed/elapsed,1),
+            "native_extraction_complete":True,
+            "visual_enrichment_complete":visuals_deferred==0,
+            "visual_assets_deferred_this_run":visuals_deferred,
+            **({"native_table_prepass_counts":proc.table_prepass_stats} if cfg["native_table_prepass"] else {}),
+                **({"native_open_grid_counts":proc.open_grid_stats} if cfg["native_open_grid_body"] else {}),
+            **({"retained_evidence":evidence_report} if evidence_report is not None else {}),
+            **({"source_hash_initial_seconds":round(initial_hash_seconds,3),
+                "stage_timings_seconds":{key:round(value,3)
+                                         for key,value in timings.items()}}
+               if cfg["profile_stage_timings"] else {}),
         }
 
 
@@ -706,8 +971,34 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
     cfg=settings(profile)
     # Global per-process caps across ALL document workers. The DB quota
     # independently coordinates combined requests/images across servers.
-    ocr_gate=threading.BoundedSemaphore(cfg["ocr_workers"])
-    chart_gate=threading.BoundedSemaphore(cfg["chart_workers"])
+    backend=cfg["worker_backend"]
+    from config import POSTGRES
+    if (POSTGRES.get("pool_enabled",False) and backend=="threads"
+            and POSTGRES["pool_max_connections"] < doc_workers+1):
+        raise ValueError(
+            "PostgreSQL pool_max_connections must exceed doc_workers "
+            "in thread mode; each document retains an advisory-lock lease"
+        )
+    if backend=="processes":
+        if (cfg["ocr_enabled"] or cfg["chart_descriptions_enabled"]
+                or cfg["table_summaries_enabled"]
+                or cfg["visual_processing"]!="preserve_defer"):
+            raise ValueError(
+                "Process workers require native preserve_defer extraction "
+                "with OCR, chart descriptions and GPT table summaries disabled"
+            )
+        import multiprocessing
+        executor_type=concurrent.futures.ProcessPoolExecutor
+        executor_kwargs={"mp_context":multiprocessing.get_context("spawn")}
+        # Recycle the entire pool at a bounded wave boundary, not individual
+        # workers with pending futures (CPython gh-115634).
+        ocr_gate=None
+        chart_gate=None
+    else:
+        executor_type=concurrent.futures.ThreadPoolExecutor
+        executor_kwargs={}
+        ocr_gate=threading.BoundedSemaphore(cfg["ocr_workers"])
+        chart_gate=threading.BoundedSemaphore(cfg["chart_workers"])
     limiter=None
     if cfg["ocr_enabled"]:
         from ocr_quota import detect_project_id,PostgresOcrLimiter
@@ -719,44 +1010,59 @@ def run(profile, *, file_path=None, root=None, max_docs=20, doc_workers=2):
             max_wait_seconds=cfg["max_quota_wait_seconds"],
         )
     files=[file_path] if file_path else iter_pdf_files(root)
-    counts={"SUCCESS":0,"SKIPPED":0,"BUSY":0,"INCOMPLETE":0,"FAILED":0}
+    counts={"SUCCESS":0,"SKIPPED":0,"BUSY":0,"INCOMPLETE":0,
+            "REVIEW_REQUIRED":0,"FAILED":0}
+    from itertools import islice
     pending={}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=doc_workers) as pool:
-        def collect(done):
-            for future in done:
-                path=pending.pop(future)
+    def collect(done):
+        for future in done:
+            path=pending.pop(future)
+            try:
+                result=future.result()
+                LOG.info("FILE %s %s",path,result)
+                status=result["status"]
+            except Exception as exc:
+                LOG.exception("PDF staging failed for %s",path)
                 try:
-                    result=future.result()
-                    LOG.info("FILE %s %s",path,result)
-                    status=result["status"]
-                except Exception as exc:
-                    LOG.exception("PDF staging failed for %s",path)
-                    try:
-                        record_document_failure(path,profile,n,exc)
-                    except Exception:
-                        LOG.exception(
-                            "Could not persist document-level failure for %s",path
-                        )
-                        raise  # fail the batch if durable error logging is unavailable
-                    status="FAILED"
-                counts[status]+=1
-        for index, path in enumerate(files):
-            if index>=max_docs:
-                break
-            pending[pool.submit(
-                stage_one,path,profile,n,limiter,
-                ocr_gate=ocr_gate,chart_gate=chart_gate,
-            )]=path
-            if len(pending)>=doc_workers*2:
+                    record_document_failure(path,profile,n,exc)
+                except Exception:
+                    LOG.exception(
+                        "Could not persist document-level failure for %s",path
+                    )
+                    raise  # fail the batch if durable error logging is unavailable
+                status="FAILED"
+            counts[status]+=1
+    files=iter(islice(files,max_docs))
+    recycle=cfg["worker_recycle_documents"] if backend=="processes" else 0
+    # With recycling disabled, use a single lazy wave; otherwise retain
+    # bounded memory and let all outstanding futures finish before shutdown.
+    def waves():
+        if not recycle:
+            yield files
+            return
+        while wave:=list(islice(files,doc_workers*recycle)):
+            yield wave
+    for wave in waves():
+        with executor_type(max_workers=doc_workers,**executor_kwargs) as pool:
+            for path in wave:
+                if backend=="processes":
+                    future=pool.submit(stage_one,path,profile,n,None)
+                else:
+                    future=pool.submit(
+                        stage_one,path,profile,n,limiter,
+                        ocr_gate=ocr_gate,chart_gate=chart_gate,
+                    )
+                pending[future]=path
+                if len(pending)>=doc_workers*2:
+                    done,_=concurrent.futures.wait(
+                        pending,return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    collect(done)
+            while pending:
                 done,_=concurrent.futures.wait(
                     pending,return_when=concurrent.futures.FIRST_COMPLETED,
                 )
                 collect(done)
-        while pending:
-            done,_=concurrent.futures.wait(
-                pending,return_when=concurrent.futures.FIRST_COMPLETED,
-            )
-            collect(done)
     return counts
 
 
@@ -799,7 +1105,8 @@ def main(argv=None):
             max_docs=args.max_docs,doc_workers=args.doc_workers,
         )
     print(json.dumps(result,indent=2))
-    return int(result.get("INCOMPLETE",0)>0 or result.get("FAILED",0)>0)
+    return int(result.get("INCOMPLETE",0)>0 or
+               result.get("REVIEW_REQUIRED",0)>0 or result.get("FAILED",0)>0)
 
 
 if __name__=="__main__":

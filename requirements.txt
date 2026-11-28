@@ -1,12 +1,16 @@
 markdown
 streamlit>=1.37,<2
-pymupdf
+pymupdf==1.28.2
 pdfplumber
 pillow
 google-cloud-vision
+google-cloud-translate
+google-auth
 psycopg2-binary
 pgvector
 openai
 boto3
 tiktoken>=0.7,<1
 requests>=2.32,<3
+
+PyYAML>=6,<7

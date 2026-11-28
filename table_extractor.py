@@ -27,6 +27,9 @@ Dependencies:
 from __future__ import annotations
 
 import re
+import hashlib
+import json
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -60,6 +63,7 @@ class TableResult:
     success:       bool         = True
     error:         str          = ""
     bbox:          tuple | None = None  # pdfplumber (x0,top,x1,bottom)
+    source_table:  dict | None = None  # verbatim PDF table grid and cell geometry
 
     @property
     def best_text(self) -> str:
@@ -76,7 +80,97 @@ class TableResult:
 # Cell cleaning
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _clean_cell(raw) -> str:
+def _json_bytes(value):
+    return json.dumps(
+        value, sort_keys=True, ensure_ascii=False, separators=(",",":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def build_source_table(raw_table, table, *, max_json_bytes: int):
+    """Preserve pdfplumber's raw matrix and per-cell geometry, without inference.
+
+    None, empty strings, whitespace, newlines and long cell text are retained.
+    No fill-forward, empty-row deletion or truncation. Derived Markdown is
+    independent. Oversized source tables fail explicitly rather than truncate.
+    """
+    if type(max_json_bytes) is not int or not 100_000 <= max_json_bytes <= 100_000_000:
+        raise ValueError("Invalid table source JSON byte budget")
+    if not isinstance(raw_table, list) or not raw_table:
+        raise ValueError("Missing source cell matrix")
+    cells = []
+    for row in raw_table:
+        if not isinstance(row, list):
+            raise ValueError("Invalid source table row")
+        if any(c is not None and not isinstance(c, str) for c in row):
+            raise ValueError("Source cells must be text or null")
+        cells.append(list(row))
+    rows = list(table.rows)
+    if len(rows) != len(cells):
+        raise ValueError("Table geometry row count differs from source cells")
+    geometry = []
+    for raw_row, row in zip(cells, rows):
+        if len(raw_row) != len(row.cells):
+            raise ValueError("Table geometry column count differs from source cells")
+        points = []
+        for bbox in row.cells:
+            if bbox is None:
+                points.append(None)
+            else:
+                v = [float(x) for x in bbox]
+                if (len(v) != 4 or not all(math.isfinite(x) for x in v)
+                        or v[2] < v[0] or v[3] < v[1]):
+                    raise ValueError("Invalid source cell bounding box")
+                points.append(v)
+        geometry.append(points)
+    data = {
+        "format": "pdfplumber_cells_v1",
+        "source_cells": cells,
+        "cell_bboxes": geometry,
+        "row_count": len(cells),
+        "max_columns": max(map(len,cells),default=0),
+        "sha256": hashlib.sha256(_json_bytes(cells)).hexdigest(),
+    }
+    if len(_json_bytes(data)) > max_json_bytes:
+        raise ValueError("TABLE_SOURCE_BUDGET_EXCEEDED: refuse to truncate original cells")
+    return data
+
+
+def validate_source_table(data, *, max_json_bytes=100_000_000):
+    """Validate source grid at the persistence and read boundaries."""
+    if not isinstance(data,dict) or set(data) != {
+        "format","source_cells","cell_bboxes","row_count","max_columns","sha256"
+    } or data["format"]!="pdfplumber_cells_v1":
+        raise ValueError("Invalid source table representation")
+    cells=data["source_cells"]
+    boxes=data["cell_bboxes"]
+    if (not isinstance(cells,list) or not cells or not isinstance(boxes,list)
+            or len(cells)!=len(boxes)
+            or type(data["row_count"]) is not int
+            or data["row_count"]!=len(cells)
+            or type(data["max_columns"]) is not int
+            or data["max_columns"]!=max(map(len,cells),default=0)):
+        raise ValueError("Invalid source table grid dimensions")
+    for row,br in zip(cells,boxes):
+        if (not isinstance(row,list) or not isinstance(br,list)
+                or len(row)!=len(br)
+                or any(c is not None and not isinstance(c,str) for c in row)):
+            raise ValueError("Invalid source table cell row")
+        for b in br:
+            if b is not None and (
+                not isinstance(b,list) or len(b)!=4 or
+                any(type(x) not in (int,float) or not math.isfinite(x) for x in b) or
+                b[0]>b[2] or b[1]>b[3]
+            ):
+                raise ValueError("Invalid source table cell geometry")
+    if hashlib.sha256(_json_bytes(cells)).hexdigest()!=data["sha256"]:
+        raise ValueError("Source table checksum mismatch")
+    if len(_json_bytes(data))>max_json_bytes:
+        raise ValueError("Source table exceeds permitted JSON budget")
+    return data
+
+
+def _clean_cell(raw, *, truncate: bool = True) -> str:
     """
     Normalise a single table cell value.
     - None / empty → empty string
@@ -94,13 +188,13 @@ def _clean_cell(raw) -> str:
     text = re.sub(r" {2,}", " ", text)         # multiple spaces → one
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)  # control chars
     text = text.strip()
-    if len(text) > 500:
+    if truncate and len(text) > 500:
         text = text[:497] + "…"
     return text
 
 
-def _clean_row(row: list) -> list[str]:
-    return [_clean_cell(cell) for cell in row]
+def _clean_row(row: list, *, truncate: bool = True) -> list[str]:
+    return [_clean_cell(cell, truncate=truncate) for cell in row]
 
 
 def _is_empty_row(row: list[str]) -> bool:
@@ -420,11 +514,13 @@ class TableExtractor:
         context_text: str,
         *,
         allow_short: bool = False,
+        preserve_source: bool = False,
     ) -> Optional[TableResult]:
         """Process a single raw table from pdfplumber."""
 
         # Clean all cells
-        cleaned = [_clean_row(row) for row in raw_table if row]
+        cleaned = [_clean_row(row, truncate=not preserve_source)
+                   for row in raw_table if row]
 
         # Remove completely empty rows
         cleaned = [r for r in cleaned if not _is_empty_row(r)]
@@ -434,7 +530,8 @@ class TableExtractor:
             return None
 
         # Fill merged cells
-        cleaned = _fill_merged_cells(cleaned)
+        if not preserve_source:
+            cleaned = _fill_merged_cells(cleaned)
 
         # Validate minimum useful size
         col_count = max(len(r) for r in cleaned)
@@ -599,6 +696,8 @@ def inject_table_text_into_elements(
                     f"Table geometry mismatch: max axis offset={distance:.2f}"
                 )
             el.text=table.best_text
+            if getattr(table, "source_table", None) is not None:
+                el.source_table=validate_source_table(table.source_table)
             del remaining[index]
     else:
         for i, el in enumerate(table_els):

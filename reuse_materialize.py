@@ -132,6 +132,24 @@ def prepare_document(struct, profile):
     fields = profile["embedding"].get("input_fields", ["chunk_text"])
     max_tokens = profile["embedding"].get("input_max_tokens", 6000)
     tokenizer = policy.get("tokenizer", "cl100k_base")
+    # Materialized chunk IDs include the processing-profile fingerprint.
+    # Chunker neighbor IDs are source-local and would NOT resolve to rows
+    # in the output table. Remap links before writing metadata.
+    published_ids=[
+        hashlib.sha256(
+            (profile["_fingerprint"] + "\x00" + item.doc_id + "\x00" +
+             str(item.chunk_index)).encode("utf-8")
+        ).hexdigest()
+        for item in chunks
+    ]
+    if policy.get("boundary_mode","v1")=="semantic_v2":
+        for index,item in enumerate(chunks):
+            item.chunk_metadata["previous_chunk_id"]=(
+                published_ids[index-1] if index else None
+            )
+            item.chunk_metadata["next_chunk_id"]=(
+                published_ids[index+1] if index+1<len(chunks) else None
+            )
     result = []
     for chunk in chunks:
         chunk.document_metadata = dict(doc_meta)
@@ -143,10 +161,7 @@ def prepare_document(struct, profile):
             chunk, fields, source_fields,
             max_tokens=max_tokens, tokenizer=tokenizer,
         )
-        identity = hashlib.sha256(
-            (profile["_fingerprint"] + "\x00" + chunk.doc_id + "\x00" +
-             str(chunk.chunk_index)).encode("utf-8")
-        ).hexdigest()
+        identity = published_ids[chunk.chunk_index]
         result.append((
             identity, chunk.doc_id, profile["_fingerprint"], chunk.chunk_index,
             chunk.file_path, chunk.file_name, chunk.chunk_text, vector_input,
@@ -157,6 +172,375 @@ def prepare_document(struct, profile):
             _safe_json(evidence),
         ))
     return result
+
+
+
+DOCX_CHUNK_CONTRACT = "docx_logical_spans_v1"
+
+
+def _docx_identity(doc_id, file_name, capture_id):
+    from visual_evidence import _hash_id
+    _hash_id(capture_id)
+    if not isinstance(doc_id,str) or not re.fullmatch(r"docx:[A-Za-z0-9_.:-]{1,240}",doc_id):
+        raise ValueError("DOCX requires an explicit stable docx: namespaced document ID")
+    if (not isinstance(file_name,str) or not file_name.lower().endswith(".docx")
+            or len(file_name)>512 or any(c in file_name for c in ("/","\\","\x00"))):
+        raise ValueError("Explicit DOCX file name (not source path) required")
+    return hashlib.sha256(_safe_json([DOCX_CHUNK_CONTRACT,doc_id,file_name,capture_id]).encode()).hexdigest()
+
+
+def _exact_slices(text,budget,count):
+    """Unicode character ranges, not token decoding or whitespace normalization."""
+    start=0
+    while start<len(text):
+        # Use a bounded initial probe, avoiding repeated encoding of the entire
+        # remaining paragraph. Every emitted piece is checked with the tokenizer.
+        hi=min(len(text),start+budget*4)
+        while hi<len(text) and count(text[start:hi])<=budget:
+            hi=min(len(text),start+2*(hi-start))
+        if count(text[start:hi])>budget:
+            lo=start+1
+            while lo<hi:
+                mid=(lo+hi+1)//2
+                if count(text[start:mid])<=budget:
+                    lo=mid
+                else:
+                    hi=mid-1
+            hi=lo
+        if count(text[start:hi])>budget:
+            raise ValueError("Single Unicode character exceeds logical chunk budget")
+        yield start,hi,text[start:hi]
+        start=hi
+
+
+def prepare_docx_document(root,capture_id,profile,*,config,doc_id,file_name):
+    """Prepare the SAME existing 16-column publication rows from logical evidence.
+
+    Source spans address character offsets in the concatenated native segments
+    of a retained block. Paragraphs can pack within the same story/cell only.
+    Review-sensitive blocks and whitespace-only blocks stay in evidence, not
+    automatically indexed. No page geometry, inferred table headers, or AI.
+    """
+    from types import SimpleNamespace
+    import tiktoken
+    from docx_evidence import iter_logical_blocks
+    source_hash=_docx_identity(doc_id,file_name,capture_id)
+    policy=profile["chunking"]
+    tokenizer=policy.get("tokenizer","cl100k_base")
+    if tokenizer not in ("cl100k_base","o200k_base"):
+        raise ValueError("Unsupported tokenizer")
+    budget=policy["max_tokens"]
+    if type(budget) is not int or budget<16:
+        raise ValueError("Invalid DOCX chunk token budget")
+    encoder=tiktoken.get_encoding(tokenizer)
+    count=lambda text:len(encoder.encode(text,disallowed_special=()))
+    # PDF metadata rules can be page-scoped. Never pretend they ran on DOCX.
+    omitted=[]
+    for level in ("document","chunk"):
+        for key,rule in profile.get("metadata",{}).get(level,{}).items():
+            if rule.get("enabled",True):
+                if rule.get("required",False):
+                    raise ValueError("Required PDF metadata rule is not supported for logical DOCX: "+key)
+                omitted.append(level+"."+key)
+    source_uri="evidence://docx/"+capture_id
+    fields=profile["embedding"].get("input_fields",["chunk_text"])
+    max_input=profile["embedding"].get("input_max_tokens",6000)
+    sources={"source_file_name":file_name,"source_format":"docx"}
+    pending=[]
+    prepared=[]
+    scope=None
+    omitted_review=omitted_whitespace=omitted_split_whitespace=0
+    indexed_chars=withheld_chars=0
+    source_sha=None
+
+    def emit():
+        nonlocal pending
+        if not pending:
+            return
+        text="\n".join(x[0] for x in pending)
+        if not text.strip() or count(text)>budget:
+            raise ValueError("Invalid logical chunk token budget")
+        prepared.append((text,[x[1] for x in pending]))
+        pending=[]
+
+    for block in iter_logical_blocks(root,capture_id,config=config):
+        source_sha=block["source_docx_sha256"]
+        if block["kind"] not in ("paragraph","unscoped_text"):
+            continue
+        text="".join(s["text"] for s in block["segments"])
+        if not text.strip():
+            omitted_whitespace+=1
+            continue
+        if block["review_context"]:
+            emit()
+            omitted_review+=1
+            withheld_chars+=len(text)
+            continue
+        locator=block["locator"]
+        ancestry=block["table_ancestry"]
+        key=(locator["part"],_safe_json(ancestry))
+        if key!=scope:
+            emit()
+            scope=key
+        for start,end,piece in _exact_slices(text,budget,count):
+            if not piece.strip():
+                omitted_split_whitespace+=len(piece)
+                withheld_chars+=len(piece)
+                continue
+            span={"block_id":block["block_id"],"locator":locator,
+                  "char_start":start,"char_end":end,
+                  "text_sha256":hashlib.sha256(piece.encode("utf-8")).hexdigest(),
+                  "table_ancestry":ancestry}
+            if pending and count("\n".join([x[0] for x in pending]+[piece]))>budget:
+                emit()
+            pending.append((piece,span))
+            indexed_chars+=len(piece)
+    emit()
+    if not prepared:
+        raise ValueError("DOCX yielded no eligible logical text chunks")
+    fingerprint=profile["_fingerprint"]
+    ids=[hashlib.sha256((fingerprint+"\x00"+doc_id+"\x00"+str(i)).encode()).hexdigest()
+         for i in range(len(prepared))]
+    rows=[]
+    doc_meta={"source_format":"docx","source_docx_sha256":source_sha,
+              "source_capture_id":capture_id,"pagination":"NOT_RENDERED"}
+    metadata_evidence={"source_format":{"method":"retained_docx_manifest"},
+                       "omitted_optional_pdf_metadata_rules":omitted,
+                       "source_text_status":"NATIVE_TOKENS_NOT_RENDERED"}
+    for i,(text,spans) in enumerate(prepared):
+        part=spans[0]["locator"]["part"]
+        section_id=hashlib.sha256((capture_id+"\x00"+part).encode()).hexdigest()
+        meta={"source_format":"docx","source_locator_kind":"docx_retained_token_path",
+              "capture_id":capture_id,"logical_spans":spans,"section_id":section_id,
+              "pagination":"NOT_RENDERED","source_text_status":"NATIVE_TOKENS_NOT_RENDERED",
+              "source_facts_verified":False,"source_join_separator":"\n",
+              "previous_chunk_id":ids[i-1] if i else None,
+              "next_chunk_id":ids[i+1] if i+1<len(ids) else None}
+        content_types=["table_cell_text" if spans[0]["table_ancestry"] else "text"]
+        chunk=SimpleNamespace(chunk_text=text,section_title="",file_name=file_name,
+                              file_path=source_uri,document_metadata=doc_meta,chunk_metadata=meta)
+        composed=compose_embedding_text(chunk,fields,sources,max_tokens=max_input,tokenizer=tokenizer)
+        rows.append((ids[i],doc_id,fingerprint,i,source_uri,file_name,text,composed,
+                     None,None,"","[]",_safe_json(doc_meta),_safe_json(meta),
+                     _safe_json(content_types),_safe_json(metadata_evidence)))
+    report={"source_hash":source_hash,"prepared_chunks":len(rows),
+            "indexed_source_characters":indexed_chars,"withheld_review_blocks":omitted_review,
+            "withheld_source_characters":withheld_chars,"whitespace_only_blocks":omitted_whitespace,
+            "withheld_split_whitespace_characters":omitted_split_whitespace,
+            "omitted_optional_pdf_metadata_rules":omitted,
+            "pagination":"NOT_RENDERED","chunk_contract":DOCX_CHUNK_CONTRACT,
+            "overlap_tokens_applied":0,"purge_safe":False}
+    quality=quality_summary(rows,policy)
+    if quality["structural_errors"]:
+        raise ValueError("Logical DOCX chunk structural integrity failed")
+    return rows,{**report,"quality":quality}
+
+
+def _docx_existing(doc_id,source_hash,profile,names,capture_id):
+    """Check status and row counts in one read, refusing another format's ID."""
+    from db import get_conn
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT count(*),
+                    count(*) FILTER (WHERE chunk_metadata->>'source_format'='docx'),
+                    count(*) FILTER (WHERE chunk_metadata->>'capture_id'=%s AND profile_hash=%s)
+                    FROM {names['table']} WHERE doc_id=%s""",
+                    (capture_id,profile["_fingerprint"],doc_id))
+            total,docx_rows,matching=cur.fetchone()
+            if total!=docx_rows:
+                raise ValueError("DOCX document ID collides with non-DOCX rows")
+            cur.execute(f"""SELECT source_hash,profile_hash,chunk_count FROM {names['status']}
+                            WHERE doc_id=%s""",(doc_id,))
+            status=cur.fetchone()
+            if status is None:
+                if total:
+                    raise ValueError("Existing DOCX rows lack a publication marker")
+                return False
+            if status[1]!=profile["_fingerprint"]:
+                raise ValueError("DOCX document ID has a different profile")
+            if status[0]==source_hash:
+                if total!=status[2] or matching!=total or not total:
+                    raise ValueError("DOCX publication reconciliation failed")
+                return True
+            return False
+    finally:
+        conn.close()
+
+
+def run_docx(root,capture_id,profile,*,config,doc_id,file_name,allow_logical_locators=False,translator=None):
+    """Explicit single-document publication using the existing DB transaction.
+
+    Consumers must accept NULL physical page columns and logical span citations.
+    The caller owns source-version selection; this is not a fleet scheduler.
+    """
+    if allow_logical_locators is not True:
+        raise PermissionError("Explicit logical citation consumer approval required")
+    if _english_contract(profile) and translator is None:
+        raise PermissionError("English retrieval requires translation")
+    from docx_evidence import verify
+    from profile_store import profile_document_lock
+    digest=_docx_identity(doc_id,file_name,capture_id)
+    if translator is not None:
+        digest=hashlib.sha256((digest+"\x00"+translator.identity).encode()).hexdigest()
+    names=verify_output(profile,logical_locators=True)
+    with profile_document_lock(doc_id,profile["_fingerprint"]) as acquired:
+        if not acquired:
+            return {"doc_id":doc_id,"status":"BUSY"}
+        # Verify evidence even when the publication marker already exists.
+        verify(root,capture_id,config=config)
+        if _docx_existing(doc_id,digest,profile,names,capture_id):
+            return {"doc_id":doc_id,"status":"SKIPPED"}
+        rows,report=prepare_docx_document(root,capture_id,profile,config=config,
+                                         doc_id=doc_id,file_name=file_name)
+        if translator is not None:
+            rows=translator.apply_rows(rows,profile,{"source_file_name":file_name,"source_format":"docx"})
+        else:
+            _reject_translation_loss(doc_id,names)
+        save_document(doc_id,digest,profile,names,rows)
+        return {"doc_id":doc_id,"status":"SUCCESS",**report}
+
+
+def quality_summary(rows, policy):
+    """Bounded, read-only quality indicators for an already prepared document.
+
+    This is not a fidelity certification: original page geometry/cells stay
+    authoritative. It catches unexpected oversized chunks, broken neighbor
+    links and avoidable tiny-chunk prevalence before optional embeddings.
+    """
+    import collections
+    import re
+    import tiktoken
+    if not rows:
+        raise ValueError("No prepared chunks")
+    encoding=tiktoken.get_encoding(policy.get("tokenizer","cl100k_base"))
+    limit=policy["max_tokens"]
+    floor=policy["min_tokens"]
+    lengths=[]
+    table_ids=set()
+    multi_page_tables=set()
+    semantic=policy.get("boundary_mode","v1")=="semantic_v2"
+    packed_chunks=0
+    packed_source_components=0
+    exceptional=collections.Counter()
+    short_reasons=collections.Counter()
+    issues=[]
+    ids=[row[0] for row in rows]
+    token_count=lambda value:len(encoding.encode(value,disallowed_special=()))
+    for index,row in enumerate(rows):
+        chunk_id,doc_id,profile_hash,position=row[:4]
+        text=row[6]
+        start,end=row[8:10]
+        meta=json.loads(row[13])
+        size=token_count(text)
+        lengths.append(size)
+        if position!=index:
+            issues.append(f"noncontiguous chunk_index {index}")
+        if meta.get("source_format")=="docx":
+            spans=meta.get("logical_spans")
+            if (start is not None or end is not None or meta.get("pagination")!="NOT_RENDERED"
+                    or not isinstance(spans,list) or not spans):
+                issues.append(f"invalid logical source chunk {index}")
+            else:
+                for span in spans:
+                    loc=span.get("locator",{})
+                    path=loc.get("token_path")
+                    if (loc.get("kind")!="docx_retained_token_path"
+                            or not isinstance(loc.get("part"),str)
+                            or not isinstance(path,list) or not path
+                            or any(type(i) is not int or i<0 for i in path)
+                            or type(span.get("char_start")) is not int
+                            or type(span.get("char_end")) is not int
+                            or not 0<=span["char_start"]<span["char_end"]
+                            or not re.fullmatch(r"[0-9a-f]{64}",span.get("text_sha256",""))):
+                        issues.append(f"invalid logical span chunk {index}")
+        elif (not isinstance(start,int) or not isinstance(end,int)
+                or start<1 or end<start):
+            issues.append(f"invalid source pages chunk {index}")
+        if not text.strip() or size>limit:
+            issues.append(f"invalid token budget chunk {index}")
+        prev=ids[index-1] if index else None
+        nxt=ids[index+1] if index+1<len(ids) else None
+        if semantic:
+            if meta.get("previous_chunk_id")!=prev or meta.get("next_chunk_id")!=nxt:
+                issues.append(f"broken neighbor links chunk {index}")
+            if not meta.get("section_id"):
+                issues.append(f"missing section_id chunk {index}")
+        if "physical_table_body" in json.loads(row[14]):
+            body=meta.get("physical_table_body")
+            if (not isinstance(body,dict) or body.get("logical_rows_verified") is not False
+                    or body.get("source_page")!=start or start!=end
+                    or not re.fullmatch(r"[0-9a-f]{64}",body.get("physical_body_sha256",""))
+                    or not re.fullmatch(r"[0-9a-f]{64}",body.get("source_header_sha256",""))
+                    or meta.get("table_id") or meta.get("table_ids")
+                    or not (body.get("physical_line_indices") or body.get("detected_header_row_indices"))):
+                issues.append(f"invalid physical table layout provenance chunk {index}")
+        for tid in meta.get("table_ids") or (
+                [meta["table_id"]] if meta.get("table_id") else []):
+            table_ids.add(tid)
+            if meta.get("table_continuation_verified"):
+                multi_page_tables.add(tid)
+        for component in meta.get("table_components",[]):
+            if component.get("table_id"):
+                table_ids.add(component["table_id"])
+                if component.get("continuation_verified"):
+                    multi_page_tables.add(component["table_id"])
+        components=meta.get("source_components",[])
+        if components:
+            packed_chunks+=1
+            packed_source_components+=len(components)
+            if len(components)<2 or meta.get("packing_policy")!="merge_forward":
+                issues.append(f"invalid packing descriptor chunk {index}")
+            referenced=set()
+            for component in components:
+                if (not isinstance(component,dict)
+                        or type(component.get("page_start")) is not int
+                        or type(component.get("page_end")) is not int
+                        or component["page_start"]<start
+                        or component["page_end"]>end
+                        or not re.fullmatch(r"[0-9a-f]{64}",
+                                            component.get("text_sha256",""))):
+                    issues.append(f"invalid source component chunk {index}")
+                    continue
+                referenced.update(component.get("table_ids",[]))
+            if referenced!=set(meta.get("table_ids",[])):
+                issues.append(f"packed source table lineage mismatch chunk {index}")
+        for reason in meta.get("exceptional_splits",[]):
+            exceptional[reason]+=1
+        if size<floor:
+            if meta.get("table_id") or meta.get("table_ids"):
+                short_reasons["table_boundary"]+=1
+            elif meta.get("previous_chunk_id") is None or meta.get("next_chunk_id") is None:
+                short_reasons["document_boundary"]+=1
+            else:
+                short_reasons["section_or_structure_boundary"]+=1
+    ordered=sorted(lengths)
+    def percentile(p):
+        return ordered[max(0,(len(ordered)*p+99)//100-1)]
+    return {
+        "chunk_count":len(rows),
+        "token_budget":limit,
+        "min_tokens_soft_target":floor,
+        "token_p50":percentile(50),
+        "token_p90":percentile(90),
+        "token_p95":percentile(95),
+        "token_max":ordered[-1],
+        "chunks_below_min_tokens":sum(x<floor for x in lengths),
+        "chunks_above_budget":sum(x>limit for x in lengths),
+        "short_chunk_categories":dict(short_reasons),
+        "exceptional_split_categories":dict(exceptional),
+        "packed_chunks":packed_chunks,
+        "packed_source_components":packed_source_components,
+        "estimated_original_chunks":len(rows)+packed_source_components-packed_chunks,
+        "logical_tables":len(table_ids),
+        "linked_multi_page_tables":len(multi_page_tables),
+        "structural_errors":len(issues),
+        "structural_error_examples":issues[:10],
+    }
+
+
+def _english_contract(profile):
+    return profile.get("output",{}).get("text_contract")=="english_v1"
 
 
 def init_output(profile, *, apply=False):
@@ -172,6 +556,8 @@ def init_output(profile, *, apply=False):
         raise ValueError("embedding.dimensions must be 1..16000")
     if len(names["table_name"] + "_doc_idx") > 63:
         raise ValueError("Output index identifier too long")
+    native_column="native_text" if _english_contract(profile) else "source_chunk_text"
+    native_constraint="" if _english_contract(profile) else " NOT NULL"
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -188,7 +574,7 @@ def init_output(profile, *, apply=False):
                   chunk_index integer NOT NULL,
                   file_path text NOT NULL,
                   file_name text NOT NULL,
-                  source_chunk_text text NOT NULL,
+                  {native_column} text{native_constraint},
                   chunk_text text NOT NULL,
                   chunk_vector vector({dims}),
                   embedding_processing_note text,
@@ -234,7 +620,7 @@ def init_output(profile, *, apply=False):
     return {"created_or_verified": names["table"], "source_unchanged": True}
 
 
-def verify_output(profile):
+def verify_output(profile, *, logical_locators=False):
     """Refuse to write to an uninitialized or differently configured table."""
     from db import get_conn
     names = identifiers(profile)
@@ -254,12 +640,19 @@ def verify_output(profile):
                         (profile["output"]["schema"], profile["output"]["table"]))
             columns = dict(cur.fetchall())
             expected = {"chunk_id","doc_id","profile_hash","chunk_index","file_path",
-                        "file_name","source_chunk_text","chunk_text","chunk_vector",
+                        "file_name",("native_text" if _english_contract(profile) else "source_chunk_text"),"chunk_text","chunk_vector",
                         "embedding_processing_note","page_start","page_end",
                         "section_title","headers","document_metadata",
                         "chunk_metadata","content_types","metadata_evidence"}
             if not expected.issubset(columns):
-                raise ValueError("Output table incompatible with materialization schema")
+                raise ValueError("Output table incompatible with materialization schema; use a new configured table for the English contract")
+            if logical_locators:
+                cur.execute("""SELECT column_name,is_nullable FROM information_schema.columns
+                               WHERE table_schema=%s AND table_name=%s
+                                 AND column_name IN ('page_start','page_end')""",
+                            (profile["output"]["schema"],profile["output"]["table"]))
+                if dict(cur.fetchall())!={"page_start":"YES","page_end":"YES"}:
+                    raise ValueError("DOCX publication requires nullable physical page columns")
             cur.execute(f"""SELECT a.atttypmod FROM pg_attribute a
                 WHERE a.attrelid=%s::regclass AND a.attname='chunk_vector'""",
                 (names["table"],))
@@ -290,6 +683,22 @@ def save_document(doc_id, source_hash, profile, names, rows):
     from psycopg2.extras import execute_values
     if not rows or any(row[1] != doc_id for row in rows):
         raise ValueError("Cannot publish missing/mixed document chunks")
+    english=_english_contract(profile)
+    native_column="native_text" if english else "source_chunk_text"
+    if english:
+        for row in rows:
+            meta=json.loads(row[13])
+            trans=meta.get("translation",{})
+            if (trans.get("target_language")!="en" or not isinstance(row[7],str)
+                    or not row[7].strip() or trans.get("status") not in
+                    ("ENGLISH_SOURCE","MACHINE_TRANSLATION_UNVERIFIED","MODEL_ENGLISH_UNVERIFIED")):
+                raise ValueError("English contract requires validated English-target translation for every chunk")
+            if meta.get("source_kind")=="visual_model":
+                if row[6] is not None or trans["status"]!="MODEL_ENGLISH_UNVERIFIED":
+                    raise ValueError("Model observations must not be presented as native source text")
+            elif (not isinstance(row[6],str) or not row[6].strip()
+                    or trans.get("source_text_sha256")!=hashlib.sha256(row[6].encode()).hexdigest()):
+                raise ValueError("Native text provenance mismatch")
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -298,7 +707,7 @@ def save_document(doc_id, source_hash, profile, names, rows):
             cur.execute(f"DELETE FROM {names['table']} WHERE doc_id=%s", (doc_id,))
             execute_values(cur, f"""INSERT INTO {names['table']} (
                 chunk_id,doc_id,profile_hash,chunk_index,file_path,file_name,
-                source_chunk_text,chunk_text,page_start,page_end,section_title,
+                {native_column},chunk_text,page_start,page_end,section_title,
                 headers,document_metadata,chunk_metadata,content_types,metadata_evidence
                 ) VALUES %s""", rows,
                 template="(" + ",".join(["%s"] * 11 + ["%s::jsonb"] * 5) + ")",
@@ -337,17 +746,137 @@ def record_failure(doc_id, profile, names, exc):
         conn.close()
 
 
-def run_one(doc_id, profile, names):
+def append_enrichment_rows(struct,profile,rows,parts):
+    """Same existing publication contract, independent source-linked text.
+
+    OCR is transcription, LLM observations are explicitly unverified. No
+    generated table cells or numeric interpretation. Native chunks unchanged.
+    """
+    from types import SimpleNamespace
+    import tiktoken
+    policy=profile["chunking"]
+    tokenizer=policy.get("tokenizer","cl100k_base")
+    encoder=tiktoken.get_encoding(tokenizer)
+    count=lambda text:len(encoder.encode(text,disallowed_special=()))
+    fingerprint=profile["_fingerprint"]
+    if rows:
+        meta=json.loads(rows[0][12]); evidence=json.loads(rows[0][15])
+    else:
+        from metadata_extractor import attach_metadata
+        meta=attach_metadata(struct,[],profile["metadata"])
+        evidence=getattr(struct,"metadata_evidence",{})
+        for key,value in getattr(struct,"source_metadata",{}).items():
+            if key in meta and str(meta[key])!=str(value):
+                raise ValueError("Conflicting source metadata "+key)
+            meta[key]=value
+    sources=getattr(struct,"source_metadata",{})
+    for part in parts:
+        if part["kind"] not in ("ocr","visual_model") or not 1<=part["page"]<=struct.page_count:
+            raise ValueError("Invalid enriched source")
+        text=part["text"]
+        for start,end,piece in _exact_slices(text,policy["max_tokens"],count):
+            if not piece.strip():
+                continue
+            index=len(rows)
+            cid=hashlib.sha256((fingerprint+"\x00"+struct.doc_id+"\x00"+str(index)).encode()).hexdigest()
+            page=part["page"]
+            cm={"source_format":"pdf","source_kind":part["kind"],"source_facts_verified":False,
+                "section_id":hashlib.sha256((struct.doc_id+":"+str(page)).encode()).hexdigest(),
+                "source_provenance":part["provenance"],"char_start":start,"char_end":end}
+            if part["kind"]=="visual_model":
+                # Label every split, including continuations. The input
+                # model result is not a transcription of the original page.
+                cm["source_text_status"]="MODEL_OBSERVATIONS_UNVERIFIED"
+            else:
+                cm["source_text_status"]="OCR_TRANSCRIPTION_UNVERIFIED"
+            chunk=SimpleNamespace(chunk_text=piece,section_title="",file_name=struct.file_name,
+                                  file_path=struct.file_path,document_metadata=meta,chunk_metadata=cm)
+            composed=compose_embedding_text(chunk,profile["embedding"].get("input_fields",["chunk_text"]),
+                       sources,max_tokens=profile["embedding"].get("input_max_tokens",6000),tokenizer=tokenizer)
+            rows.append((cid,struct.doc_id,fingerprint,index,struct.file_path,struct.file_name,
+                         piece,composed,page,page,"","[]",_safe_json(meta),_safe_json(cm),
+                         _safe_json([part["kind"]]),_safe_json(evidence)))
+    for i,row in enumerate(rows):
+        cm=json.loads(row[13])
+        cm["previous_chunk_id"]=rows[i-1][0] if i else None
+        cm["next_chunk_id"]=rows[i+1][0] if i+1<len(rows) else None
+        rows[i]=row[:13]+(_safe_json(cm),)+row[14:]
+    if quality_summary(rows,policy)["structural_errors"]:
+        raise ValueError("Enriched publication structural integrity failed")
+    return rows
+
+
+def _reject_translation_loss(doc_id,names):
+    from db import get_conn
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT 1 FROM {names['table']} WHERE doc_id=%s
+                          AND chunk_metadata ? 'translation' LIMIT 1""",(doc_id,))
+            if cur.fetchone():
+                raise ValueError("Refusing to replace translated output without translation enabled")
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None,translator=None):
     from profile_store import profile_document_lock
     from extracted_source import load_extracted_document
     try:
         with profile_document_lock(str(doc_id), profile["_fingerprint"]) as acquired:
             if not acquired:
                 return {"doc_id":str(doc_id),"status":"BUSY"}
+            # A native version change invalidates any selected OCR/model output.
+            def check_version():
+                if expected_source_hash is None:
+                    return
+                from page_stage import names as stage_names
+                from db import get_conn
+                conn=get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(f"SELECT source_hash FROM {stage_names(profile)['docs']} WHERE doc_id=%s",(doc_id,))
+                        if cur.fetchone()!=(expected_source_hash,):
+                            raise ValueError("Native version changed during enrichment")
+                finally:
+                    conn.rollback()
+                    conn.close()
+            check_version()
+            if _english_contract(profile) and translator is None:
+                raise PermissionError("English retrieval requires translation")
+            if enrichment is None:
+                from db import get_conn
+                conn=get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(f"""SELECT 1 FROM {names['table']} WHERE doc_id=%s
+                              AND chunk_metadata->>'source_kind' IN ('ocr','visual_model') LIMIT 1""",(doc_id,))
+                        if cur.fetchone():
+                            raise ValueError("Refusing to replace enriched output with native-only chunks")
+                finally:
+                    conn.rollback()
+                    conn.close()
             struct, digest = load_extracted_document(profile, doc_id)
+            if enrichment is not None:
+                digest=hashlib.sha256((digest+"\x00enriched-v1\x00"+_safe_json(enrichment)).encode()).hexdigest()
+            if translator is not None:
+                digest=hashlib.sha256((digest+"\x00"+translator.identity).encode()).hexdigest()
+            else:
+                _reject_translation_loss(doc_id,names)
             if _current(str(doc_id),digest,profile,names):
                 return {"doc_id":str(doc_id),"status":"SKIPPED"}
-            rows=prepare_document(struct,profile)
+            try:
+                rows=prepare_document(struct,profile)
+            except ValueError as exc:
+                if not enrichment or str(exc)!="Document yielded no chunks; source remains unchanged":
+                    raise
+                rows=[]
+            if enrichment is not None:
+                rows=append_enrichment_rows(struct,profile,rows,enrichment)
+            if translator is not None:
+                rows=translator.apply_rows(rows,profile,getattr(struct,"source_metadata",{}))
+            check_version()
             save_document(str(doc_id),digest,profile,names,rows)
             return {"doc_id":str(doc_id),"status":"SUCCESS","chunks":len(rows)}
     except Exception as exc:
@@ -396,13 +925,18 @@ def run(profile, *, max_docs, workers):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command",choices=("validate","init","run","preview"))
+    parser.add_argument("command",choices=("validate","init","run","preview","docx-preview","docx-run"))
     parser.add_argument("--profile",required=True)
     parser.add_argument("--apply",action="store_true",
                         help="Explicit DDL approval for a new output table")
     parser.add_argument("--max-docs",type=int,default=10)
     parser.add_argument("--doc-workers",type=int,default=2)
     parser.add_argument("--doc-id",help="Required for read-only document preview")
+    parser.add_argument("--evidence-root")
+    parser.add_argument("--capture-id")
+    parser.add_argument("--docx-profile")
+    parser.add_argument("--file-name")
+    parser.add_argument("--allow-logical-locators",action="store_true")
     args=parser.parse_args(argv)
 
     from processing_profile import load_profile
@@ -415,17 +949,36 @@ def main(argv=None):
               "note":"No database writes, OCR calls or Azure calls"}
     elif args.command=="init":
         info=init_output(profile,apply=args.apply)
+    elif args.command in ("docx-preview","docx-run"):
+        if not all((args.evidence_root,args.capture_id,args.docx_profile,args.doc_id,args.file_name)):
+            parser.error("DOCX commands require evidence-root, capture-id, docx-profile, doc-id and file-name")
+        from docx_evidence import _load_profile
+        cfg=_load_profile(args.docx_profile)
+        kw=dict(config=cfg,doc_id=args.doc_id,file_name=args.file_name)
+        if args.command=="docx-preview":
+            _,info=prepare_docx_document(args.evidence_root,args.capture_id,profile,**kw)
+        else:
+            if not args.apply or not args.allow_logical_locators:
+                parser.error("docx-run requires --apply and --allow-logical-locators")
+            info=run_docx(args.evidence_root,args.capture_id,profile,
+                          allow_logical_locators=True,**kw)
     elif args.command=="preview":
         if not args.doc_id:
             parser.error("--doc-id required for preview")
         from extracted_source import load_extracted_document
         struct,source_hash=load_extracted_document(profile,args.doc_id)
         rows=prepare_document(struct,profile)
+        summary=quality_summary(rows,profile["chunking"])
         info={"document_id":str(args.doc_id),"source_hash":source_hash,
               "prepared_chunks":len(rows),
               "first_chunk_input_characters":len(rows[0][7]),
               "first_chunk_metadata_fields":list(json.loads(rows[0][12])),
+              "first_chunk_document_metadata_fields":list(json.loads(rows[0][12])),
+              "first_chunk_structural_metadata_fields":list(json.loads(rows[0][13])),
+              "quality":summary,
               "note":"Preview only; no document text or private data printed"}
+        if summary["structural_errors"]:
+            raise ValueError("Chunk preview structural integrity failed")
     else:
         info=run(profile,max_docs=args.max_docs,workers=args.doc_workers)
     print(json.dumps(info,indent=2))

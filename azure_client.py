@@ -88,6 +88,31 @@ def call_chat(
 #        don't break — they are simply ignored and not sent to the API.
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def call_visual_structured(messages, schema, *, section, deployment, model,
+                           token_parameter, max_output_tokens, temperature,
+                           timeout_seconds):
+    """Explicit opt-in adapter; do not change existing call_chat/GPT5 behavior."""
+    c = _load(section)
+    if c["deployment"] != deployment or c.get("model", c["deployment"]) != model:
+        raise ValueError("Configured model/deployment differs from requested enrichment identity")
+    if token_parameter not in ("max_tokens","max_completion_tokens"):
+        raise ValueError("Unsupported completion token parameter")
+    payload={"model":model,"messages":messages,token_parameter:max_output_tokens,
+             "response_format":{"type":"json_schema","json_schema":{
+                 "name":"visual_observations_v1","strict":True,"schema":schema}}}
+    if temperature is not None:
+        payload["temperature"]=temperature
+    resp=requests.post(_url(c["api_base"],deployment,"chat/completions",c["api_version"]),
+                       headers=_json_headers(c["api_key"]),json=payload,timeout=timeout_seconds)
+    resp.raise_for_status()
+    data=resp.json()
+    choice=data["choices"][0]
+    if choice.get("finish_reason")!="stop" or choice["message"].get("refusal"):
+        raise ValueError("Incomplete or refused structured visual response")
+    return choice["message"]["content"],data.get("usage",{})
+
+
 def call_gpt5(
     messages: List[Dict],
     temperature: float = 1.0,           # kept for API compatibility, NOT sent to endpoint

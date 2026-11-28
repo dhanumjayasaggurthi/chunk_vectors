@@ -1,0 +1,115 @@
+; Source handshake: no persistent source copies or non-text derivatives. Evidence is temporary only
+; under approved capacity, TTL and disposal conditions. Current code lacks automatic disposal.
+; No additional real-source or bulk run until lifecycle is approved and qualified.
+; See docs/SOURCE_EVIDENCE_RETENTION.md; no new runtime settings in this documentation update.
+; Copy to config.ini only for a NEW install. Otherwise merge sections with your existing file.
+; Never commit config.ini or provider keys. Example paths, credentials and names are NOT production values.
+[POSTGRES]
+host = REPLACE_WITH_DB_HOST
+port = 5432
+database = REPLACE_WITH_DATABASE
+user = REPLACE_WITH_DB_USER
+password = REPLACE_WITH_DB_PASSWORD
+schema = regulatory_example
+native_table = regulatory_pages
+chunk_table = regulatory_chunks
+; Optional different retrieval schema. If omitted, schema above is used.
+; chunk_schema = retrieval_example
+folder = legacy_unused
+connect_timeout_seconds = 10
+pool_enabled = true
+pool_min_connections = 1
+; Six native processes normally lease <=2 connections each; materializer threads share this pool.
+pool_max_connections = 5
+pool_acquire_timeout_seconds = 30
+
+[DEPLOYMENT]
+policy = profiles/deployment_policy.example.yml
+; Optional legacy inventory; leave empty to discover files automatically.
+inventory =
+; Leave blank to reuse [PATHS] docs_root.
+source_root =
+receipt_dir = /approved/receipts
+batch_profile = profiles/retention_batch_linux_8core_30gb.example.json
+docx_profile = profiles/docx_evidence_example.json
+preflight_sample_files = 3
+preflight_min_free_gib = 10
+preflight_statement_timeout_ms = 15000
+; Bounded document-stage overlap, independent of per-feature workers (1..8).
+finish_workers = 1
+; Opt-in qualification on isolated native/chunk tables. Changes native extraction identity.
+native_table_prepass = false
+; Separate source-linked physical lines, not logical rows. Isolated qualification only.
+native_open_grid_body = false
+materialize_workers = 2
+materialize_max_docs = 10000
+ocr_max_docs = 1000
+ocr_max_jobs = 10000
+ocr_read_workers = 1
+; Overlap OCR/translation/LLM with capture, reserving reader processes from the worker budget.
+overlap_enrichment = true
+embedding_workers = 4
+; 0 means full target for embedding (only after explicit approval).
+embedding_max_chunks = 10000
+authorized_ocr = false
+authorized_visual_llm = false
+visual_llm_profile = profiles/visual_enrichment_example.json
+visual_llm_execution = profiles/visual_enrichment_execution_example.json
+authorized_embedding = false
+; Required for production run/finish: English-target retrieval. Capture-only remains available without provider approval.
+authorized_translation = false
+translation_model = nmt
+translation_rpm = 30
+; Per coordinator, shared request pacing. Increase only within approved quotas.
+translation_workers = 1
+translation_max_chars = 30000
+translation_timeout_seconds = 60
+translation_attempts = 3
+
+[RETENTION]
+root = /approved/evidence
+policy_id = REPLACE_WITH_APPROVED_POLICY
+; Run python -c "import fitz; print(fitz.VersionBind)" and enter the exact version.
+renderer = REPLACE_WITH_INSTALLED_VERSION
+visual_profile = profiles/visual_evidence_native.example.json
+authorized_page_derivatives = false
+authorized_receipt_storage = false
+authorized_docx_derivatives = false
+
+[GCP]
+gcp_key_path = /approved/secrets/gcpkeys.json
+
+[AZURE_OPENAI_CHAT]
+; Use the actual approved enterprise gateway model/deployment alias.
+api_base = https://REPLACE_WITH_APPROVED_ENDPOINT
+api_key = REPLACE_WITH_KEY
+api_version = REPLACE_WITH_API_VERSION
+deployment = REPLACE_WITH_DEPLOYMENT
+model = REPLACE_WITH_MODEL
+
+[AZURE_OPENAI_EMBEDDING]
+api_base = https://REPLACE_WITH_APPROVED_ENDPOINT
+api_key = REPLACE_WITH_KEY
+api_version = REPLACE_WITH_API_VERSION
+deployment = REPLACE_WITH_DEPLOYMENT
+model = REPLACE_WITH_MODEL
+dimensions = 1536
+
+[PATHS]
+source_type = nas
+; Normal production source directory; DEPLOYMENT.source_root is an optional override.
+docs_root = /approved/input/server01
+
+[PIPELINE]
+; Automatic embedding after successful capture/enrichment. Separate embed command remains available.
+enable_embeddings = false
+table_summaries_enabled = false
+
+[ENRICHMENT]
+; Independent, disabled-by-default, one-document optional review candidates.
+enabled = false
+metadata = false
+table_summaries = false
+first_pages = 10
+max_context_bytes = 16000
+max_requests = 10

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "visual_evidence": {
+    "dpi": 300,
+    "workers": 4,
+    "batch_pages": 16,
+    "max_in_flight": 8,
+    "max_pixels": 40000000,
+    "max_png_bytes": 100000000,
+    "selection_mode": "all_pages",
+    "min_native_chars": 100,
+    "max_native_json_bytes": 8000000,
+    "capture_rasters": false,
+    "max_raster_occurrences": 256,
+    "max_raster_pixels": 40000000,
+    "max_raster_bytes": 100000000,
+    "capture_vectors": false,
+    "max_vector_paths": 20000,
+    "max_vector_items": 100000,
+    "max_vector_json_bytes": 8000000,
+    "capture_figures": false,
+    "figure_max_distance_pt": 180,
+    "figure_padding_pt": 24,
+    "max_figure_json_bytes": 2000000
+  }
+}

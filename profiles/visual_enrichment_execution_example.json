@@ -1,0 +1,14 @@
+{
+  "workers": 8,
+  "read_workers": 1,
+  "max_pages": 100,
+  "rpm": 60,
+  "tpm": 600000,
+  "estimated_input_tokens_per_page": 8000,
+  "max_request_bytes": 30000000,
+  "quota_wait_seconds": 120,
+  "max_attempts": 3,
+  "retry_base_seconds": 1,
+  "max_retry_delay_seconds": 60,
+  "authorized_result_storage": false
+}

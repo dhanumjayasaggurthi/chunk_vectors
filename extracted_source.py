@@ -193,6 +193,94 @@ def load_extracted_document(profile: dict, document_key):
                     confidence=float(item.get("confidence",1.0)),
                     reading_order=int(item.get("reading_order",len(elements))),
                 )
+                if "visual_asset" in item:
+                    from pdf_processor import validate_visual_asset
+                    if item["type"] not in ("image","chart") or item.get("text"):
+                        raise ValueError("Invalid deferred visual element")
+                    el.visual_asset = validate_visual_asset(
+                        item["visual_asset"], page_number=pg,
+                    )
+                if "unresolved_region" in item:
+                    from pdf_processor import validate_unresolved_region
+                    if (item["type"]!=ElementType.VECTOR_REGION.value
+                            or item.get("text") or "vector_preview" in item):
+                        raise ValueError("Invalid unresolved table/graphic element")
+                    el.unresolved_region=validate_unresolved_region(
+                        item["unresolved_region"],page_number=pg,
+                    )
+                if "source_table" in item:
+                    if item["type"] != ElementType.TABLE.value:
+                        raise ValueError("Source table attached to non-table element")
+                    from table_extractor import validate_source_table
+                    el.source_table=validate_source_table(item["source_table"])
+                if "physical_table_body" in item:
+                    from open_grid_recovery import validate_physical_body
+                    if "source_table" not in item or item["type"]!=ElementType.TABLE.value:
+                        raise ValueError("Physical body requires original source header grid")
+                    el.physical_table_body=validate_physical_body(
+                        item["physical_table_body"],header_bbox=coords,max_json_bytes=100_000_000)
+                if "approved_asset" in item:
+                    import re as _re
+                    approval=item["approved_asset"]
+                    if (not isinstance(approval,dict)
+                            or set(approval)!={"source_sha256","source_xref",
+                                "source_bytes","kind","text","reviewed_by",
+                                "approval_reference","approval_status"}
+                            or approval["approval_status"]!="approved"
+                            or not isinstance(approval["source_sha256"],str)
+                            or not _re.fullmatch(r"[0-9a-f]{64}",
+                                                 approval["source_sha256"])
+                            or type(approval["source_xref"]) is not int
+                            or approval["source_xref"]<=0
+                            or type(approval["source_bytes"]) is not int
+                            or approval["source_bytes"]<=0
+                            or approval["kind"] not in
+                                ("logo","seal","repeated_header")
+                            or not isinstance(approval["text"],str)
+                            or not approval["text"].strip()
+                            or len(approval["text"])>512
+                            or item["type"]!="image"
+                            or item.get("text")!=approval["text"]
+                            or not isinstance(approval["reviewed_by"],str)
+                            or not approval["reviewed_by"].strip()
+                            or not isinstance(approval["approval_reference"],str)
+                            or not approval["approval_reference"].strip()):
+                        raise ValueError("Invalid approved-image provenance")
+                    el.approved_asset=approval
+                if "vector_preview" in item:
+                    import base64
+                    preview=item["vector_preview"]
+                    encoded=preview.get("base64") if isinstance(preview,dict) else None
+                    if (item["type"] != ElementType.VECTOR_REGION.value
+                            or not isinstance(encoded,str) or len(encoded)>172_000
+                            or preview.get("format")!="png"
+                            or preview.get("dpi")!=144):
+                        raise ValueError("Invalid vector preview metadata")
+                    try:
+                        png=base64.b64decode(encoded,validate=True)
+                    except Exception as exc:
+                        raise ValueError("Invalid vector preview base64") from exc
+                    if (not 0<len(png)<=128_000
+                            or not png.startswith(b"\x89PNG\r\n\x1a\n")
+                            or hashlib.sha256(png).hexdigest()!=preview.get("sha256")):
+                        raise ValueError("Corrupt vector preview checksum")
+                    el.vector_png=png
+                if "runs" in item:
+                    from rich_document import validate_runs
+                    el.runs = validate_runs(item["runs"])
+                if "language" in item:
+                    lang = item["language"]
+                    if not isinstance(lang, str) or len(lang) > 32:
+                        raise ValueError("Invalid extracted language")
+                    el.language = lang
+                if "semantic_role" in item:
+                    if item["semantic_role"] not in ("heading", ""):
+                        raise ValueError("Unsupported semantic role")
+                    level = item.get("heading_level", 0)
+                    if type(level) is not int or not 0 <= level <= 6:
+                        raise ValueError("Invalid heading level")
+                    el.semantic_role = item["semantic_role"]
+                    el.heading_level = level
                 if "ocr_regions" in item:
                     regions = item["ocr_regions"]
                     if not isinstance(regions,list):

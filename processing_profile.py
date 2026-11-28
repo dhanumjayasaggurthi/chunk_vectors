@@ -8,6 +8,9 @@ import re
 from pathlib import Path
 
 _ALLOWED_METHODS = {"label", "regex", "constant"}
+# Internal semantic algorithm revision, not a tunable operational setting.
+# Bump whenever chunk boundaries/IDs/continuity or materialized semantics change.
+_SEMANTIC_V2_IMPLEMENTATION_VERSION = 4
 _DEFAULTS = {
     "version": 1,
     "chunking": {
@@ -58,7 +61,7 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             raise ValueError("Profile root must be an object")
     result = copy.deepcopy(_DEFAULTS)
     for key, value in data.items():
-        if key not in result and key not in {"name", "extraction"}:
+        if key not in result and key not in {"name", "extraction", "deferred_ocr"}:
             raise ValueError("Unknown profile setting: " + key)
         if isinstance(result.get(key), dict):
             if not isinstance(value, dict):
@@ -70,7 +73,13 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
         key, separator, value = item.partition("=")
         if not separator or key not in {
             "chunking.strategy", "chunking.min_tokens", "chunking.max_tokens",
-            "chunking.overlap_tokens", "embedding.enabled", "embedding.batch_size",
+            "chunking.overlap_tokens", "chunking.boundary_mode",
+            "chunking.table_continuation", "chunking.table_row_mode",
+            "chunking.max_table_pages", "chunking.table_edge_fraction",
+            "chunking.table_x_tolerance", "chunking.merge_cross_page_paragraphs",
+            "chunking.page_join_edge_fraction",
+            "chunking.small_chunk_max_pages", "chunking.small_chunk_max_tables",
+            "embedding.enabled", "embedding.batch_size",
             "embedding.dimensions", "embedding.deployment", "embedding.model",
             "existing_chunks.schema", "existing_chunks.table",
             "existing_chunks.id_column", "existing_chunks.text_column",
@@ -79,6 +88,10 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             "embedding.batch_tokens", "embedding.rpm", "embedding.tpm",
             "embedding.max_attempts", "embedding.timeout_seconds",
             "embedding.lease_seconds", "embedding.enqueue_page_size",
+            "extraction.schema", "extraction.table", "extraction.retained_evidence",
+            "extraction.native_table_prepass", "extraction.native_open_grid_body",
+            "output.schema", "output.table", "output.text_contract", "embedding.dimensions",
+            "deferred_ocr.render_dpi", "deferred_ocr.retained_evidence",
             "extracted_content.schema", "extracted_content.table",
             "extracted_content.doc_id_column", "extracted_content.text_column",
             "extracted_content.page_column", "extracted_content.position_column",
@@ -91,9 +104,18 @@ def load_profile(path: str | None, overrides: list[str] | None = None) -> dict |
             parsed = json.loads(value)
         except json.JSONDecodeError:
             parsed = value
-        result[section][field] = parsed
+        result.setdefault(section,{})[field] = parsed
     validate_profile(result)
-    canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # Keep legacy profiles byte-for-byte fingerprint compatible. Semantic-v2
+    # output must change identity when implementation semantics change, even
+    # if the user did not modify the YAML, so stale chunks never SKIP.
+    identity = (
+        {"profile": result, "semantic_v2_implementation_version":
+         _SEMANTIC_V2_IMPLEMENTATION_VERSION}
+        if result["chunking"].get("boundary_mode")=="semantic_v2"
+        else result
+    )
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     result["_fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return result
 
@@ -103,7 +125,11 @@ def validate_profile(profile: dict) -> None:
         raise ValueError("Only version 1 profiles are supported")
     allowed_nested = {
         "chunking": {"strategy", "min_tokens", "max_tokens", "overlap_tokens",
-                     "small_section_policy", "preserve_headers", "tokenizer"},
+                     "small_section_policy", "preserve_headers", "tokenizer",
+                     "boundary_mode", "table_continuation", "table_row_mode",
+                     "max_table_pages", "table_edge_fraction", "table_x_tolerance",
+                     "table_summary_mode", "physical_table_body_mode", "merge_cross_page_paragraphs", "page_join_edge_fraction",
+                     "small_chunk_max_pages", "small_chunk_max_tables"},
         "embedding": {"enabled", "reuse_existing", "batch_size",
                       "dimensions", "deployment", "model", "progress_every_batches",
                       "batch_tokens", "rpm", "tpm", "max_attempts",
@@ -117,8 +143,11 @@ def validate_profile(profile: dict) -> None:
                               "file_name_column", "element_json_column", "width_column",
                               "height_column", "rotation_column", "section_column",
                               "page_end_column", "source_columns"},
-        "output": {"schema", "table"},
+        "output": {"schema", "table", "text_contract"},
     }
+    if "deferred_ocr" in profile:
+        from deferred_ocr import _DEFAULTS as _DEFERRED_OCR_OPTIONS
+        allowed_nested["deferred_ocr"] = set(_DEFERRED_OCR_OPTIONS)
     if "extraction" in profile:
         allowed_nested["extraction"] = {
             "enabled", "schema", "table",
@@ -129,7 +158,12 @@ def validate_profile(profile: dict) -> None:
             "chart_descriptions_enabled", "table_summaries_enabled",
             "max_quota_wait_seconds", "ocr_enabled",
             "max_window_raster_bytes", "max_render_pixels",
-            "chart_workers",
+            "chart_workers", "capture_rich_text",
+            "publish_unreviewed_vector_regions", "approved_image_manifest",
+            "capture_table_structure", "max_table_source_json_bytes",
+            "visual_processing", "max_visual_regions_per_page",
+            "worker_backend", "worker_recycle_documents", "profile_stage_timings",
+            "empty_table_policy", "retained_evidence", "native_table_prepass", "native_open_grid_body",
         }
     for section, allowed in allowed_nested.items():
         unexpected = set(profile[section]) - allowed
@@ -147,6 +181,49 @@ def validate_profile(profile: dict) -> None:
                                  ("min_tokens", "max_tokens", "overlap_tokens"))
     if not 16 <= maximum <= 6000 or minimum > maximum or overlap >= maximum // 2:
         raise ValueError("Invalid chunk size or overlap limits")
+    mode=chunking.get("boundary_mode","v1")
+    if mode not in {"v1","semantic_v2"}:
+        raise ValueError("chunking.boundary_mode must be v1 or semantic_v2")
+    continuation=chunking.get("table_continuation","none")
+    row_mode=chunking.get("table_row_mode","legacy")
+    if continuation not in {"none","conservative"}:
+        raise ValueError("chunking.table_continuation must be none or conservative")
+    if row_mode not in {"legacy","rows"}:
+        raise ValueError("chunking.table_row_mode must be legacy or rows")
+    if (mode=="semantic_v2" and chunking["strategy"]!="toc_then_semantic"
+            or mode!="semantic_v2" and (continuation!="none" or row_mode!="legacy")
+            or continuation!="none" and row_mode!="rows"):
+        raise ValueError("semantic-v2 table row mode and continuity require toc_then_semantic")
+    physical_mode=chunking.get("physical_table_body_mode","none")
+    if physical_mode not in ("none","lines"):
+        raise ValueError("Invalid chunking.physical_table_body_mode")
+    if physical_mode=="lines" and (mode!="semantic_v2" or row_mode!="rows"):
+        raise ValueError("Physical table bodies require semantic-v2 source rows")
+    summary_mode=chunking.get("table_summary_mode","structural")
+    if summary_mode not in ("none","structural","extractive"):
+        raise ValueError("Invalid chunking.table_summary_mode")
+    if "table_summary_mode" in chunking and (mode!="semantic_v2" or row_mode!="rows"):
+        raise ValueError("Table summary mode requires semantic-v2 source rows")
+    max_table_pages=chunking.get("max_table_pages",8)
+    edge=chunking.get("table_edge_fraction",0.25)
+    x_tolerance=chunking.get("table_x_tolerance",0.05)
+    if type(max_table_pages) is not int or not 1<=max_table_pages<=64:
+        raise ValueError("chunking.max_table_pages must be 1..64")
+    if type(edge) not in (float,int) or not 0.05<=edge<=0.45:
+        raise ValueError("chunking.table_edge_fraction must be 0.05..0.45")
+    if type(x_tolerance) not in (float,int) or not 0.0<=x_tolerance<=0.2:
+        raise ValueError("chunking.table_x_tolerance must be 0..0.2")
+    edge=chunking.get("page_join_edge_fraction",0.20)
+    if type(edge) not in (float,int) or not 0.05<=edge<=0.40:
+        raise ValueError("chunking.page_join_edge_fraction must be 0.05..0.40")
+    if type(chunking.get("merge_cross_page_paragraphs",False)) is not bool:
+        raise ValueError("chunking.merge_cross_page_paragraphs must be boolean")
+    if mode!="semantic_v2" and chunking.get("merge_cross_page_paragraphs",False):
+        raise ValueError("Cross-page paragraph joins require semantic_v2")
+    for field,upper in (("small_chunk_max_pages",8),("small_chunk_max_tables",12)):
+        value=chunking.get(field,2 if field=="small_chunk_max_pages" else 3)
+        if type(value) is not int or not 1<=value<=upper:
+            raise ValueError(f"chunking.{field} must be 1..{upper}")
     if chunking.get("small_section_policy") not in {"merge_forward", "keep"}:
         raise ValueError("Unsupported small_section_policy")
     if type(chunking.get("preserve_headers")) is not bool:
@@ -198,6 +275,8 @@ def validate_profile(profile: dict) -> None:
             raise ValueError("embedding.input_max_tokens must be 100..8000")
     output = profile["output"]
     if output:
+        if output.get("text_contract","legacy") not in ("legacy","english_v1"):
+            raise ValueError("Invalid output text contract")
         if not output.get("schema") or not output.get("table"):
             raise ValueError("output.schema and output.table are required together")
         for value in (output["schema"], output["table"]):
@@ -223,10 +302,17 @@ def validate_profile(profile: dict) -> None:
                 r"[a-z_][a-z0-9_]{0,45}",value,re.I,
             ):
                 raise ValueError("extraction." + required + " requires a safe table identifier")
-        for field in ("enabled", "ocr_enabled", "chart_descriptions_enabled",
+        for field in ("enabled", "ocr_enabled", "capture_rich_text",
+                      "capture_table_structure",
+                      "publish_unreviewed_vector_regions", "chart_descriptions_enabled",
                       "table_summaries_enabled"):
             if field in extract and type(extract[field]) is not bool:
                 raise ValueError("extraction." + field + " must be boolean")
+        if "approved_image_manifest" in extract:
+            path=extract["approved_image_manifest"]
+            if (not isinstance(path,str) or len(path)>512
+                    or (path and not path.lower().endswith((".yaml",".yml",".json")))):
+                raise ValueError("Invalid extraction.approved_image_manifest")
         limits = {
             "page_batch_size":(1,128), "ocr_batch_images":(1,16),
             "ocr_workers":(1,32), "chart_workers":(1,16),
@@ -237,6 +323,8 @@ def validate_profile(profile: dict) -> None:
             "max_quota_wait_seconds":(1,3600),
             "max_window_raster_bytes":(10_000_000,1_000_000_000),
             "max_render_pixels":(1_000_000,75_000_000),
+            "max_table_source_json_bytes":(100_000,100_000_000),
+            "max_visual_regions_per_page":(2,1024),
         }
         for field,(low,high) in limits.items():
             if field in extract and (
@@ -244,6 +332,39 @@ def validate_profile(profile: dict) -> None:
                 not low <= extract[field] <= high
             ):
                 raise ValueError(f"extraction.{field} must be {low}..{high}")
+        if type(extract.get("profile_stage_timings",False)) is not bool:
+            raise ValueError("extraction.profile_stage_timings must be boolean")
+        worker_backend=extract.get("worker_backend","threads")
+        if worker_backend not in ("threads","processes"):
+            raise ValueError("extraction.worker_backend must be threads or processes")
+        for flag in ("native_table_prepass","native_open_grid_body"):
+            if type(extract.get(flag,False)) is not bool:
+                raise ValueError("extraction."+flag+" must be boolean")
+        if (extract.get("native_table_prepass",False) or extract.get("native_open_grid_body",False)) and (worker_backend!="processes"
+                        or extract.get("visual_processing","blocking")!="preserve_defer"
+                        or not extract.get("capture_table_structure",False)
+                        or extract.get("ocr_enabled",True)
+                        or extract.get("chart_descriptions_enabled",True)
+                        or extract.get("table_summaries_enabled",False)):
+            raise ValueError("Native table options require structured native preserve_defer process extraction")
+        recycled=extract.get("worker_recycle_documents",0)
+        if type(recycled) is not int or not 0<=recycled<=10000:
+            raise ValueError("extraction.worker_recycle_documents must be 0..10000")
+        table_policy=extract.get("empty_table_policy","fail")
+        if table_policy not in ("fail","preserve_defer"):
+            raise ValueError("extraction.empty_table_policy must be fail or preserve_defer")
+        if table_policy=="preserve_defer" and (
+            extract.get("visual_processing","blocking")!="preserve_defer"
+            or extract.get("ocr_enabled",True)
+        ):
+            raise ValueError(
+                "empty_table_policy=preserve_defer requires native visual_processing=preserve_defer"
+            )
+        policy=extract.get("visual_processing","blocking")
+        if policy not in ("blocking","preserve_defer"):
+            raise ValueError("extraction.visual_processing must be blocking or preserve_defer")
+        if policy=="preserve_defer" and extract.get("ocr_enabled",True):
+            raise ValueError("preserve_defer is native-only; run OCR as a separate workload or use blocking inline OCR")
         if extract.get("ocr_bbox_detail","word") not in ("word","block"):
             raise ValueError("extraction.ocr_bbox_detail must be word or block")
         threshold = extract.get("ocr_confidence_min",0.6)
@@ -251,6 +372,16 @@ def validate_profile(profile: dict) -> None:
             raise ValueError("extraction.ocr_confidence_min must be 0..1")
         if extract.get("ocr_max_batch_bytes",6_000_000) < 1024 * extract.get("ocr_batch_images",8):
             raise ValueError("OCR batch byte budget too small")
+        if extract.get("retained_evidence") is not None:
+            from visual_evidence import native_capture_config
+            native_capture_config(extract["retained_evidence"])
+            if (worker_backend!="processes" or policy!="preserve_defer"
+                    or extract.get("ocr_enabled",True) or extract.get("chart_descriptions_enabled",True)
+                    or extract.get("table_summaries_enabled",False)):
+                raise ValueError("Retained evidence requires native preserve_defer process workers without inline AI")
+    if "deferred_ocr" in profile:
+        from deferred_ocr import settings as validate_deferred_ocr
+        validate_deferred_ocr(profile)
     meta = profile["metadata"]
     if type(meta.get("inherit_document_fields")) is not bool:
         raise ValueError("metadata.inherit_document_fields must be boolean")
@@ -264,14 +395,24 @@ def validate_profile(profile: dict) -> None:
             if not isinstance(rule, dict) or rule.get("method") not in _ALLOWED_METHODS:
                 raise ValueError("Invalid metadata rule for " + name)
             extra_options = set(rule) - {"method", "label", "pattern", "value", "first_pages",
-                                                   "enabled", "required", "type", "allowed_values", "sample_values"}
+                                                   "enabled", "required", "type", "allowed_values", "sample_values",
+                                                    "group", "match_policy"}
             if extra_options:
                 raise ValueError("Unsupported rule options for " + name)
             if rule["method"] == "regex":
                 pattern = rule.get("pattern", "")
                 if not isinstance(pattern, str) or not 1 <= len(pattern) <= 300:
                     raise ValueError("Invalid regex for " + name)
-                re.compile(pattern)
+                compiled=re.compile(pattern)
+                if "group" in rule and (type(rule["group"]) is not int
+                                        or not 0<=rule["group"]<=compiled.groups):
+                    raise ValueError("Invalid regex capture group for " + name)
+            elif "group" in rule:
+                raise ValueError("group is only supported for regex metadata")
+            if rule.get("match_policy","first") not in ("first","unique"):
+                raise ValueError("Invalid metadata match_policy for " + name)
+            if rule["method"]=="constant" and rule.get("match_policy","first")!="first":
+                raise ValueError("Constant metadata cannot use unique matching")
             if rule["method"] == "label" and not isinstance(rule.get("label"), str):
                 raise ValueError("Missing label for " + name)
             if rule["method"] == "constant" and not isinstance(rule.get("value"), (str, int, float, bool)):

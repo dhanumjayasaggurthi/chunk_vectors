@@ -28,13 +28,21 @@ logger = logging.getLogger("epod.db")
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_conn():
-    """Return a new psycopg2 connection. Caller must close it."""
+    """Return a connection lease; caller must close it.
+
+    Without [POSTGRES] pool_enabled=true the historical unpooled behavior is
+    unchanged. The pooled lease supports the normal cursor/transaction API.
+    """
+    if POSTGRES.get("pool_enabled", False):
+        from db_pool import acquire
+        return acquire(POSTGRES)
     return psycopg2.connect(
         host=POSTGRES["host"],
         port=POSTGRES["port"],
         dbname=POSTGRES["database"],
         user=POSTGRES["user"],
         password=POSTGRES["password"],
+        connect_timeout=POSTGRES.get("connect_timeout_seconds", 10),
     )
 
 

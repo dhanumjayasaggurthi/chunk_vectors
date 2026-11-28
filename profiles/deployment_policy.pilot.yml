@@ -1,0 +1,166 @@
+# Bounded live pilot policy: do not change semantic fields on existing tables.
+# Configured quotas require approved allocation before enabling cloud calls.
+# Processing policies only. Table names and dimensions come from config.ini via production.py.
+# Edit metadata rules here; do not add host paths or table names.
+name: regulatory_deployment_v1
+version: 1
+
+extraction:
+  enabled: true
+  page_batch_size: 32
+  worker_backend: processes
+  worker_recycle_documents: 0
+  profile_stage_timings: true
+  # Max encoded raster bytes held per window; window shrinks automatically
+  # when scanned/image-heavy pages are encountered.
+  max_window_raster_bytes: 160000000
+  max_render_pixels: 50000000
+  ocr_enabled: false
+  visual_processing: preserve_defer
+  empty_table_policy: preserve_defer
+  max_visual_regions_per_page: 256
+  capture_table_structure: true
+  capture_rich_text: true
+  ocr_batch_images: 8
+  ocr_workers: 4
+  # Explicit combined limits per project ACROSS all servers using this DB.
+  # Inspect live 429/error and quality data before raising.
+  ocr_requests_rpm: 1500
+  ocr_images_ipm: 1500
+  ocr_max_batch_bytes: 6000000
+  ocr_max_retries: 4
+  ocr_timeout_seconds: 90
+  max_quota_wait_seconds: 600
+  ocr_bbox_detail: word
+  ocr_confidence_min: 0.60
+  # Keep lossless table cells. Summaries are optional narrative additions.
+  table_summaries_enabled: false
+  # Charts must have OCR labels AND a description, or the page fails review.
+  chart_descriptions_enabled: false
+  chart_workers: 4
+
+extracted_content:
+  doc_id_column: doc_id
+  text_column: chunk_text
+  page_column: page_number
+  position_column: page_number
+  page_end_column: page_end
+  file_path_column: file_path
+  file_name_column: file_name
+  section_column: section_title
+  element_json_column: elements
+  width_column: page_width
+  height_column: page_height
+  rotation_column: page_rotation
+  source_columns:
+    source_file_name: file_name
+
+chunking:
+  strategy: toc_then_semantic
+  boundary_mode: semantic_v2
+  merge_cross_page_paragraphs: true
+  table_row_mode: rows
+  physical_table_body_mode: lines
+  # none | structural | extractive (bounded original row examples).
+  # Narrative LLM summaries are not yet qualified.
+  table_summary_mode: extractive
+  table_continuation: conservative
+  max_table_pages: 8
+  table_edge_fraction: 0.25
+  table_x_tolerance: 0.05
+  min_tokens: 120
+  max_tokens: 800
+  overlap_tokens: 80
+  small_section_policy: merge_forward
+  preserve_headers: true
+  tokenizer: cl100k_base
+
+metadata:
+  inherit_document_fields: true
+  document:
+    protocol_number:
+      method: regex
+      pattern: '(?im)\bProtocol\s+(?:Number|No\.?)\s*[:#-]?\s*([A-Za-z0-9_-]+)'
+      type: string
+      enabled: true
+      required: false
+      first_pages: 25
+      match_policy: unique
+      sample_values: [ABC-2026-001]
+    document_title:
+      method: label
+      label: Title
+      type: string
+      enabled: true
+      required: false
+      first_pages: 10
+      match_policy: unique
+    # The two application fields share the exact same capture tuple.
+    # Conflicting pairs are omitted rather than combining unrelated matches.
+    application_type:
+      method: regex
+      pattern: '\b(IND|NDA|BLA|sBLA|ANDA|sNDA|MAA|CTA)[ \t]+(\d{5,8})\b'
+      group: 1
+      match_policy: unique
+      type: enum
+      allowed_values: [IND, NDA, BLA, sBLA, ANDA, sNDA, MAA, CTA]
+      enabled: true
+      required: false
+      first_pages: 25
+    application_number:
+      method: regex
+      pattern: '\b(IND|NDA|BLA|sBLA|ANDA|sNDA|MAA|CTA)[ \t]+(\d{5,8})\b'
+      group: 2
+      match_policy: unique
+      type: string
+      enabled: true
+      required: false
+      first_pages: 25
+    # Explicit disease-code labels only. Examples are not extracted values.
+    indication_code:
+      method: regex
+      pattern: '(?im)^[ \t]*Indication[ \t]+Code[ \t]*:[ \t]*([A-Za-z][A-Za-z0-9-]*)[ \t]*$'
+      match_policy: unique
+      type: enum
+      allowed_values: [gMG, HDFN, wAIHA, SLE, pSD, SjD, pSS, RA, CIDP, IIM, BP, FNAIT]
+      enabled: true
+      required: false
+      first_pages: 25
+    report_date:
+      method: regex
+      pattern: '(?im)^\s*Report\s+Date\s*:\s*(\d{4}-\d{2}-\d{2})\s*$'
+      type: date
+      enabled: true
+      required: false
+      first_pages: 15
+      match_policy: unique
+  chunk:
+    study_identifier:
+      method: regex
+      pattern: '(?im)\bStudy\s+(?:ID|Number)\s*:\s*([A-Za-z0-9_-]+)'
+      type: string
+      enabled: true
+      required: false
+
+embedding:
+  enabled: false
+  reuse_existing: true
+  batch_size: 128
+  batch_tokens: 24000
+  # dimensions supplied once by config.ini [AZURE_OPENAI_EMBEDDING]
+  rpm: 30
+  tpm: 750000
+  input_max_tokens: 6000
+  input_fields:
+    - document.protocol_number
+    - section_title
+    - chunk_text
+
+
+# Existing OCR engine; actual quota allocation must be approved before enabling calls.
+deferred_ocr:
+  workers: 8
+  full_page_ocr_min_native_chars: 100
+  ocr_jpeg_quality: 95
+  rpm: 1500
+  ipm: 1500

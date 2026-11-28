@@ -67,6 +67,7 @@ class ElementType(str, Enum):
     TABLE = "table"
     CHART = "chart"
     MIXED = "mixed"
+    VECTOR_REGION = "vector_region"  # unclassified graphical artifact, not a text table
 
 
 @dataclass
@@ -107,6 +108,268 @@ class PageElement:
     image_bytes:  bytes      = field(default=b"", repr=False)  # PNG bytes for OCR
     confidence:   float      = 1.0   # OCR confidence  (0-1)
     reading_order: int       = 0
+    runs:          list[dict] = field(default_factory=list)  # optional rich text spans
+    language:      str        = ""
+    semantic_role: str        = ""
+    heading_level: int        = 0
+    vector_png:    bytes     = field(default=b"", repr=False)
+    approved_asset: dict     = field(default_factory=dict)
+    source_table:  dict | None = None  # opt-in unmodified table cell matrix
+    visual_asset:  dict = field(default_factory=dict)  # source PDF refs, no fabricated OCR
+    unresolved_region: dict = field(default_factory=dict)  # source PDF region, no cell inference
+
+
+def validate_visual_asset(asset: dict, *, page_number: int | None = None) -> dict:
+    """Validate source PDF visual references with no implied OCR or approval."""
+    import math
+    if not isinstance(asset, dict) or set(asset) != {
+        "version", "source", "source_page", "status",
+        "numeric_interpretation", "group_type", "fragment_count", "fragments",
+    }:
+        raise ValueError("Invalid preserved visual metadata")
+    if (type(asset["version"]) is not int or asset["version"] != 1
+            or asset["source"] != "original_pdf"
+            or type(asset["source_page"]) is not int or asset["source_page"] < 1
+            or (page_number is not None and asset["source_page"] != page_number)
+            or asset["status"] != "PENDING_OCR_OR_VISUAL_ENRICHMENT"
+            or asset["numeric_interpretation"] != "NOT_PERFORMED"):
+        raise ValueError("Invalid preserved visual provenance/status")
+    pieces = asset["fragments"]
+    if (not isinstance(pieces, list) or not 1 <= len(pieces) <= 1024
+            or type(asset["fragment_count"]) is not int
+            or asset["fragment_count"] != len(pieces)
+            or asset["group_type"] != (
+                "contiguous_image_strips" if len(pieces) > 1 else "single_image"
+            )):
+        raise ValueError("Invalid preserved image fragment group")
+    for part in pieces:
+        if not isinstance(part, dict) or set(part) != {
+            "xref", "bbox", "pixel_width", "pixel_height",
+        }:
+            raise ValueError("Invalid preserved image source reference")
+        bb=part["bbox"]
+        if (type(part["xref"]) is not int or part["xref"] < 0
+                or type(part["pixel_width"]) is not int or part["pixel_width"] < 1
+                or type(part["pixel_height"]) is not int or part["pixel_height"] < 1
+                or not isinstance(bb, list) or len(bb) != 4
+                or any(type(x) not in (float,int) or not math.isfinite(x) for x in bb)
+                or bb[0] >= bb[2] or bb[1] >= bb[3]):
+            raise ValueError("Invalid preserved image geometry/source")
+    return asset
+
+
+def validate_unresolved_region(data: dict, *, page_number: int | None = None) -> dict:
+    """Unclassified source-only region; not recovered table or OCR content."""
+    if not isinstance(data, dict) or set(data) != {
+        "version", "source", "source_page", "detector", "candidate_index",
+        "status", "structured_table_recovered",
+    }:
+        raise ValueError("Invalid unresolved source region")
+    if (type(data["version"]) is not int or data["version"] != 1
+            or data["source"] != "original_pdf"
+            or type(data["source_page"]) is not int or data["source_page"] < 1
+            or (page_number is not None and data["source_page"] != page_number)
+            or data["detector"] != "pdfplumber_table_candidate"
+            or type(data["candidate_index"]) is not int
+            or data["candidate_index"] < 0
+            or data["status"] != "PENDING_OCR_OR_VISUAL_ENRICHMENT"
+            or data["structured_table_recovered"] is not False):
+        raise ValueError("Invalid unresolved source region provenance")
+    return data
+
+
+def _verified_nested_candidate_words(coords, words, plumb_page, native_page,
+                                     text_elements, valid_tables) -> bool:
+    """Only defer tiny nested empty cells when their native words are retained.
+
+    Compare actual source characters, not just counts. Geometry and the
+    independently recovered parent constrain the exception to nested linework.
+    No checkbox state or table structure is inferred.
+    """
+    import math
+    if native_page is None or native_page.rotation != 0:
+        return False
+    bbox = BBox(*coords)
+    if not 0 < bbox.area <= 2500:
+        return False
+    if not any(
+        parent.bbox[0] <= bbox.x0 and parent.bbox[1] <= bbox.y0
+        and parent.bbox[2] >= bbox.x1 and parent.bbox[3] >= bbox.y1
+        and (parent.bbox[2]-parent.bbox[0]) *
+            (parent.bbox[3]-parent.bbox[1]) >= 4 * bbox.area
+        for parent in valid_tables
+    ):
+        return False
+    # Reject coordinate frames we cannot safely compare.
+    if (any(abs(a-b) > 0.1 for a,b in zip(native_page.rect, plumb_page.bbox))
+            or native_page.cropbox != native_page.mediabox):
+        return False
+    def compact(text):
+        return "".join(text.split())
+    expected = []
+    for word in words:
+        value = word.get("text")
+        if not isinstance(value, str) or not compact(value):
+            return False
+        wb = BBox(*(float(word[k]) for k in ("x0","top","x1","bottom")))
+        if (not all(math.isfinite(v) for v in (wb.x0,wb.y0,wb.x1,wb.y1))
+                or not wb.area or not bbox.overlaps(wb)):
+            return False
+        # Verify the text survives the existing native cleaning/element pass.
+        if not any(el.element_type == ElementType.TEXT
+                   and el.bbox.overlaps(wb)
+                   and compact(value) in compact(el.text)
+                   for el in text_elements):
+            return False
+        expected.append(compact(value))
+    # An exact independent region transcription also checks multiplicity and
+    # prevents coincidental matching of a word elsewhere on the page.
+    return bool(expected) and compact(
+        native_page.get_textbox(_fitz().Rect(*coords))
+    ) == "".join(expected)
+
+
+def _verified_raster_caption_words(coords, words, plumb_page, native_page, text_elements):
+    """A caption touching a raster-backed empty candidate is not a lost cell."""
+    import fitz
+    if native_page is None or native_page.rotation != 0:
+        return False
+    if (any(abs(a-b)>0.1 for a,b in zip(native_page.rect,plumb_page.bbox))
+            or native_page.cropbox!=native_page.mediabox):
+        return False
+    box=fitz.Rect(*coords)
+    if box.is_empty or box.is_infinite:
+        return False
+    def compact(text):
+        return "".join(text.split())
+    expected="".join(compact(w["text"]) for w in words)
+    if not expected or compact(native_page.get_textbox(box))!=expected:
+        return False
+    # Require a single retained native caption, crossing the top edge by at
+    # most three PDF points. Interior text or partial captions fail closed.
+    captions=[el for el in text_elements if el.element_type==ElementType.TEXT
+              and re.match(r"(?i)^\s*(?:figure|fig\.?)\s+\d+[a-z]?\s*[:.]",el.text)
+              and compact(el.text)==expected
+              and el.bbox.y0<box.y0<el.bbox.y1<=box.y0+3
+              and el.bbox.x0>=box.x0-0.1 and el.bbox.x1<=box.x1+0.1]
+    if len(captions)!=1:
+        return False
+    # A displayed raster must account for nearly all candidate geometry.
+    # Keep the entire candidate as unresolved evidence, including its caption.
+    return any((fitz.Rect(item["bbox"]) & box).get_area()>=0.90*box.get_area()
+               for item in native_page.get_image_info())
+
+
+def _verified_blank_widget_boundary_words(table, words, plumb_page, native_page,
+                                         text_elements, valid_tables):
+    """Defer blank interactive field grids with independently retained labels.
+
+    Require a recovered parent, one blank text widget per detected cell, and
+    exact native text confined to spans touching the top edge. A populated
+    field, interior text, or ambiguous geometry fails closed. This is not
+    field extraction, nor evidence that the page is semantically complete.
+    """
+    import fitz
+    if native_page is None or native_page.rotation != 0:
+        return False
+    if (any(abs(a-b)>0.1 for a,b in zip(native_page.rect,plumb_page.bbox))
+            or native_page.cropbox!=native_page.mediabox):
+        return False
+    box=fitz.Rect(*table.bbox)
+    if not any(fitz.Rect(parent.bbox).contains(box) for parent in valid_tables):
+        return False
+    def compact(text):
+        return "".join(text.split())
+    expected="".join(compact(w["text"]) for w in words)
+    if not expected or compact(native_page.get_textbox(box))!=expected:
+        return False
+    # The native spans must only touch the top edge; prove each survives
+    # the existing text pass, including the date/units in form labels.
+    spans=[]
+    for block in native_page.get_text("dict",flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
+        for line in block.get("lines",[]):
+            for span in line["spans"]:
+                sb=fitz.Rect(span["bbox"])
+                value=compact(span["text"])
+                if not value or not sb.intersects(box):
+                    continue
+                if not (sb.y0<box.y0<sb.y1<=box.y0+3
+                        and sb.x0>=box.x0-1 and sb.x1<=box.x1+1):
+                    return False
+                if not any(el.element_type==ElementType.TEXT
+                           and el.bbox.overlaps(BBox(*sb))
+                           and value in compact(el.text) for el in text_elements):
+                    return False
+                spans.append(value)
+    if "".join(spans)!=expected:
+        return False
+    cells=[fitz.Rect(cell) for cell in table.cells]
+    widgets=[w for w in native_page.widgets() if w.rect.intersects(box)]
+    if len(cells)<2 or len(widgets)!=len(cells):
+        return False
+    if any(w.field_type!=fitz.PDF_WIDGET_TYPE_TEXT or w.field_value!="" for w in widgets):
+        return False
+    remaining=list(widgets)
+    for cell in cells:
+        matches=[i for i,w in enumerate(remaining)
+                 if abs(w.rect.x0-cell.x0)<=1 and abs(w.rect.x1-cell.x1)<=1
+                 and abs(w.rect.y0-cell.y0)<=2.5 and abs(w.rect.y1-cell.y1)<=2.5]
+        if len(matches)!=1:
+            return False
+        remaining.pop(matches[0])
+    return not remaining
+
+
+def _preserve_empty_table_candidate(table, raw, plumb_page, page_number: int,
+                                    max_regions: int, retained_regions: int,
+                                    *, candidate_index: int, native_page=None,
+                                    text_elements=(), valid_tables=()) -> PageElement:
+    """Defer empty candidates with no words or verified native caption/nested words.
+
+    Original PDF bytes + exact page and bbox remain authoritative. We never
+    fabricate table cells or store duplicate raster PNGs in native mode.
+    """
+    import math
+    if not isinstance(raw, list) or any(
+            not isinstance(row, (list,tuple)) for row in raw):
+        raise ValueError("Cannot verify empty-table source cell rows")
+    if any(str(value).strip() for row in raw
+           for value in row if value is not None):
+        raise ValueError("Cannot defer a candidate containing source cell text")
+    if retained_regions >= max_regions:
+        raise ValueError("VISUAL_REGION_LIMIT_EXCEEDED for unresolved PDF region")
+    try:
+        coords=tuple(float(value) for value in table.bbox)
+        if (len(coords)!=4 or not all(math.isfinite(v) for v in coords)
+                or coords[0]>=coords[2] or coords[1]>=coords[3]):
+            raise ValueError("Invalid unresolved table candidate geometry")
+        if (coords[0]<-1 or coords[1]<-1
+                or coords[2]>float(plumb_page.width)+1
+                or coords[3]>float(plumb_page.height)+1):
+            raise ValueError("Unresolved region outside the original PDF page")
+        words = plumb_page.crop(coords).extract_words()
+        if words and not (
+            _verified_nested_candidate_words(
+                coords, words, plumb_page, native_page, text_elements, valid_tables)
+            or _verified_raster_caption_words(
+                coords, words, plumb_page, native_page, text_elements)
+            or _verified_blank_widget_boundary_words(
+                table, words, plumb_page, native_page, text_elements, valid_tables)
+        ):
+            raise ValueError("Unresolved table candidate contains source PDF words")
+    except (TypeError, AttributeError) as exc:
+        raise ValueError("Cannot verify original PDF candidate bounds") from exc
+    return PageElement(
+        element_type=ElementType.VECTOR_REGION,
+        bbox=BBox(*coords),
+        unresolved_region={
+            "version":1, "source":"original_pdf", "source_page":page_number,
+            "detector":"pdfplumber_table_candidate",
+            "candidate_index":candidate_index,
+            "status":"PENDING_OCR_OR_VISUAL_ENRICHMENT",
+            "structured_table_recovered":False,
+        },
+    )
 
 
 @dataclass
@@ -232,6 +495,42 @@ def _is_chart(img_bbox: BBox, text_elements: list[PageElement]) -> bool:
     return num_matches >= 3
 
 
+
+def _is_nested_empty_table_artifact(table, cells, valid_tables, plumb_page,
+                                    image_elements: list[PageElement]) -> bool:
+    """Guarded classification of PDF line-work mistaken for a nested table.
+
+    Never discard a region that contains text, overlaps an image, is not fully
+    inside a valid extracted table, or exceeds the bounded tiny-region limit.
+    The caller MUST preserve a PNG snapshot of classified vector geometry.
+    """
+    if not isinstance(cells, list):
+        return False
+    if any(str(cell).strip() for row in cells if row
+           for cell in row if cell is not None):
+        return False
+    try:
+        bbox = BBox(*(float(v) for v in table.bbox))
+    except (TypeError, ValueError):
+        return False
+    if not 0 < bbox.area <= 2500:
+        return False
+    if any(el.bbox.overlaps(bbox) for el in image_elements):
+        return False
+    if not any(
+        parent is not table
+        and parent.bbox[0] <= bbox.x0 and parent.bbox[1] <= bbox.y0
+        and parent.bbox[2] >= bbox.x1 and parent.bbox[3] >= bbox.y1
+        and (parent.bbox[2]-parent.bbox[0]) *
+            (parent.bbox[3]-parent.bbox[1]) >= 4 * bbox.area
+        for parent in valid_tables
+    ):
+        return False
+    # A successful table extraction in the parent does NOT license dropping
+    # textual content from nested boxes. Require zero source PDF words.
+    return not plumb_page.crop(tuple(table.bbox)).extract_words()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main processor
 # ─────────────────────────────────────────────────────────────────────────────
@@ -255,8 +554,46 @@ class PDFProcessor:
         *,
         strict: bool = False,
         max_render_pixels: int | None = None,
+        capture_rich_text: bool = False,
+        approved_image_assets: dict | None = None,
+        capture_table_structure: bool = False,
+        max_table_source_json_bytes: int = 8_000_000,
+        preserve_uninterpreted_visuals: bool = False,
+        max_visual_regions_per_page: int = 256,
+        empty_table_policy: str = "fail",
+        profile_page_timings: bool = False,
+        experimental_table_prepass: bool = False,
+        recover_open_grid_body: bool = False,
     ):
+        if type(experimental_table_prepass) is not bool:
+            raise ValueError("experimental_table_prepass must be a boolean")
+        self.experimental_table_prepass = experimental_table_prepass
+        self.table_prepass_stats = {}
+        if type(recover_open_grid_body) is not bool:
+            raise ValueError("recover_open_grid_body must be boolean")
+        if recover_open_grid_body and not (strict and capture_table_structure and preserve_uninterpreted_visuals):
+            raise ValueError("Physical grid recovery requires strict structured native preservation")
+        self.recover_open_grid_body = recover_open_grid_body
+        self.open_grid_stats = {}
         self.strict = strict
+        self.capture_rich_text = capture_rich_text
+        self.approved_image_assets = approved_image_assets or {}
+        self.capture_table_structure = capture_table_structure
+        self.max_table_source_json_bytes = max_table_source_json_bytes
+        self.preserve_uninterpreted_visuals = preserve_uninterpreted_visuals
+        self.max_visual_regions_per_page = max_visual_regions_per_page
+        if empty_table_policy not in ("fail", "preserve_defer"):
+            raise ValueError("Unsupported empty_table_policy")
+        if empty_table_policy=="preserve_defer" and not preserve_uninterpreted_visuals:
+            raise ValueError("empty_table_policy=preserve_defer requires source preservation")
+        self.empty_table_policy = empty_table_policy
+        if type(profile_page_timings) is not bool:
+            raise ValueError("profile_page_timings must be a boolean")
+        self.profile_page_timings = profile_page_timings
+        self.profiled_table_detection_seconds = 0.0
+        self.profiled_table_extraction_seconds = 0.0
+        self.profiled_pages = 0
+        self._image_digest_cache: dict[int, tuple[str, int]] = {}
         self.max_render_pixels = max_render_pixels
         self.file_path = file_path
         self.doc_id    = doc_id
@@ -370,6 +707,7 @@ class PDFProcessor:
         completed_pages: set[int] | None = None,
         *,
         max_window_raster_bytes: int = 160_000_000,
+        page_observer=None,
     ):
         """Stream bounded page windows, including image-memory backpressure.
 
@@ -406,6 +744,11 @@ class PDFProcessor:
                 )
 
             for i in range(count):
+                # Evidence is independent of native checkpoint reuse. The
+                # observer runs on the same process-local PDF handle and may
+                # fail the document before publishing incomplete evidence.
+                if page_observer is not None:
+                    page_observer(doc,i+1)
                 if i + 1 in completed:
                     continue
                 plumb_page = plumb_doc.pages[i]
@@ -472,7 +815,7 @@ class PDFProcessor:
         )
         pc.rotation = int(page.rotation)
         # Fail a pathological render before allocating a multi-GB pixmap.
-        if self.max_render_pixels is not None:
+        if self.max_render_pixels is not None and not self.preserve_uninterpreted_visuals:
             scale = OCR_RENDER_DPI / 72.0
             pixels = int(width * scale) * int(height * scale)
             if pixels > self.max_render_pixels:
@@ -501,11 +844,19 @@ class PDFProcessor:
             b = block.get("bbox", (0, 0, 0, 0))
             bbox = BBox(b[0], b[1], b[2], b[3])
 
-            # Gather all span text within block
+            # Capture typography in the SAME native text pass; no extra PDF I/O.
+            # Legacy runs remain empty unless capture_rich_text is explicitly enabled.
             block_text = ""
-            for line in block.get("lines", []):
+            rich_runs = []
+            largest_font = 0.0
+            if self.capture_rich_text:
+                from rich_document import native_run
+            for line_index, line in enumerate(block.get("lines", [])):
                 for span in line.get("spans", []):
                     block_text += span.get("text", "")
+                    if self.capture_rich_text:
+                        rich_runs.append(native_run(span, line_index))
+                        largest_font = max(largest_font, float(span.get("size") or 0))
                 block_text += "\n"
 
             block_text = _clean_text(block_text)
@@ -518,13 +869,21 @@ class PDFProcessor:
                 element_type=ElementType.TEXT,
                 bbox=bbox,
                 text=block_text,
+                runs=rich_runs,
             )
+            if rich_runs and _looks_like_heading(block_text, largest_font, median_size):
+                el.semantic_role = "heading"  # heuristic, not a PDF semantic tag
+                el.heading_level = 1 if largest_font >= median_size * 1.5 else 2
             text_elements.append(el)
 
         # ── 3. Image elements ────────────────────────────────────────────────
         image_elements: list[PageElement] = []
         try:
-            img_list = page.get_images(full=True)
+            if self.preserve_uninterpreted_visuals:
+                image_elements = self._preserve_visuals(page, page_number)
+                img_list = []  # No expensive rasterization before the OCR stage
+            else:
+                img_list = page.get_images(full=True)
         except Exception as e:
             if self.strict:
                 raise RuntimeError(f"Image inventory failed p{page_number}: {e}") from e
@@ -546,7 +905,27 @@ class PDFProcessor:
                 ib   = rects[0]
                 bbox = BBox(ib.x0, ib.y0, ib.x1, ib.y1)
 
-                # Skip tiny images (decorative bullets, logos < 50×50 pts)
+                # An explicitly reviewed original source image is matched
+                # BEFORE creating a costly 200-DPI OCR raster. Never approve
+                # images heuristically by size, page coordinates or logo name.
+                if self.approved_image_assets:
+                    from approved_images import approved_source_image
+                    approval = approved_source_image(
+                        page.parent, xref, img_info,
+                        self.approved_image_assets, self._image_digest_cache,
+                    )
+                    if approval:
+                        image_elements.append(PageElement(
+                            element_type=ElementType.IMAGE,
+                            bbox=bbox,
+                            text=approval["text"],
+                            approved_asset=approval,
+                        ))
+                        continue
+
+                # The pre-existing small-image policy remains unchanged for
+                # non-approved inputs. Unrecognized substantial images must
+                # still pass normal OCR/review quality gates.
                 if bbox.area < 2500:
                     continue
 
@@ -595,7 +974,8 @@ class PDFProcessor:
         # ── 4. Scanned page detection ────────────────────────────────────────
         #    If native text is almost zero but images exist → needs full OCR
         native_text_len = sum(len(e.text) for e in text_elements)
-        if native_text_len < SCANNED_PAGE_TEXT_THRESHOLD and image_elements:
+        if (not self.preserve_uninterpreted_visuals
+                and native_text_len < SCANNED_PAGE_TEXT_THRESHOLD and image_elements):
             pc.needs_ocr = True
             # Render entire page for OCR (not just individual images)
             pix = None
@@ -625,22 +1005,103 @@ class PDFProcessor:
         # tables, the exact source bbox, and raw cell content. No second
         # pdfplumber open / find_tables during later OCR-table assembly.
         staged_table_results = None
+        physical_body = None
+        vector_elements: list[PageElement] = []
         if self.strict and plumb_page is not None:
             from table_extractor import TableExtractor
             extractor = TableExtractor(self.file_path, summarise=False)
-            detected = plumb_page.find_tables(TABLE_SETTINGS)
+            if self.profile_page_timings:
+                from time import perf_counter
+                started=perf_counter()
+            if self.experimental_table_prepass:
+                from native_table_prepass import detect_tables
+                detected, reason = detect_tables(plumb_page, TABLE_SETTINGS)
+                self.table_prepass_stats[reason] = self.table_prepass_stats.get(reason, 0) + 1
+            else:
+                detected = plumb_page.find_tables(TABLE_SETTINGS)
+            if self.profile_page_timings:
+                self.profiled_table_detection_seconds += perf_counter()-started
+                started=perf_counter()
+            candidates = [
+                (idx, table, table.extract())
+                for idx, table in enumerate(detected)
+            ]
+            assessed = [
+                (idx, table, raw, extractor._process_table(
+                    raw, page_number, idx, "", allow_short=True,
+                    preserve_source=self.capture_table_structure))
+                for idx, table, raw in candidates
+            ]
+            if self.profile_page_timings:
+                self.profiled_table_extraction_seconds += perf_counter()-started
+                self.profiled_pages += 1
+            valid_tables = [table for _, table, _, result in assessed
+                            if result is not None]
             staged_table_results = []
-            for idx, table in enumerate(detected):
-                result = extractor._process_table(
-                    table.extract(), page_number, idx, "",
-                    allow_short=True,
-                )
+            for idx, table, raw, result in assessed:
                 if result is None:
-                    raise RuntimeError(
-                        f"Table {idx} page {page_number} has no recoverable cells"
-                    )
+                    if (self.empty_table_policy=="preserve_defer"
+                            and self.preserve_uninterpreted_visuals):
+                        # Retain exact source page/geometry, not inferred cells.
+                        # Independently recovered tables still pass unchanged.
+                        try:
+                            region=_preserve_empty_table_candidate(
+                                table, raw, plumb_page, page_number,
+                                self.max_visual_regions_per_page,
+                                len(image_elements)+len(vector_elements),
+                                candidate_index=idx, native_page=page,
+                                text_elements=text_elements, valid_tables=valid_tables,
+                            )
+                        except ValueError as exc:
+                            raise RuntimeError(
+                                f"Unresolved table candidate p{page_number} index {idx}: {exc}"
+                            ) from exc
+                        vector_elements.append(region)
+                        continue
+                    if not _is_nested_empty_table_artifact(
+                        table, raw, valid_tables, plumb_page, image_elements
+                    ):
+                        raise RuntimeError(
+                            f"Table {idx} page {page_number} has no recoverable cells"
+                        )
+                    # Legacy strict behavior unchanged by default.
+                    if len(vector_elements) >= 8:
+                        raise RuntimeError(
+                            f"Too many unclassified vector regions p{page_number}"
+                        )
+                    png = page.get_pixmap(
+                        matrix=fitz.Matrix(2, 2),
+                        clip=fitz.Rect(*table.bbox),
+                        alpha=False,
+                    ).tobytes("png")
+                    if sum(len(x.vector_png) for x in vector_elements) + len(png) > 256_000:
+                        raise RuntimeError(
+                            f"Vector preview page budget exceeded p{page_number}"
+                        )
+                    if not 0 < len(png) <= 128_000:
+                        raise RuntimeError(
+                            f"Vector region p{page_number} PNG budget exceeded"
+                        )
+                    vector_elements.append(PageElement(
+                        element_type=ElementType.VECTOR_REGION,
+                        bbox=BBox(*table.bbox), vector_png=png,
+                    ))
+                    continue
                 result.bbox = tuple(table.bbox)
+                if self.capture_table_structure:
+                    from table_extractor import build_source_table
+                    result.source_table = build_source_table(
+                        raw, table,
+                        max_json_bytes=self.max_table_source_json_bytes,
+                    )
                 staged_table_results.append(result)
+            if self.recover_open_grid_body and detected:
+                status="NOT_SINGLE_VALID_GRID"
+                if len(detected)==len(staged_table_results)==1 and not page.rotation and page.cropbox==page.mediabox:
+                    from open_grid_recovery import recover_open_grid
+                    status,physical_body=recover_open_grid(
+                        plumb_page,detected,max_json_bytes=self.max_table_source_json_bytes)
+                self.open_grid_stats[status]=self.open_grid_stats.get(status,0)+1
             table_bboxes = [BBox(*result.bbox) for result in staged_table_results]
         else:
             table_bboxes = self._detect_table_regions(page, plumb_page=plumb_page)
@@ -650,10 +1111,12 @@ class PDFProcessor:
                 element_type=ElementType.TABLE,
                 bbox=tb,
             )
+            if physical_body is not None:
+                el.physical_table_body=physical_body
             table_elements.append(el)
 
         # ── 6. Blank page check ──────────────────────────────────────────────
-        all_elements = text_elements + image_elements + table_elements
+        all_elements = text_elements + image_elements + table_elements + vector_elements
         if not all_elements:
             pc.is_blank = True
             return pc
@@ -670,7 +1133,7 @@ class PDFProcessor:
         pc.has_tables = len(table_elements) > 0
         if staged_table_results is not None:
             pc.staged_table_results = staged_table_results
-        pc.has_images = len(image_elements) > 0
+        pc.has_images = len(image_elements) > 0 or bool(vector_elements)
 
         # raw_text = joined text from TEXT elements in reading order
         # (image/table .text filled later by vision_ocr + table_extractor)
@@ -683,6 +1146,83 @@ class PDFProcessor:
         return pc
 
     # ── Table region detection ────────────────────────────────────────────────
+
+    def _preserve_visuals(self, page, page_number: int) -> list[PageElement]:
+        """Retain source image references without rendering or OCR.
+
+        Adjacent, aligned strips of the same pixel density become ONE
+        figure candidate, retaining every original XREF and bbox. These
+        are *not* assumed to have been interpreted or transcribed.
+        Source PDF hash is captured by page_stage's document version.
+        """
+        import math
+        from figure_recovery import FigureSettings, _adjacent
+        limit = self.max_visual_regions_per_page
+        if type(limit) is not int or not 2 <= limit <= 1024:
+            raise ValueError("Invalid max_visual_regions_per_page")
+        raw = page.get_image_info(xrefs=True)
+        if len(raw) > limit:
+            raise RuntimeError(
+                f"VISUAL_REGION_LIMIT_EXCEEDED p{page_number}: "
+                f"{len(raw)} > {limit}; no source images silently dropped"
+            )
+        infos = []
+        for item in raw:
+            coords = item.get("bbox", ())
+            if len(coords) != 4 or not all(math.isfinite(float(x)) for x in coords):
+                raise ValueError(f"Invalid image bounding box on page {page_number}")
+            bbox = [float(x) for x in coords]
+            if bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
+                raise ValueError(f"Degenerate image bounding box on page {page_number}")
+            width = int(item.get("width") or 0)
+            height = int(item.get("height") or 0)
+            if width <= 0 or height <= 0:
+                raise ValueError(f"Invalid image dimensions on page {page_number}")
+            infos.append({
+                "xref": int(item.get("xref") or 0),  # zero: inline image; PDF still authoritative
+                "bbox": bbox,
+                "pixel_width": width,
+                "pixel_height": height,
+            })
+        infos.sort(key=lambda row: (row["bbox"][1], row["bbox"][0], row["xref"]))
+        grouping = FigureSettings(max_page_images=limit,
+                                  max_fragments=min(limit, 32)).validate()
+        groups = []
+        current = []
+        for item in infos:
+            if (current and len(current) < grouping.max_fragments
+                    and current[-1]["xref"] > 0 and item["xref"] > 0
+                    and _adjacent(current[-1], item, grouping)):
+                current.append(item)
+            else:
+                if current:
+                    groups.append(current)
+                current = [item]
+        if current:
+            groups.append(current)
+        result = []
+        for group in groups:
+            bounds = [
+                min(row["bbox"][0] for row in group),
+                min(row["bbox"][1] for row in group),
+                max(row["bbox"][2] for row in group),
+                max(row["bbox"][3] for row in group),
+            ]
+            result.append(PageElement(
+                element_type=ElementType.IMAGE,
+                bbox=BBox(*bounds),
+                visual_asset={
+                    "version": 1,
+                    "source": "original_pdf",
+                    "source_page": page_number,
+                    "status": "PENDING_OCR_OR_VISUAL_ENRICHMENT",
+                    "numeric_interpretation": "NOT_PERFORMED",
+                    "group_type": "contiguous_image_strips" if len(group) > 1 else "single_image",
+                    "fragment_count": len(group),
+                    "fragments": group,
+                },
+            ))
+        return result
 
     def _detect_table_regions(self, page, *, plumb_page=None) -> list[BBox]:
         """Find native table bounding boxes while reusing a caller-owned

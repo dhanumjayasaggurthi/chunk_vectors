@@ -8,6 +8,7 @@ All tuneable parameters live here — never scatter magic numbers across files.
 
 import configparser
 import os
+import re
 from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,7 +38,24 @@ POSTGRES = {
     "password": _get("POSTGRES", "password"),
     "schema": _get("POSTGRES", "schema"),
     "folder": _get("POSTGRES", "folder"),
+    "connect_timeout_seconds": int(_get("POSTGRES", "connect_timeout_seconds", 10)),
+    "pool_enabled": _get("POSTGRES", "pool_enabled", "false").strip().lower() in ("1", "yes", "true"),
+    "pool_min_connections": int(_get("POSTGRES", "pool_min_connections", 1)),
+    "pool_max_connections": int(_get("POSTGRES", "pool_max_connections", 8)),
+    "pool_acquire_timeout_seconds": int(_get("POSTGRES", "pool_acquire_timeout_seconds", 30)),
 }
+
+if not 1 <= POSTGRES["connect_timeout_seconds"] <= 120:
+    raise ValueError("POSTGRES connect_timeout_seconds must be 1..120")
+if not (1 <= POSTGRES["pool_min_connections"] <= POSTGRES["pool_max_connections"] <= 128):
+    raise ValueError("Invalid POSTGRES pool size; 1 <= min <= max <= 128")
+if POSTGRES["pool_enabled"] and POSTGRES["pool_max_connections"] < 2:
+    raise ValueError(
+        "POSTGRES pool_max_connections must be >=2; extraction holds "
+        "a session advisory lock while it checkpoints through another lease"
+    )
+if not 1 <= POSTGRES["pool_acquire_timeout_seconds"] <= 600:
+    raise ValueError("POSTGRES pool_acquire_timeout_seconds must be 1..600")
 
 # Schema to create EPOD tables inside (keeps them separate from rimdocs_nipo)
 DB_SCHEMA = _get("POSTGRES", "schema")
@@ -167,8 +185,16 @@ DOC_MAX_RETRIES = 2
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
+def pipeline_log_name(chunk_table, folder):
+    """Safe filename/console label derived from the configured destination."""
+    name = (chunk_table or "").strip() or (folder or "").strip()
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_-")
+    return safe[:96] or "pipeline"
+
+
 LOG_DIR      = Path("logs")
-LOG_FILE     = LOG_DIR / "epod_pipeline.log"
+LOG_NAME     = pipeline_log_name(_get("POSTGRES", "chunk_table", ""), FOLDER)
+LOG_FILE     = LOG_DIR / (LOG_NAME + ".log")
 LOG_MAX_BYTES   = 10 * 1024 * 1024   # 10 MB per log file
 LOG_BACKUP_COUNT = 5                  # keep 5 rotated files
 

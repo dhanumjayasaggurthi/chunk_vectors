@@ -1,0 +1,107 @@
+{
+  "_comment": "Example admin request bodies for SmartHub main 90d2801. Not a single import file. Replace example database/schema/table/env and actual IDs; do not use empty allowlist. Register actual embedding model before enabling hybrid. Review entire JSONB contents for authorization. No source path or vectors in match response.",
+  "create_api": {
+    "name": "Regulatory Document Retrieval",
+    "description": "English regulatory retrieval chunks with optional original-language text; model observations labeled in chunk_metadata",
+    "tables": [
+      {
+        "source_system": "postgresql",
+        "env": "REPLACE_WITH_APPROVED_ENV",
+        "database": "regulatory",
+        "db_schema": "example_schema",
+        "table": "regulatory_chunks",
+        "alias": "regulatory-docs",
+        "row_limit": 50,
+        "columns": [
+          "chunk_id",
+          "doc_id",
+          "chunk_index",
+          "file_name",
+          "chunk_text",
+          "native_text",
+          "chunk_vector",
+          "page_start",
+          "page_end",
+          "section_title",
+          "headers",
+          "document_metadata",
+          "chunk_metadata",
+          "content_types",
+          "metadata_evidence"
+        ]
+      }
+    ]
+  },
+  "create_contract": {
+    "name": "Regulatory English chunks v2",
+    "description": "Use pipeline doc_id, not authoritative business ID. chunk_number is zero-based. DOCX pages null. Full JSONB only for authorized consumers. chunk_text is English-target content; native_text is original extraction or null for model-only observations. Remove native_text from allowlist and contract for English-only consumers.",
+    "definition": {
+      "matches_key": "matches",
+      "fields": {
+        "chunk_id": "chunk_id",
+        "chunk_source_id": "doc_id",
+        "chunk_number": "chunk_index",
+        "file_name": "file_name",
+        "page_number": "page_start",
+        "page_end": "page_end",
+        "chunk_text": "chunk_text",
+        "section_title": "section_title",
+        "headers": "headers",
+        "document_metadata": "document_metadata",
+        "chunk_metadata": "chunk_metadata",
+        "content_types": "content_types",
+        "metadata_evidence": "metadata_evidence",
+        "native_text": "native_text"
+      }
+    }
+  },
+  "sparse_settings": {
+    "settings": {
+      "text_column": "chunk_text",
+      "text_search_config": "simple",
+      "modes": [
+        "sparse"
+      ],
+      "default_mode": "sparse",
+      "allow_exact": false,
+      "contract_id": "REPLACE_WITH_CONTRACT_ID"
+    },
+    "planner": true
+  },
+  "hybrid_settings": {
+    "settings": {
+      "vector_column": "chunk_vector",
+      "metric": "cosine",
+      "text_column": "chunk_text",
+      "text_search_config": "simple",
+      "modes": [
+        "hybrid",
+        "dense",
+        "sparse"
+      ],
+      "default_mode": "hybrid",
+      "allow_exact": false,
+      "rrf_k": 60,
+      "dense_weight": 1,
+      "sparse_weight": 1,
+      "candidate_pool": 50,
+      "contract_id": "REPLACE_WITH_CONTRACT_ID"
+    },
+    "registration": {
+      "chunk_vector": "REPLACE_WITH_ACTUAL_MODEL_ID"
+    },
+    "planner": true,
+    "test_embedding": false
+  },
+  "query": {
+    "retrieval_queries": [
+      {
+        "query": "clinical safety adverse events",
+        "k": 10,
+        "mode": "sparse",
+        "where": []
+      }
+    ],
+    "search_mode": "auto"
+  }
+}

@@ -88,6 +88,131 @@ class TestPageStageIntegration(unittest.TestCase):
         finally:
             cls.dir.cleanup()
 
+    def test_explicit_approved_logo_publishes_with_original_sha_provenance(self):
+        import io
+        import fitz
+        import yaml
+        from PIL import Image
+        from page_stage import init, stage_one, names
+
+        sample=Path(self.dir.name)/"known-logo.pdf"
+        png_io=io.BytesIO()
+        Image.new("RGB",(585,217),"white").save(png_io,format="PNG")
+        with fitz.open() as pdf:
+            for i in range(2):
+                pg=pdf.new_page()
+                pg.insert_image(fitz.Rect(72,36,263.5,106.9),
+                                stream=png_io.getvalue())
+                pg.insert_text((72,200),
+                    "Regulatory original text remains separate from the "
+                    "approved image description. Protocol ABC-123 "
+                    "safety evidence on page "+str(i+1),fontsize=11)
+                pg.insert_text((72,220),
+                    "More native text dose and compliance audit "
+                    "details retained without using cloud OCR.",fontsize=11)
+            pdf.save(sample)
+        with fitz.open(sample) as pdf:
+            xref=pdf[0].get_images(full=True)[0][0]
+            image=pdf.extract_image(xref)["image"]
+            source_digest=hashlib.sha256(image).hexdigest()
+        manifest=Path(self.dir.name)/"reviewed-logo.yml"
+        manifest.write_text(yaml.safe_dump({
+            "version":1,"assets":[{
+                "sha256":source_digest, "status":"approved","kind":"logo",
+                "text":"Verified approval: example agency logo",
+                "reviewed_by":"test-operator",
+                "approval_reference":"integration-evidence-1",
+            }]
+        }),encoding="utf-8")
+        p=staging_profile()
+        p["extraction"].update(
+            capture_rich_text=True,
+            approved_image_manifest=str(manifest),
+        )
+        n=names(p)
+        init(p,apply=True)
+        result=stage_one(str(sample),p,n,doc_id="approved_asset_stage_case")
+        self.assertEqual(result["status"],"SUCCESS")
+        self.assertEqual(result["new_pages"],2)
+        conn=self.connection()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT page_number,chunk_text,elements
+                    FROM intake_ci.ci_pdf_pages
+                    WHERE doc_id=%s ORDER BY page_number""",
+                    ("approved_asset_stage_case",))
+                rows=cur.fetchall()
+        conn.close()
+        self.assertEqual(len(rows),2)
+        for number,text,elements in rows:
+            self.assertIn("Regulatory original text",text)
+            self.assertIn("Verified approval: example agency logo",text)
+            images=[item for item in elements if item["type"]=="image"]
+            self.assertEqual(len(images),1)
+            image=images[0]
+            self.assertEqual(image["approved_asset"]["source_sha256"],source_digest)
+            self.assertEqual(image["approved_asset"]["approval_reference"],
+                             "integration-evidence-1")
+            self.assertGreater(image["approved_asset"]["source_xref"],0)
+
+    def test_unreviewed_visual_artifact_is_checkpointed_but_not_published(self):
+        import io
+        from PIL import Image
+        from pdf_processor import PDFProcessor,PageElement,BBox,ElementType
+        from page_stage import init,stage_one,names,extraction_fingerprint
+        from extracted_source import load_extracted_document
+
+        p=staging_profile()
+        p["extraction"]["capture_rich_text"]=True
+        n=names(p)
+        init(p,apply=True)
+        buffer=io.BytesIO()
+        Image.new("RGB",(15,15),"white").save(buffer,format="PNG")
+        png=buffer.getvalue()
+        original=PDFProcessor._process_page
+
+        def add_vector(self, doc, page_num, **kwargs):
+            page=original(self,doc,page_num,**kwargs)
+            if page_num==0:
+                page.elements.append(PageElement(
+                    ElementType.VECTOR_REGION,BBox(60,100,80,120),
+                    vector_png=png))
+            return page
+
+        doc_id="rich_review_stage_case"
+        with patch.object(PDFProcessor,"_process_page",new=add_vector):
+            pending=stage_one(str(self.pdf),p,n,doc_id=doc_id)
+        self.assertEqual(pending["status"],"REVIEW_REQUIRED")
+        self.assertEqual(pending["review_pages"],1)
+        conn=self.connection()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM intake_ci.ci_pdf_pages WHERE doc_id=%s",
+                            (doc_id,))
+                self.assertEqual(cur.fetchone()[0],0)
+                cur.execute("""SELECT COUNT(*) FROM intake_ci.ci_pdf_pages_work
+                    WHERE doc_id=%s AND extraction_hash=%s""",
+                    (doc_id,extraction_fingerprint(p)))
+                self.assertEqual(cur.fetchone()[0],5)
+        conn.close()
+
+        # Review policy is independent of extraction fingerprint. Approval can
+        # publish existing checkpoints WITHOUT reading the source a second time.
+        before=extraction_fingerprint(p)
+        p["extraction"]["publish_unreviewed_vector_regions"]=True
+        self.assertEqual(extraction_fingerprint(p),before)
+        with patch.object(PDFProcessor,"_process_page",
+                          side_effect=AssertionError("Re-extraction is forbidden")):
+            approved=stage_one(str(self.pdf),p,n,doc_id=doc_id)
+        self.assertEqual(approved["status"],"SUCCESS")
+        self.assertEqual(approved["new_pages"],0)
+        self.assertEqual(approved["reused_pages"],5)
+        struct,_=load_extracted_document(p,doc_id)
+        visual=[el for page in struct.pages for el in page.elements
+                if el.element_type==ElementType.VECTOR_REGION]
+        self.assertEqual(len(visual),1)
+        self.assertEqual(visual[0].vector_png,png)
+
     def test_real_native_table_cells_keep_matching_bbox(self):
         import fitz
         from page_stage import stage_one,names
@@ -108,7 +233,9 @@ class TestPageStageIntegration(unittest.TestCase):
                              f"Approved acceptance range {i}: 1 to 15")
         doc.save(str(path))
         doc.close()
-        result=stage_one(str(path),self.profile,names(self.profile))
+        p=staging_profile()
+        p["extraction"]["capture_table_structure"]=True
+        result=stage_one(str(path),p,names(p))
         self.assertEqual(result["status"],"SUCCESS")
         conn=self.connection()
         with conn:
@@ -124,7 +251,18 @@ class TestPageStageIntegration(unittest.TestCase):
                 bbox=tables[0]["bbox"]
                 self.assertLess(abs(bbox[0]-50),2)
                 self.assertLess(abs(bbox[2]-560),2)
+                self.assertEqual(tables[0]["source_table"]["format"],
+                                 "pdfplumber_cells_v1")
+                self.assertEqual(tables[0]["source_table"]["row_count"],4)
+                self.assertEqual(len(tables[0]["source_table"]["source_cells"]),4)
+                self.assertEqual(tables[0]["source_table"]["max_columns"],2)
         conn.close()
+        from extracted_source import load_extracted_document
+        struct,_=load_extracted_document(p,result["doc_id"])
+        table_elements=[e for e in struct.pages[0].elements
+                        if e.element_type.value=="table"]
+        self.assertEqual(len(table_elements),1)
+        self.assertEqual(table_elements[0].source_table["row_count"],4)
 
     def test_checkpoint_failure_resume_and_geometry_rechunking(self):
         from pdf_processor import PDFProcessor, PageContent

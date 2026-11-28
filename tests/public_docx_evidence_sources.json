@@ -1,0 +1,34 @@
+{
+  "sources": [
+    {
+      "name": "mhra_gcp_dossier",
+      "url": "https://assets.publishing.service.gov.uk/media/693bff975cc812f50aa420d9/GCP_inspection_dossier_template__Version_7.0_Dec_2025.docx"
+    },
+    {
+      "name": "mhra_computerised_systems",
+      "url": "https://assets.publishing.service.gov.uk/media/6ab26840fe72ed1e2b02ee66/GCP_Inspection_Dossier_Template_Computerised_Systems_Sept_2026.docx"
+    }
+  ],
+  "connect_timeout": 15,
+  "read_timeout": 60,
+  "max_download_bytes": 104857600,
+  "materialization_profile": {
+    "_fingerprint": "public-docx-preview-fixture-v1",
+    "chunking": {
+      "tokenizer": "cl100k_base",
+      "max_tokens": 800,
+      "min_tokens": 120,
+      "boundary_mode": "semantic_v2"
+    },
+    "metadata": {
+      "document": {},
+      "chunk": {}
+    },
+    "embedding": {
+      "input_fields": [
+        "chunk_text"
+      ],
+      "input_max_tokens": 6000
+    }
+  }
+}

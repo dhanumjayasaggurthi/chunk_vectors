@@ -1,224 +1,393 @@
-# chunk_vectors
+# chunk_vectors — production quick start
 
-Existing PDF ingestion/RAG plus an opt-in **distributed, resumable PostgreSQL
-embedding backfill**. Normal document ingestion remains the default when
-`--embed-existing` is not specified.
+One entry point: `production.py`. One local `config.ini`. No Docker.
+Use the existing legacy `main.py` and embedding launchers only for legacy jobs.
 
-## Live embedding dashboard (Streamlit)
+> **Release gate:** Tested application commit `b965877` completed the live
+> six-document pilot: 98 pages, 304 chunks, 304 valid 1536-dimensional vectors,
+> zero missing/foreign vectors. Per-document counts reconciled. Not a clean
+> sustained throughput or semantic-accuracy certification.
+> **Source-team handshake: text-only retention. No persistent source copies,
+> images or non-text substitutes.** Current evidence staging lacks automatic
+> disposal. Resolve the [source handshake](docs/SOURCE_EVIDENCE_RETENTION.md)
+> before additional real-source workloads; do not launch 656k/1.3M until the
+> gates in [project state](docs/PIPELINE_PROJECT_STATE.md) pass.
+>
+> [Server pilot runbook — setup, recovery, nohup, monitoring and larger shards](docs/SERVER_PILOT_RUNBOOK.md).
+> [Pilot INI template](config.pilot.ini.example) and [pilot YAML](profiles/deployment_policy.pilot.yml)
+> record the 8-logical-CPU / 30-GiB configuration; never overwrite existing local settings.
 
-A **read-only leadership and engineering UI** has three views:
+## 1. Configure once
 
-- **Executive overview:** actual distinct `doc_id` documents, fully embedded
-  documents (every chunk vector present), partially embedded/not-started
-  documents, unresolved notes, chunk coverage, and highest-backlog documents.
-- **Document explorer:** enter any indexed `doc_id` to inspect the document's
-  total/embedded/missing chunk counts, source `chunk_total` consistency,
-  individual chunk readiness and per-row processing notes.
-- **Engineering operations:** distributed job status, active worker claims,
-  failure reasons/history, recent in-browser throughput and RPM/TPM caps.
+Activate your existing virtual environment and run from the repository root:
 
-Leadership coverage is computed from the **source table across all runs**,
-not from a single job's overlapping/pilot task ledger. The heavier document
-aggregation is cached for **10 minutes** and has a 60-second DB timeout.
-It reads metadata and vector NULL status, not `chunk_text` or vector values.
-
-```bash
-# Background dashboard on port 8501:
-bash start_dashboard.sh
-tail -f dashboard.log
-
-# Alternatively, run interactively:
-./venv/bin/python -m streamlit run embedding_dashboard.py \
-  --server.address 127.0.0.1 --server.port 8501
-```
-
-For remote access, forward port 8501 securely over SSH; **do not expose
-Streamlit directly on an unauthenticated public interface**.
-This dashboard is read-only; it cannot pause/restart a running backfill.
-See [dashboard deployment and monitoring](docs/EMBEDDING_DASHBOARD.md).
-
-## Quick start: immbot approved embeddings
-
-Use `profiles/immbot_approved_1536.json` for
-`regulatory.palm_paw.doc_chunks_immbot_approved`:
-`chunk_id` (unique chunk key), `chunk_text`, `chunk_vector`
-(`vector(1536)`), and `embedding_processing_note`.
-
-**Confirmed source snapshot and pilot results (November 2026):**
-
-| Measurement | Observed |
-| --- | ---: |
-| Total source rows | 1,094,208 |
-| NULL vectors before pilot | 770,268 |
-| Existing populated vectors before pilot | 323,940 |
-| Unique, valid `chunk_id` index | Yes |
-| Approx. input tokens/chunk (8,012-row sample) | 990 average; 2,571 p95 |
-| Gateway-reported embedding token limit | 1,000,000 TPM |
-| Confirmed RPM allocation | **Unknown** |
-| Pilot request caps | **30 RPM / 750,000 TPM** (conservative, not guaranteed entitlement) |
-| Pilot settings | 4 workers, 128 texts, 24,000 tokens/batch |
-| Pilot `--max-files 1000` result | **991 SUCCESS / 9 FAILED** |
-| Pilot measurement window | **112.4 s; 529.2 successful rows/min** |
-| Pilot failures | 9 `INPUT_TOO_LONG`; text exceeded model per-input token limit |
-
-At the same throughput, the remaining ~769k NULL vectors would require
-roughly **24 hours** before allowing for variability. This is an *extrapolation
-from a short pilot*, not a completion SLA. The 1M-TPM header does not prove
-any particular RPM quota; request-rate tuning still needs measurement.
-
-### Linux
-
-From the checked-out repository directory with an existing `config.ini`:
-
-```bash
+~~~bash
 python -m pip install -r requirements.txt
+python -m pip check
+python -c "import pymupdf; print(pymupdf.VersionBind)"
+~~~
 
-# No vector writes; validate mapping and count eligible rows:
-EMBED_MODE=dry-run ./start_embed.sh
+For a new install, copy [config.ini.example](config.ini.example) to `config.ini`.
+For an existing install, **merge only missing settings**. Preserve credentials,
+approved policies, and existing table names. Never commit secrets.
 
-# Safety default: <=1,000-row pilot only (uses the same pilot job if rerun):
-./start_embed.sh
-tail -f embedlogs.log
-
-# Full backfill is deliberate; no --max-files cap:
-EMBED_MODE=full EMBED_CONFIRM_FULL=YES ./start_embed.sh
-```
-
-The launcher uses its own directory by default (no hardcoded production host
-path). It starts in the background, writes `embed.pid`/`embedlogs.log`, and
-prevents a duplicate process **on the same host**. PostgreSQL leases coordinate
-workers across different hosts.
-
-### Windows (PowerShell)
-
-```powershell
-python -m pip install -r requirements.txt
-.\start_embed.ps1 -Mode dry-run
-.\start_embed.ps1 -Mode pilot -Workers 4
-.\start_embed.ps1 -Mode full -ConfirmFull -Workers 4
-```
-
-### Configuration
-
-**The profile is the canonical source for embedding settings.** The immbot
-profile currently contains `rpm=30`, `tpm=900000`, `batch_size=128`,
-`batch_tokens=48000`, `max_attempts=5`, `timeout_seconds=90`, and
-`lease_seconds=300`. `start_embed.sh` uses 4 workers by default and honors
-optional environment overrides:
-
-| Linux environment | Profile/behavior |
+| File / section | Configure |
 | --- | --- |
-| `EMBED_PROFILE` | Full path to another profile |
-| `EMBED_WORKERS` | Worker threads; default `4` |
-| `EMBED_MODE` | `dry-run`, `pilot` (default), `full` |
-| `EMBED_MAX_FILES` | Pilot task cap; default `1000` |
-| `EMBED_CONFIRM_FULL` | Must be `YES` with `EMBED_MODE=full` |
-| `EMBED_RPM`, `EMBED_TPM` | Override `embedding.rpm`, `embedding.tpm` |
-| `EMBED_BATCH_SIZE`, `EMBED_BATCH_TOKENS` | Override batch limits |
-| `EMBED_MAX_ATTEMPTS` | Override API retries |
-| `EMBED_TIMEOUT_SECONDS`, `EMBED_LEASE_SECONDS` | Override timeout/lease |
-| `EMBED_RETRY_FAILED=1` | Requeue failed tasks (only after resolving failures) |
-| `EMBED_RESCAN=1` | Rediscover additional/missing source vectors |
+| `config.ini` — POSTGRES | Connection, schema, native_table, chunk_table |
+| PATHS / DEPLOYMENT | Input folder, receipt directory, profile references |
+| RETENTION | Approved evidence directory, renderer version, retention permissions |
+| GCP / Azure | Approved credentials, models and dimensions (even if embeddings disabled) |
+| [Deployment YAML](profiles/deployment_policy.example.yml) | Extraction, metadata, table continuity, chunking, summaries and quotas |
+| [Batch profile](profiles/retention_batch_example.json) | Document workers and maximum documents per run |
 
-Example **only after checking live quota and coordinating workers**:
+Windows: use `profiles/retention_batch_example.json`. Linux: use the
+adaptive Linux profile if resource checks are supported. Start with a bounded
+pilot; ensure the maximum-document cap covers the assigned folder for a full run.
+Repeated capped runs revisit the same source prefix. Keep server source
+assignments disjoint. Use the exact approved renderer version throughout.
 
-```bash
-EMBED_MODE=full EMBED_CONFIRM_FULL=YES EMBED_WORKERS=8 \
-EMBED_RPM=30 EMBED_TPM=900000 EMBED_BATCH_TOKENS=48000 ./start_embed.sh
-```
+## Size the assigned workload (read-only)
 
-Do **not** change deployment RPM/TPM on a live shared quota ledger: the engine
-persists them in PostgreSQL and rejects inconsistent process settings.
-Coordinate configuration changes when workers are stopped.
+~~~bash
+python production.py census
+~~~
 
-### Logs and progress
+Reads PDF page counts and file sizes from the assigned source root or
+configured inventory. Counts DOCX separately, reports unreadable PDFs,
+and uses existing batch worker settings. Does not extract page contents,
+write a database, or call providers. Counts are for the assigned shard;
+unique/disjoint inventory entries are the upstream responsibility.
+For 10-day sizing, use actual PDF pages divided by 864000 seconds and
+include headroom, DOCX workload, provider quotas and storage constraints.
+Do not infer content quality or duplicate-document detection from this census.
 
-Linux `start_embed.sh` detaches the process with `nohup`. Check it
-using `ps -fp "$(cat embed.pid)"`; watch output with
-`tail -f embedlogs.log`. The centralized logger also writes
-`logs/epod_pipeline.log`. New process starts print an
-`embedding_started` record containing `job_key`, then one
-`embedding_progress` record every **60 seconds** and a final summary.
-These log enhancements do not affect an already-running worker; consult
-the PostgreSQL `embedding_runtime.runs` (created_at) and
-`embedding_runtime.tasks` (updated_at) tables immediately.
+## 2. Initialize a NEW destination
 
-### Updated full-backfill tuning (after the original pilots)
+~~~bash
+python production.py preflight --before-init
+python production.py init --apply
+python production.py preflight
+~~~
 
-The original pilot used 4 workers, 30 RPM / 750,000 TPM and 24k-token
-batches. Subsequent Linux tuning used **8 workers**, **48,000 tokens/batch**,
-and a manually raised shared DB quota of **900,000 TPM**. The observed
-10-minute successful rate was **677.9 rows/min**, with `multiplier=1`
-and no gateway cooldown at that snapshot.
+DBA must install pgvector first. Preflight is read-only. Initialization creates
+the configured existing table families (OCR queue only when authorized).
+Already initialized? Skip init; use preflight. Never truncate tables to retry.
 
-The immbot profile now persists `embedding.tpm=900000` and
-`embedding.batch_tokens=48000` to match the approved running quota.
-**These settings are caps, not verified sustained provider allowances.**
-The Linux launcher still defaults to four workers for safe pilots. Use
-`EMBED_WORKERS=8` explicitly for the full-backfill configuration.
-All workers using this Azure deployment and coordination database must
-agree with the shared `embedding_runtime.quota` values. For existing
-jobs, safely stop the process before restarting with new settings; the
-same job key resumes committed work.
+## 3. Run ingestion
 
-### Failures, recovery and progress
+Use the following **only after release and provider approval**.
 
-A bad row does not stop healthy rows. Failure reasons are stored in
-`embedding_runtime.tasks`, with historical failure events in
-`embedding_runtime.failure_events`; a concise note is also written to the
-configured source note column. The completed pilot's nine oversized rows
-remain NULL and should be **split upstream**, not retried unchanged or
-silently truncated. Successful vectors are preserved when
-`reuse_existing=true`. Fatal Azure authentication errors or database outages
-stop the run rather than mislabel all rows as bad.
+Native capture only (no cloud inference):
 
-```sql
-SELECT status, count(*) FROM embedding_runtime.tasks
-GROUP BY status ORDER BY status;
+~~~bash
+python -u production.py capture --apply
+~~~
 
-SELECT row_id, error_code, error_message, processing_comment
-FROM embedding_runtime.tasks WHERE status='FAILED'
-ORDER BY updated_at DESC LIMIT 50;
-```
+This produces a receipt path in the final JSON. Save that exact path.
+Resume capture with the same command and unchanged capture settings.
 
-For the exact commands, rate-limit probe, operational checks and rollout
-limitations, see **[docs/FAST_EMBEDDINGS.md](docs/FAST_EMBEDDINGS.md)**.
+Complete a successful capture without extracting the PDFs again:
 
-## Legacy PDF ingestion (unchanged)
+~~~bash
+python -u production.py finish --receipt "PATH_FROM_CAPTURE_OUTPUT.jsonl" --apply
+~~~
 
-```bash
-python main.py --doc-workers 4 --workers 4
-python main.py --no-embed --max-files 100
-```
+Replace the placeholder with the actual receipt path inside the configured
+receipt directory. For one document, add `--doc-id FULL_64_CHARACTER_ID`.
+Successful OCR and visual results can be reused; an interrupted provider
+response not yet committed can require a repeated call. Required OCR,
+translation and selected visual LLM processing must be authorized.
+For translation throughput, [DEPLOYMENT] translation_workers defaults to 1;
+increase within the approved per-coordinator translation_rpm and character
+quota. All workers share request pacing; allocate quota across servers. In the
+current release, a selected visual failure blocks that document's publication.
+Native evidence and earlier publications remain intact.
 
-## Optional processing profiles
+New input, one command (capture + finish):
 
-```bash
-python main.py --profile profiles/regulatory.json --max-files 100 --doc-workers 4
-python main.py --profile profiles/regulatory.json --set chunking.max_tokens=600 --file /path/file.pdf
-python main.py --profile profiles/extracted_content.json --rechunk-extracted --max-files 100
-```
+~~~bash
+python -u production.py run --apply
+~~~
 
-Profiled output remains separate from legacy RAG storage. For full details see
-[docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+Use this only after the staged path is qualified. Keep automatic embeddings
+off until retrieval quality is accepted. The optional future metadata/summary
+backfill is not part of this command yet.
 
-### HAQ 3072-dimensional questions
+## 4. Monitor and recover
 
-For `question_embedding vector(3072)`, use
-`profiles/haq_question_3072.json` with an approved
-`text-embedding-3-large` Azure deployment. Set that deployment's verified
-RPM and TPM in the profile or with CLI overrides, and validate the table ID,
-vector dimension and optional note column before running.
+~~~bash
+python production.py status
+python production.py ocr-status
+~~~
 
-## Validation and deployment status
+`status` reports native/retrieval manifest counts and OCR statuses for the
+configured current native/OCR versions. A null section means its manifest or
+queue has not been initialized. Retrieval counts are stored publication counts,
+not a guarantee of current source freshness or full visual coverage.
+If `profile_matches` is false, stop: the configured retrieval profile differs
+from existing rows. Do not overwrite the table or blindly change the YAML.
 
-```bash
-python -m pip install -r requirements.txt
-python -m compileall -q .
-python -m unittest discover -s tests -p "test_*.py" -v
-```
+Use the failed document ID from the log for a targeted retry:
 
-The 1,000-row pilot demonstrated per-row isolation, but does not replace
-extended load, mixed-model compatibility, quota, WAL, PostgreSQL
-lock-contention, recovery and retrieval-quality checks. The changes remain
-on draft PR #3 until rollout gates are satisfied. Do not commit `config.ini`.
+~~~bash
+python -u production.py finish --receipt "PATH_FROM_CAPTURE_OUTPUT.jsonl" --doc-id FULL_64_CHARACTER_ID --apply
+~~~
+
+For the specific retained-page boundary error, preview then explicitly requeue
+only locally verified crops (no cloud requests):
+
+~~~bash
+python production.py ocr-recover-crops --doc-id FULL_64_CHARACTER_ID
+python production.py ocr-recover-crops --doc-id FULL_64_CHARACTER_ID --apply
+~~~
+
+If any crop cannot be verified, none in that selected batch are requeued.
+After review and provider approval, normal scoped ocr-run processes the
+requeued jobs. Fix other failure causes before retrying. Do not reset
+successful jobs or retry terminal failures indiscriminately. Logs are named after the configured chunk table:
+`logs/<chunk_table>.log`, JSONL and per-process worker files.
+
+For visual model diagnostics, use the existing selected-page inventory and
+a single-page probe. Neither command re-extracts PDFs or publishes chunks.
+
+~~~bash
+python production.py visual-plan
+python production.py visual-probe --doc-id FULL_64_CHARACTER_ID
+python production.py visual-probe --doc-id FULL_64_CHARACTER_ID --apply
+~~~
+
+The first two are read-only. The third requires approved Azure configuration,
+makes at most one provider attempt and saves a reusable normal visual cache
+result if validated. Add --page N to choose a specific selected physical page.
+A successful probe is not semantic certification. Do not run full finish
+until its failure reason and release gates are resolved.
+
+Linux background execution (only on a qualified release):
+
+~~~bash
+RUN_DIR="logs/run-$(date -u +%Y%m%dT%H%M%S)-$"
+mkdir -m 700 "$RUN_DIR"
+nohup bash -c '
+  start=$(date +%s)
+  .venv/bin/python -u production.py run --apply
+  rc=$?
+  printf "exit_code=%s\nelapsed_seconds=%s\n" "$rc" "$(($(date +%s)-start))" > "$1/result.txt"
+  exit "$rc"
+' _ "$RUN_DIR" > "$RUN_DIR/console.log" 2>&1 </dev/null &
+echo $! > "$RUN_DIR/pid"
+echo "$RUN_DIR"
+tail -f "$RUN_DIR/console.log"
+~~~
+
+Monitor the above timed background run (restore RUN_DIR to the actual printed path after reconnecting):
+
+~~~bash
+ps -p "$(cat "$RUN_DIR/pid")" -o pid,etime,stat,cmd
+tail -f "$RUN_DIR/console.log"
+watch -n 60 '.venv/bin/python production.py status'
+watch -n 10 'free -h; df -h evidence; uptime'
+grep -E 'admission_limit|CPU_PRESSURE|MEMORY_PRESSURE|RECOVERED|HEALTHY' "$RUN_DIR/console.log"
+cat "$RUN_DIR/result.txt"   # after normal command return
+~~~
+
+For an existing simple /usr/bin/time -p background run launched previously
+with logs/full_pilot_run.log and logs/full_pilot_run.pid, do NOT launch another job:
+
+~~~bash
+ps -p "$(cat logs/full_pilot_run.pid)" -o pid,etime,stat,cmd
+tail -n 100 logs/full_pilot_run.log
+grep -E '^(real|user|sys) ' logs/full_pilot_run.log
+python production.py status
+df -h evidence
+free -h
+~~~
+
+The real value is command wall seconds, not native-only elapsed_seconds.
+The older wrapper does not persist exit status. Check final retrieval and
+embedding coverage, errors and process outcome. Status is cumulative:
+record pre-run baseline; new native/materialized/fully embedded docs per
+minute = (current respective count - baseline) * 60 / elapsed seconds.
+New pages/sec = (current native pages - baseline pages) / elapsed seconds.
+Fully embedded documents require per-document vector reconciliation; chunk
+counts alone are insufficient. ETA is only a projection. Avoid frequent
+full payload scans on large tables. Ctrl-C on tail/watch stops the viewer.
+
+Adaptive Linux profile: CPU >=92% reduces native admission, memory <=5 GiB
+available or cgroup >=20 GiB pauses; recovery needs CPU <=80%, available RAM
+>=8 GiB and detected cgroup <=17 GiB for 30 seconds. Polls during admission
+every 5 seconds; 600 seconds continuous pause aborts further admissions.
+Active work drains; this is not hard memory enforcement. Disk floor is
+preflight-only; no automatic OOM/reboot restart. Check actual profile.
+Do not remove evidence during active work. If staging is unapproved or
+storage approaches floor, arrange controlled stop with operator.
+
+Use only one active coordinator per server and never change its configuration while running. A missing result.txt is not proof of completion. Use status for stored counts, and the final embedding coverage result for vector completion. See the [server runbook](docs/SERVER_PILOT_RUNBOOK.md) for monitoring and shard gates. See [production reference](docs/PRODUCTION_REFERENCE.md)
+for OS resource protection and advanced diagnostics.
+
+## Real-corpus qualification (public test PDFs only)
+
+~~~bash
+python tests/online_public_regulatory_benchmark.py --documents 100 --min-pages 100 --max-pages 0 --workers 4 --process-pool --production-tables --batch-size 16 --report public_corpus_report.json
+~~~
+
+Full distinct originals, no cloud inference or PostgreSQL writes. The report
+separates download time from extraction wall time, successful native
+pages/sec, complete documents/min, latency percentiles, memory and table
+coverage indicators. It fails if fewer than 100 originals are available or
+any document is incomplete or has a page error. This is native-only,
+not a 10-day SLA or semantic-accuracy certification. The same command runs
+in the public benchmark GitHub workflow; source download failures are
+reported, not replaced by duplicate copies or sampled pages.
+
+## Native table detection acceleration (opt-in qualification)
+
+The complete 100-PDF A/B benchmark processed 80,312 pages in both modes,
+with exact native page/TOC output parity: 26.046 vs 94.172 pages/sec.
+These are native parser rates only. The default remains the existing parser.
+
+For a **new isolated validation destination** (not an existing captured
+corpus), merge this setting into your existing config.ini:
+
+~~~ini
+[DEPLOYMENT]
+native_table_prepass = true
+~~~
+
+The fast path is qualified for pdfplumber 0.11.10 / pdfminer.six 20260107.
+Other versions, positive table detections and prepass exceptions use the
+original detector. Check `python production.py plan` for requested mode,
+qualified runtime and native fingerprint. Capture receipts report
+`native_table_prepass_counts` for newly processed pages. This option
+changes the native extraction fingerprint deliberately; switching it on
+against an existing destination can invalidate checkpoints and recapture
+documents. Keep it false for existing captured data; do not toggle it
+mid-run. No change to retrieval policy identity from the INI switch.
+The known complex-table reconstruction issue remains open.
+
+## Partially bordered table body preservation (opt-in qualification)
+
+For NEW isolated validation destinations only, merge [DEPLOYMENT]
+`native_open_grid_body = true`. This changes native extraction identity;
+keep it false on existing captured data. The recovery requires a single
+valid shallow header and continuous original vertical column rules; it
+preserves source-aligned physical cells and geometric boundaries separately
+in the existing page element JSON. The original header grid and native
+text are unchanged. Physical lines are NOT logical records and are not
+used for logical table continuation, row counts or automatic summaries.
+Ambiguous candidates remain in the original extraction output. This
+option is a fidelity qualification step, not a complete HTS table fix.
+
+To make recovered bodies searchable, use a **new isolated retrieval policy**
+with `chunking.physical_table_body_mode: lines` (default none), alongside
+`boundary_mode: semantic_v2` and `table_row_mode: rows`. This is a separate
+retrieval profile identity. Physical-layout chunks have an explicit logical
+row warning, source page/element, body and header hashes, column boundaries
+and physical line indices in existing chunk_metadata. They do not participate
+in logical-table linking, table summaries, short-chunk packing or overlap.
+The original page text and grids stay unchanged. Do not treat the resulting
+physical lines as verified tariff records. Existing retrieval policies remain
+unchanged.
+
+## Real retained-capture qualification (CI only)
+
+The dedicated `real-capture-db.yml` workflow tests eight whole public PDFs
+(6,353 pages) with actual 300-DPI retained evidence and disposable PostgreSQL,
+then read-only OCR discovery and native-only source-language chunk publication.
+It is intentionally not a production English retrieval or embedding test.
+Reports separate download/capture/materialization wall time and worker-stage
+totals, disk/DB bytes and verified page/chunk coverage. No user database or
+paid provider is used. Do not run this CI-only harness against production.
+
+## Worker tuning
+
+Use independent limits by feature, not one worker count for everything.
+
+| Stage | Existing setting |
+| --- | --- |
+| Native text + tables | Batch JSON: workers |
+| Concurrent documents during finish | INI DEPLOYMENT: finish_workers (1..8, default 1) |
+| OCR network | YAML deferred_ocr.workers |
+| OCR retained-page readers | INI DEPLOYMENT: ocr_read_workers |
+| Visual network and readers | Visual execution JSON: workers, read_workers |
+| Translation | INI DEPLOYMENT: translation_workers, translation_rpm |
+| Standalone materialization | INI DEPLOYMENT: materialize_workers |
+| Embeddings | INI DEPLOYMENT: embedding_workers |
+| Optional LLM enrichment | One-document pilot; no independent worker pool yet |
+
+For qualification, start with finish_workers = 3. Different documents can
+overlap OCR, visual interpretation and translation/publication. Each feature
+keeps one coordinator, so nested pools do not multiply by document count.
+Native overlap reserves both reader process budgets when finish_workers > 1.
+With the PostgreSQL pool enabled, parallel finish requires at least OCR
+workers + 3 connections in the coordinator process. This is not a fleet
+connection budget: include native worker processes and all other clients.
+A larger finish window holds more document state in memory. Keep concurrency
+within measured CPU, RAM, DB capacity and provider quotas; do not run several
+coordinators against the same quota allocation. Settings are operational
+and do not change source or retrieval identities. No quality gate is bypassed.
+
+## 5. Optional enrichment — independent pilot
+
+For an already-published PDF, merge [ENRICHMENT] from config.ini.example.
+Enable metadata and/or table_summaries explicitly. Use an approved Azure
+structured-response deployment and exclusive quota allocation.
+
+~~~bash
+python production.py enrich-preview --doc-id FULL_64_CHARACTER_ID
+python production.py enrich --doc-id FULL_64_CHARACTER_ID --apply
+~~~
+
+Preview is read-only. Apply performs bounded paid requests after qualification.
+Exact-quote title candidates and qualitative table descriptions go into
+chunk_metadata.optional_enrichment, labeled REVIEW_REQUIRED. Source text,
+canonical metadata, row counts and vectors are unchanged. Mixed/oversized
+groups are deferred. Identical committed requests skip on replay.
+Do not run concurrently with another visual coordinator on the same quota.
+Chart backfill, full introduction and corpus scheduling are still pending.
+JSONB descriptions are not automatically embedded.
+
+## 6. Embeddings — separate and optional
+
+After retrieval quality and provider quotas are approved:
+
+~~~bash
+python production.py embed-preview
+python -u production.py embed --apply --rescan-source
+~~~
+
+`embed-preview` is read-only. Set the actual embedding dimensions and limits
+before running; `embedding_max_chunks=0` means the full configured target.
+Do not change shared quota settings while workers run. Reuse existing vectors.
+See [embedding operations](docs/FAST_EMBEDDINGS.md) for legacy/distributed details.
+
+## Visual retrieval quality and evidence audit
+
+Images without readable text, micrographs, diagrams and charts still require
+useful source-linked textual descriptions. V3 constrained recovery is not
+a complete visual quality guarantee. Native/OCR numeric labels must remain
+distinct from unverified interpretation; do not invent plot measurements.
+See [visual quality and read-only persistence audit](docs/VISUAL_QUALITY_AND_TEXT_ONLY_AUDIT.md)
+for the bounded pilot audit, source-quality gates and lifecycle work.
+No cleanup command exists yet; database JSONB may conditionally contain
+vector preview PNGs, so deleting filesystem evidence alone is insufficient.
+
+## What is configurable?
+
+| Feature | Where / status |
+| --- | --- |
+| Document metadata rules | YAML `metadata.document`; per-field enabled/required, scope and regex |
+| Table continuity | YAML `chunking.table_continuation`; conservative, source rows retained |
+| Table summaries | YAML `chunking.table_summary_mode`; none/structural/extractive; not narrative |
+| OCR / translation / visual LLM / embedding | INI DEPLOYMENT authorization flags and existing provider profiles |
+| Optional LLM title / table summaries | Experimental INI ENRICHMENT; one-document preview/apply |
+| Chart backfill and complete introduction | Pending |
+
+Changing metadata or chunking policy can change the retrieval profile identity.
+Preserve the policy used by existing tables until an approved migration/backfill
+exists. Never treat model observations or a successful OCR request as proof of
+correct source facts. Keep permitted text and approved derived search/audit data. Images, source copies and other non-text evidence are temporary only, subject to approved TTL and verified disposal; do not retain them as an archive or postpone cleanup until bulk ingestion. Do not purge originals based on local capture alone. The tested release does not implement automatic cleanup. See [source handshake](docs/SOURCE_EVIDENCE_RETENTION.md).
+
+[Release status and handoff](docs/PIPELINE_PROJECT_STATE.md) ·
+[Full production reference](docs/PRODUCTION_REFERENCE.md) ·
+[SmartHub / metadata](docs/LINUX_FLEET_SMARTHUB.md) ·
+[Legacy README](README_LEGACY.md)

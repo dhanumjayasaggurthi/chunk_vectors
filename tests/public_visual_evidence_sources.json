@@ -1,0 +1,150 @@
+{
+  "visual_evidence": {
+    "dpi": 300,
+    "workers": 2,
+    "batch_pages": 4,
+    "max_in_flight": 4,
+    "max_pixels": 40000000,
+    "max_png_bytes": 100000000,
+    "capture_figures": true,
+    "figure_max_distance_pt": 180,
+    "figure_padding_pt": 24,
+    "max_figure_json_bytes": 2000000
+  },
+  "download_retries": 2,
+  "connect_timeout": 15,
+  "read_timeout": 60,
+  "max_download_bytes": 104857600,
+  "sources": [
+    [
+      "nist_sem",
+      "https://nvlpubs.nist.gov/nistpubs/jres/125/jres.125.014.pdf",
+      1,
+      0
+    ],
+    [
+      "nist_ir8524",
+      "https://nvlpubs.nist.gov/nistpubs/ir/2024/NIST.IR.8524.pdf",
+      1,
+      0
+    ],
+    [
+      "ema_balversa",
+      "https://www.ema.europa.eu/en/documents/assessment-report/balversa-epar-public-assessment-report_en.pdf",
+      1,
+      0
+    ],
+    [
+      "nist_legacy_sem_calibration",
+      "https://nvlpubs.nist.gov/nistpubs/Legacy/IR/nbsir77-1248.pdf",
+      1,
+      0
+    ],
+    [
+      "historical_federal_register",
+      "https://www.govinfo.gov/content/pkg/FR-1950-04-06/pdf/FR-1950-04-06.pdf",
+      1,
+      0
+    ],
+    [
+      "reagan_udall_fda_access",
+      "https://reaganudall.org/sites/default/files/2024-07/Improving-Access-to-Publicly-Available-FDA-Information-Final.pdf",
+      1,
+      0
+    ],
+    [
+      "glass_durability_charts",
+      "https://www.spectrex.com/html_files2/pdf/ChemicalDurabilityOfGlassUsedInThePharmaceuticalIndustry1.pdf",
+      1,
+      0
+    ],
+    [
+      "fda_medwatch_3500a",
+      "https://www.fda.gov/media/69876/download",
+      1,
+      0
+    ]
+  ],
+  "long_document_stress": {
+    "pages": 3001,
+    "page_width_pt": 72,
+    "page_height_pt": 72,
+    "visual_evidence": {
+      "dpi": 150,
+      "workers": 4,
+      "batch_pages": 32,
+      "max_in_flight": 8,
+      "max_pixels": 500000,
+      "max_png_bytes": 1000000
+    }
+  },
+  "selective_validation": {
+    "min_native_chars": 100,
+    "max_native_json_bytes": 8000000
+  },
+  "region_validation_pages": 5,
+  "raster_validation": {
+    "max_pages": 3,
+    "settings": {
+      "workers": 1,
+      "max_raster_occurrences": 256,
+      "max_raster_pixels": 40000000,
+      "max_raster_bytes": 100000000
+    }
+  },
+  "vector_validation": {
+    "max_pages": 3,
+    "settings": {
+      "workers": 1,
+      "max_vector_paths": 20000,
+      "max_vector_items": 100000,
+      "max_vector_json_bytes": 8000000
+    }
+  },
+  "figure_caption_anchors": {
+    "ema_balversa": [
+      "18",
+      "19",
+      "20"
+    ]
+  },
+  "enrichment_validation": {
+    "max_caption_pages": 2,
+    "settings": {
+      "section": "AZURE_OPENAI_CHAT",
+      "model": "example-vision-model",
+      "deployment": "example-vision-deployment",
+      "deployment_revision": "example-immutable-model-revision",
+      "prompt": "Describe visible scientific or regulatory content qualitatively. Preserve uncertainty.",
+      "image_detail": "high",
+      "token_parameter": "max_tokens",
+      "temperature": 0,
+      "max_output_tokens": 1200,
+      "max_image_bytes": 100000000,
+      "max_context_bytes": 100000,
+      "max_response_bytes": 50000,
+      "max_observations": 32,
+      "timeout_seconds": 120,
+      "authorized_provider": false
+    },
+    "execution": {
+      "workers": 2,
+      "read_workers": 2,
+      "max_pages": 3,
+      "rpm": 60000,
+      "tpm": 10000000,
+      "estimated_input_tokens_per_page": 8000,
+      "max_request_bytes": 150000000,
+      "quota_wait_seconds": 120,
+      "max_attempts": 3,
+      "retry_base_seconds": 1,
+      "max_retry_delay_seconds": 60,
+      "authorized_result_storage": false
+    }
+  },
+  "native_validation_sources": [
+    "reagan_udall_fda_access",
+    "glass_durability_charts",
+    "fda_medwatch_3500a"
+  ]
+}
