@@ -62,18 +62,22 @@ jobs:
           gcp_key_path=not-used.json
           EOF
       - run: python -m unittest discover -s tests -p test_open_grid_recovery.py -v
-      - name: Acquire the pinned public USITC original
+      - name: Acquire the pinned public USITC PDF and Revision 2 reference
         working-directory: ${{ runner.temp }}
         run: |
           curl --fail --location --retry 2 --connect-timeout 20 --max-time 360 --max-filesize 140000000 \
             https://learning.usitc.gov/hts-docs/documents/finalCopy.pdf --output public-hts.pdf
+          curl --fail --location --retry 2 --connect-timeout 20 --max-time 120 --max-filesize 6000000 \
+            https://www.usitc.gov/sites/default/files/tata/hts/hts_2026_revision_2_csv.csv --output public-hts-rev2.csv
           sha256sum --check <<'EOF'
           e52e377f0234c60d5c98947129040a0706958438377868abddeff876cbf56068  public-hts.pdf
+          f6e95f2d39ef07c84fd3f5ffe987b1bab9b271d50638655eb6083d09355336ed  public-hts-rev2.csv
           EOF
       - name: Verify strict native rows for all 4496 physical pages
         run: |
           python tests/full_open_grid_benchmark.py --pdf "$RUNNER_TEMP/public-hts.pdf" \
-            --workers 4 --native-rows --report hts_native_rows.json
+            --workers 4 --native-rows --reference-csv "$RUNNER_TEMP/public-hts-rev2.csv" \
+            --report hts_native_rows.json
           python - <<'PY'
           import json
           from pathlib import Path
@@ -85,6 +89,8 @@ jobs:
           assert result['nonspace_characters'] == 3584452
           assert 0 < result['bodies_with_native_spacing'] <= 2084
           assert result['logical_rows_verified'] is False
+          audit = result['hts_reference_audit']
+          assert audit['checked_records'] == 13 and audit['matched_fields'] == 78
           PY
       - name: Publish and replay the same 4496-page source with bounded batches
         run: |
