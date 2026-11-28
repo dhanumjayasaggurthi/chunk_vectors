@@ -6,6 +6,10 @@ The first live v3 pilot passed all six documents/98 pages/304 vectors, with 96 M
 
 **Always start from the [living project state and handoff](PIPELINE_PROJECT_STATE.md).** That file records verified original-PDF evidence, code changes, passing CI, 10-day capacity targets, outstanding OCR/streaming work and the next safe action.
 
+## Visual quality and text-only qualification
+
+See [visual quality and persistence audit](VISUAL_QUALITY_AND_TEXT_ONLY_AUDIT.md). No-text images, diagrams, micrographs and plots need meaningful textual descriptions in searchable chunks with source links and uncertainty. V3 constrained recovery is a bounded fallback, not a complete semantic standard. Native/OCR labels and units, model observations, and independently digitized plot values must be distinguished. Qualify detection recall and retrieval relevance before selective rendering/disposal. Conditional DB vector preview PNGs and captured raster/vector assets must be included in the text-only lifecycle.
+
 ## Scope and compatibility
 
 Implemented as **explicit opt-in settings inside the existing Python pipeline**.

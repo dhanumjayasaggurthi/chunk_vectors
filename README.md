@@ -179,6 +179,48 @@ echo "$RUN_DIR"
 tail -f "$RUN_DIR/console.log"
 ~~~
 
+Monitor the above timed background run (restore RUN_DIR to the actual printed path after reconnecting):
+
+~~~bash
+ps -p "$(cat "$RUN_DIR/pid")" -o pid,etime,stat,cmd
+tail -f "$RUN_DIR/console.log"
+watch -n 60 '.venv/bin/python production.py status'
+watch -n 10 'free -h; df -h evidence; uptime'
+grep -E 'admission_limit|CPU_PRESSURE|MEMORY_PRESSURE|RECOVERED|HEALTHY' "$RUN_DIR/console.log"
+cat "$RUN_DIR/result.txt"   # after normal command return
+~~~
+
+For an existing simple /usr/bin/time -p background run launched previously
+with logs/full_pilot_run.log and logs/full_pilot_run.pid, do NOT launch another job:
+
+~~~bash
+ps -p "$(cat logs/full_pilot_run.pid)" -o pid,etime,stat,cmd
+tail -n 100 logs/full_pilot_run.log
+grep -E '^(real|user|sys) ' logs/full_pilot_run.log
+python production.py status
+df -h evidence
+free -h
+~~~
+
+The real value is command wall seconds, not native-only elapsed_seconds.
+The older wrapper does not persist exit status. Check final retrieval and
+embedding coverage, errors and process outcome. Status is cumulative:
+record pre-run baseline; new native/materialized/fully embedded docs per
+minute = (current respective count - baseline) * 60 / elapsed seconds.
+New pages/sec = (current native pages - baseline pages) / elapsed seconds.
+Fully embedded documents require per-document vector reconciliation; chunk
+counts alone are insufficient. ETA is only a projection. Avoid frequent
+full payload scans on large tables. Ctrl-C on tail/watch stops the viewer.
+
+Adaptive Linux profile: CPU >=92% reduces native admission, memory <=5 GiB
+available or cgroup >=20 GiB pauses; recovery needs CPU <=80%, available RAM
+>=8 GiB and detected cgroup <=17 GiB for 30 seconds. Polls during admission
+every 5 seconds; 600 seconds continuous pause aborts further admissions.
+Active work drains; this is not hard memory enforcement. Disk floor is
+preflight-only; no automatic OOM/reboot restart. Check actual profile.
+Do not remove evidence during active work. If staging is unapproved or
+storage approaches floor, arrange controlled stop with operator.
+
 Use only one active coordinator per server and never change its configuration while running. A missing result.txt is not proof of completion. Use status for stored counts, and the final embedding coverage result for vector completion. See the [server runbook](docs/SERVER_PILOT_RUNBOOK.md) for monitoring and shard gates. See [production reference](docs/PRODUCTION_REFERENCE.md)
 for OS resource protection and advanced diagnostics.
 
@@ -317,6 +359,17 @@ python -u production.py embed --apply --rescan-source
 before running; `embedding_max_chunks=0` means the full configured target.
 Do not change shared quota settings while workers run. Reuse existing vectors.
 See [embedding operations](docs/FAST_EMBEDDINGS.md) for legacy/distributed details.
+
+## Visual retrieval quality and evidence audit
+
+Images without readable text, micrographs, diagrams and charts still require
+useful source-linked textual descriptions. V3 constrained recovery is not
+a complete visual quality guarantee. Native/OCR numeric labels must remain
+distinct from unverified interpretation; do not invent plot measurements.
+See [visual quality and read-only persistence audit](docs/VISUAL_QUALITY_AND_TEXT_ONLY_AUDIT.md)
+for the bounded pilot audit, source-quality gates and lifecycle work.
+No cleanup command exists yet; database JSONB may conditionally contain
+vector preview PNGs, so deleting filesystem evidence alone is insufficient.
 
 ## What is configurable?
 
