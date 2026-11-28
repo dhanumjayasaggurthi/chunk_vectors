@@ -494,9 +494,16 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                                 parts.append({"page":outcome["source_page"],"kind":"visual_model",
                                     "text":"\n".join(
                                         ["[MODEL OBSERVATION — UNVERIFIED] "+item["observation"] for item in result["result"]["observations"]]
-                                        +["[MODEL LIMITATION] "+item for item in result["result"]["limitations"]]),
+                                        +["[MODEL LIMITATION] "+item for item in result["result"]["limitations"]]
+                                        +(["[VISUAL RECOVERY LIMITATION] "+result["recovery_note"]]
+                                          if result.get("corrective_response") else [])),
                                     "provenance":{"request_id":result["request_id"],"capture_id":row["capture_id"],
-                                                  "source_facts_verified":False}})
+                                                  "source_facts_verified":False,
+                                                  "corrective_response":result.get("corrective_response",False),
+                                                  "visual_contract":result.get("identity",{}).get("contract"),
+                                                  "observation_refs":[{"target":item.get("target"),
+                                                                       "uncertainty":item.get("uncertainty")}
+                                                                      for item in result["result"]["observations"]]}})
                         if observed_pages!=set(visual_pages):
                             raise RuntimeError("Visual page coverage incomplete")
                         log.info("finish doc=%s visual_pages_completed=%s",doc[:12],len(observed_pages))

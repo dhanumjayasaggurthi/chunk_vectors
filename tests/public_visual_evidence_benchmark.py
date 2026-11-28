@@ -323,6 +323,31 @@ def check(spec, config):
                 assert all(x["status"]=="SKIPPED_VERIFIED" for x in enrichment_replay), enrichment_replay
                 assert api.call_count==len(selected)
                 cached_enrichment_pages=len(enrichment_replay)
+        chart_recovery_pages=0
+        if name=="glass_durability_charts" and enrichment_config and enrichment_config.get("execution"):
+            # Actual chart PDF fixture; mock provider outputs, not live AI accuracy.
+            from visual_enrichment import RECOVERY_NOTE
+            chart_pages=[(cid,i) for i in (5,9) if first<=i<=last]
+            chart_config={**mock_config,"prompt":mock_config["prompt"]+" Chart recovery test."}
+            def chart_response(messages,schema,**kwargs):
+                props=schema["properties"]["observations"]["items"]["properties"]
+                corrective="enum" in props["observation"]
+                target=props["target"]["enum"][1] if corrective and len(props["target"]["enum"])>1 else "page"
+                return json.dumps({"observations":[{"target":target,
+                    "observation":"A line chart is visible" if corrective else "Figure 3 has a numeric label",
+                    "caption_quote":"","uncertainty":"limited"}],"limitations":[]}),{}
+            with patch("azure_client.call_visual_structured",side_effect=chart_response) as api:
+                done=list(run_pages(retained,chart_pages,visual_settings=config["visual_evidence"],
+                    config=chart_config,execution=run_config,include_result=True))
+                assert len(done)==len(chart_pages)
+                assert all(x["status"]=="COMPLETED_UNVERIFIED" and x["provider_attempts"]==2
+                    and x["verified_result"]["recovery_note"]==RECOVERY_NOTE for x in done),done
+                assert api.call_count==2*len(chart_pages)
+                replay_chart=list(run_pages(retained,chart_pages,visual_settings=config["visual_evidence"],
+                    config=chart_config,execution=run_config))
+                assert all(x["status"]=="SKIPPED_VERIFIED" for x in replay_chart)
+                assert api.call_count==2*len(chart_pages)
+                chart_recovery_pages=len(done)
         for vid,i,status,digest,path_count in vector_refs:
             inv,meta=read_vectors(root/"vectors",vid,i,settings=vector_settings)
             assert inv["status"]==status and not meta["original_required"]
@@ -403,6 +428,7 @@ def check(spec, config):
             "figure_anchor_ids":sorted(figure_ids),
             "mock_enrichment_contract_pages":enrichment_pages,
             "mock_enrichment_cache_replay_pages":cached_enrichment_pages,
+            "mock_chart_recovery_pages":chart_recovery_pages,
         }
 
 

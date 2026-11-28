@@ -191,17 +191,19 @@ class VisualEnrichmentTests(unittest.TestCase):
         import fitz
         import threading
         from visual_enrichment import (_execute_page,_cache_path,CORRECTION,
-                                       VisualObservationContractError)
+                                       RECOVERY_NOTE,VisualObservationContractError)
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             source=root/"source.pdf"
             with fitz.open() as doc:
-                for _ in range(6):
-                    doc.new_page(width=100,height=100).draw_rect((10,10,80,80))
+                for _ in range(8):
+                    p=doc.new_page(width=300,height=300)
+                    p.draw_line((40,40),(150,150))
+                    p.insert_text((30,180),"Figure 3: pH at 250 C and 350 C")
                 doc.save(source)
-            vs={"dpi":150}
+            vs={"dpi":150,"capture_figures":True}
             retained=root/"retained"
-            cap=capture(source,retained,1,6,settings=vs,policy_id="test",
+            cap=capture(source,retained,1,8,settings=vs,policy_id="test",
                         authorized_page_derivatives=True)
             cfg={**configuration(),"authorized_provider":True}
             quota=Mock()
@@ -227,6 +229,7 @@ class VisualEnrichmentTests(unittest.TestCase):
                     result=execute(pkt)
                     self.assertEqual(result["provider_attempts"],2)
                     self.assertTrue(result["verified_result"]["corrective_response"])
+                    self.assertEqual(result["verified_result"]["recovery_note"],RECOVERY_NOTE)
                     self.assertFalse(result["verified_result"]["source_facts_verified"])
                     self.assertEqual(result["verified_result"]["result"],json.loads(good))
                     self.assertEqual(api.call_count,2)
@@ -236,6 +239,13 @@ class VisualEnrichmentTests(unittest.TestCase):
                     self.assertIn(CORRECTION,second[0]["content"])
                     self.assertEqual(first[1],second[1])
                     self.assertNotIn("Dose 30 mg",second[0]["content"])
+                    schema=api.call_args_list[1].args[1]
+                    props=schema["properties"]["observations"]["items"]["properties"]
+                    self.assertIn("A rectangle is visible",props["observation"]["enum"])
+                    self.assertEqual(props["caption_quote"]["enum"],[""])
+                    self.assertEqual(props["target"]["enum"],
+                                     ["page",*[c["id"] for c in pkt["context"]["candidates"]]])
+                    self.assertTrue(any("250 C" in c["caption"] for c in pkt["context"]["candidates"]))
                     self.assertEqual(execute(pkt)["provider_attempts"],0)
                     self.assertEqual(api.call_count,2)
             # Persistent semantic rejection: stop after correction, even if
@@ -254,6 +264,15 @@ class VisualEnrichmentTests(unittest.TestCase):
                     execute(pkt)
                 self.assertEqual(api.call_count,1)
                 self.assertFalse(_cache_path(retained,pkt).exists())
+            for n,bad in ((7,raw({"observation":"Unsupported qualitative prose"})),
+                          (8,json.dumps({"observations":[],"limitations":["The visual requires further source review"]}))):
+                pkt=packet(n)
+                with patch("azure_client.call_visual_structured",
+                           side_effect=[(bads[0],{}),(bad,{})]) as api:
+                    with self.assertRaisesRegex(ValueError,"Constrained visual recovery contract rejected"):
+                        execute(pkt)
+                    self.assertEqual(api.call_count,2)
+                    self.assertFalse(_cache_path(retained,pkt).exists())
 
     def test_safe_failure_codes_do_not_expose_provider_content(self):
         import requests
