@@ -285,6 +285,37 @@ class SemanticChunkV2Tests(unittest.TestCase):
             self.assertEqual(source[0],["Subject ID","Adverse Events"])
             self.assertEqual(len(source),8)
 
+    def test_table_text_and_boundaries_independent_of_document_identity(self):
+        import hashlib
+        import tiktoken
+        from configurable_chunking import chunk_with_profile
+        encoder=tiktoken.get_encoding("cl100k_base")
+        # Use different path-derived IDs with different hash token lengths.
+        identities=[hashlib.sha256(("intake/"+str(i)+"/test.pdf").encode()).hexdigest()
+                    for i in range(8)]
+        expected=None
+        all_table_ids=set()
+        for i,identity in enumerate(identities):
+            doc=document_with_continued_table()
+            doc.doc_id=identity
+            doc.file_path=f"/intake/{i}/test.pdf"
+            chunks=chunk_with_profile(doc,config(max_tokens=94))
+            observed=[(x.chunk_text,x.page_start,x.page_end,x.section_title)
+                      for x in chunks]
+            if expected is None:
+                expected=observed
+            self.assertEqual(observed,expected)
+            ids={x.chunk_metadata["table_id"] for x in chunks
+                 if "table_id" in x.chunk_metadata}
+            self.assertEqual(len(ids),1)
+            self.assertTrue(ids.isdisjoint(all_table_ids))
+            all_table_ids.update(ids)
+            for chunk in chunks:
+                self.assertLessEqual(len(encoder.encode(chunk.chunk_text)),94)
+                for table_id in ids:
+                    self.assertNotIn(table_id[:16],chunk.chunk_text)
+        self.assertEqual(len(all_table_ids),len(identities))
+
     def test_mismatch_or_gap_never_merges_unrelated_tables(self):
         from configurable_chunking import chunk_with_profile
         for doc in [

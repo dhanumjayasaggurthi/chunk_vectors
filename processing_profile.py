@@ -10,7 +10,7 @@ from pathlib import Path
 _ALLOWED_METHODS = {"label", "regex", "constant"}
 # Internal semantic algorithm revision, not a tunable operational setting.
 # Bump whenever chunk boundaries/IDs/continuity or materialized semantics change.
-_SEMANTIC_V2_IMPLEMENTATION_VERSION = 3
+_SEMANTIC_V2_IMPLEMENTATION_VERSION = 4
 _DEFAULTS = {
     "version": 1,
     "chunking": {

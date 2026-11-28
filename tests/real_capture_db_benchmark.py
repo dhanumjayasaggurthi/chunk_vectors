@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import configparser
+import hashlib
 from collections import Counter
 import json
 import logging
@@ -256,6 +257,62 @@ def materialize(d,records,workers):
         return list(pool.map(process,records))
 
 
+def verify_relocated_projection(d, records):
+    """Compare all actual published text/boundaries to an alternate path identity.
+
+    Reproject existing native source rows in memory one document at a time.
+    No native re-extraction, duplicate publication, vector writes or provider
+    calls. Document-specific IDs and provenance metadata deliberately differ.
+    """
+    from db import get_conn
+    from extracted_source import load_extracted_document
+    from reuse_materialize import prepare_document, identifiers
+    profile=d["retrieval"]
+    names=identifiers(profile)
+    def add(digest, row):
+        digest.update(json.dumps(list(row),sort_keys=True,ensure_ascii=False,
+                                 separators=(",",":"),allow_nan=False).encode("utf-8"))
+        digest.update(b"\n")
+    results=[]
+    for record in records:
+        source=record["source_sha256"]
+        doc=record["doc_id"]
+        expected=hashlib.sha256()
+        count=0
+        conn=get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT chunk_index,source_chunk_text,chunk_text,page_start,page_end,"
+                            f"section_title,headers,content_types FROM {names['table']} "
+                            "WHERE doc_id=%s ORDER BY chunk_index",(doc,))
+                while True:
+                    batch=cur.fetchmany(256)
+                    if not batch:
+                        break
+                    for row in batch:
+                        if row[0]!=count:
+                            raise ValueError("Published chunk sequence mismatch")
+                        add(expected,row)
+                        count+=1
+        finally:
+            conn.rollback()
+            conn.close()
+        struct,_=load_extracted_document(profile,doc)
+        struct.file_path="/alternate-intake/"+struct.file_name
+        struct.doc_id=hashlib.sha256(("relocated:"+doc).encode()).hexdigest()
+        rows=prepare_document(struct,profile)
+        actual=hashlib.sha256()
+        for row in rows:
+            add(actual,(row[3],row[6],row[7],row[8],row[9],row[10],
+                        json.loads(row[11]),json.loads(row[14])))
+        if not count or count!=len(rows) or expected.digest()!=actual.digest():
+            raise ValueError("Relocated projection differs for source "+source)
+        results.append({"source_sha256":source,"chunks":count,
+                        "text_boundary_embedding_input_sha256":actual.hexdigest()})
+        del rows,struct
+    return results
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report",required=True)
@@ -335,6 +392,10 @@ def main():
         if len(results)!=len(records) or any(x["status"]!="SUCCESS" for x in results):
             raise RuntimeError("Native-only materialization failed")
         report["final_snapshot"]=snapshot(d,records,materialized=True)
+        save()
+        tick=time.monotonic()
+        report["relocated_projection"]=verify_relocated_projection(d,records)
+        report["relocated_projection_wall_seconds"]=round(time.monotonic()-tick,3)
         save()
         # Separate warm replay on the same immutable source/evidence and native
         # destination; never count this duration as first-pass throughput.

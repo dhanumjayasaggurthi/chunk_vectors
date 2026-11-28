@@ -488,8 +488,10 @@ def chunk_semantic_v2(struct,policy):
         if first.table_id:
             info=first.table_info or {}
             prefix.append(
-                "Source table "+first.table_id[:16]+
-                " | pages "+str(info.get("page_start",first.page_start))+
+                # Document IDs can depend on the intake path. A hash in
+                # token-budgeted text changes BPE length when the same source
+                # moves. Preserve the full unique ID in citation metadata only.
+                "Source table | pages "+str(info.get("page_start",first.page_start))+
                 "-"+str(info.get("page_end",first.page_end))
             )
             if first.table_header:
