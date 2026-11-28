@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import resource
 import subprocess
 import sys
 import tempfile
@@ -23,6 +22,19 @@ sys.path.insert(0,str(REPO))
 
 SOURCE_SHA256="e52e377f0234c60d5c98947129040a0706958438377868abddeff876cbf56068"
 DOCUMENT_ID=hashlib.sha256(("public-usitc-finalcopy-v1\x00"+SOURCE_SHA256).encode()).hexdigest()
+
+
+def peak_process_rss_kib():
+    """Return Linux peak RSS for the current executable image."""
+    # getrusage(RUSAGE_SELF).ru_maxrss can retain the pre-exec RSS of the
+    # staging process across subprocess launch. VmHWM starts fresh at exec.
+    with Path("/proc/self/status").open(encoding="ascii") as status:
+        for line in status:
+            if line.startswith("VmHWM:"):
+                _, value, unit = line.split()
+                if unit == "kB":
+                    return int(value)
+    raise RuntimeError("Missing Linux VmHWM RSS measurement")
 
 
 class _DigestWriter:
@@ -114,7 +126,7 @@ def child(profile_path,mode,source_batch_rows,write_batch_rows):
         source_batch_rows=source_batch_rows,write_batch_rows=write_batch_rows,
     )
     report={"mode":mode,"result":result,"wall_seconds":round(time.monotonic()-started,3),
-            "peak_python_rss_kib":resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            "peak_python_rss_kib":peak_process_rss_kib(),
             "source_batch_rows":source_batch_rows,"write_batch_rows":write_batch_rows,
             "output":output_snapshot(profile,DOCUMENT_ID)}
     expected="SUCCESS" if mode=="cold" else "SKIPPED"
@@ -180,6 +192,7 @@ def main():
         native_seconds=time.monotonic()-started
         if staged["status"]!="SUCCESS" or staged["pages"]!=4496:
             raise RuntimeError("Giant native stage incomplete: "+repr(staged))
+        native_rss=peak_process_rss_kib()
         cold=run_child(profile_path,"cold",args.source_batch_rows,args.write_batch_rows)
         replay=run_child(profile_path,"replay",args.source_batch_rows,args.write_batch_rows)
         native=native_names(capture)
@@ -222,6 +235,8 @@ def main():
                 "pages":pages,"native_errors":errors,"physical_body_pages":physical_body_pages,
                 "native_stage_seconds":round(native_seconds,3),
                 "native_stage_pages_per_minute":round(4496*60/native_seconds,1),
+                "rss_measurement":"linux_proc_self_status_vmhwm",
+                "native_stage_peak_python_rss_kib":native_rss,
                 "provider_calls":False,"retained_evidence":False,"vectors":False,
                 "logical_tariff_rows_verified":False,"acceptance":checks,
                 "cold":cold,"replay":replay}

@@ -18,6 +18,7 @@ import re
 import sys
 import time
 from datetime import date, datetime
+from itertools import chain
 
 LOG = logging.getLogger("epod.reuse_materialize")
 
@@ -719,8 +720,13 @@ def _published_source_hash(doc_id, profile, names):
         conn.close()
 
 
-def _current(doc_id, source_hash, profile, names):
-    return _published_source_hash(doc_id, profile, names) == source_hash
+def _native_version(cur, doc_id, profile, *, lock=False):
+    from page_stage import names as stage_names
+    table = stage_names(profile)["docs"]
+    lock_clause = " FOR SHARE" if lock else ""
+    cur.execute(f"""SELECT source_hash,extraction_hash,completed_at FROM {table}
+                    WHERE doc_id=%s{lock_clause}""", (doc_id,))
+    return cur.fetchone()
 
 
 def _validate_publication_row(row, doc_id, profile, index, *, pdf_identity):
@@ -751,7 +757,7 @@ def _validate_publication_row(row, doc_id, profile, index, *, pdf_identity):
 
 
 def save_document_stream(doc_id, source_hash, profile, names, rows, *,
-                         batch_size=200, pdf_identity=False):
+                         batch_size=200, pdf_identity=False, native_version=None):
     """Atomically replace one document while retaining only one row batch.
 
     PostgreSQL readers continue seeing the prior committed document until the
@@ -783,8 +789,8 @@ def save_document_stream(doc_id, source_hash, profile, names, rows, *,
             # an uncommitted delete is invisible to concurrent readers and is
             # restored automatically if a later row or batch fails.
             cur.execute(f"DELETE FROM {names['table']} WHERE doc_id=%s", (doc_id,))
-            batch = [first]
-            for row in iterator:
+            batch = []
+            for row in chain((first,), iterator):
                 _validate_publication_row(
                     row, doc_id, profile, count + len(batch), pdf_identity=pdf_identity,
                 )
@@ -796,6 +802,12 @@ def save_document_stream(doc_id, source_hash, profile, names, rows, *,
             if batch:
                 execute_values(cur, insert_sql, batch, template=template, page_size=batch_size)
                 count += len(batch)
+            # Native publication updates this marker atomically with its page
+            # swap. A shared row lock keeps the selected version current
+            # through our commit without blocking native parsing or staging.
+            if native_version is not None and _native_version(
+                    cur, doc_id, profile, lock=True) != native_version:
+                raise ValueError("Native version changed during materialization")
             cur.execute(f"""INSERT INTO {names['status']} (
                     doc_id,profile_hash,source_hash,chunk_count,updated_at)
                     VALUES (%s,%s,%s,%s,now())
@@ -911,6 +923,7 @@ def _reject_translation_loss(doc_id,names):
 
 def run_one(doc_id, profile, names, *, enrichment=None, expected_source_hash=None,
             translator=None, source_batch_rows=128, write_batch_rows=200):
+    from db import get_conn
     from profile_store import profile_document_lock
     from extracted_source import fingerprint_extracted_document, load_extracted_document
     if type(source_batch_rows) is not int or not 1 <= source_batch_rows <= 4096:
@@ -935,26 +948,23 @@ def run_one(doc_id, profile, names, *, enrichment=None, expected_source_hash=Non
         with profile_document_lock(published_doc_id, profile["_fingerprint"]) as acquired:
             if not acquired:
                 return {"doc_id":published_doc_id,"status":"BUSY"}
-            # A native version change invalidates any selected OCR/model output.
-            def check_version():
-                if expected_source_hash is None:
-                    return
-                from page_stage import names as stage_names
-                from db import get_conn
+            def read_native_version():
                 conn=get_conn()
                 try:
                     with conn.cursor() as cur:
-                        cur.execute(f"SELECT source_hash FROM {stage_names(profile)['docs']} WHERE doc_id=%s",(doc_id,))
-                        if cur.fetchone()!=(expected_source_hash,):
-                            raise ValueError("Native version changed during enrichment")
+                        return _native_version(cur, published_doc_id, profile)
                 finally:
                     conn.rollback()
                     conn.close()
-            check_version()
+
+            native_version = None
+            if expected_source_hash is not None:
+                native_version = read_native_version()
+                if native_version is None or native_version[0] != expected_source_hash:
+                    raise ValueError("Published native version does not match the pinned source")
             if _english_contract(profile) and translator is None:
                 raise PermissionError("English retrieval requires translation")
             if enrichment is None:
-                from db import get_conn
                 conn=get_conn()
                 try:
                     with conn.cursor() as cur:
@@ -983,7 +993,8 @@ def run_one(doc_id, profile, names, *, enrichment=None, expected_source_hash=Non
                     # Recheck the capture selector before accepting the replay
                     # so a concurrently published native version is not
                     # reported as current against the caller's pinned source.
-                    check_version()
+                    if native_version is not None and read_native_version() != native_version:
+                        raise ValueError("Native version changed during materialization")
                     return {"doc_id":published_doc_id,"status":"SKIPPED"}
 
             struct, base_digest = load_extracted_document(
@@ -992,15 +1003,13 @@ def run_one(doc_id, profile, names, *, enrichment=None, expected_source_hash=Non
             if probed_digest is not None and probed_digest != base_digest:
                 raise ValueError("Extracted source changed during materialization")
             digest = effective_digest(base_digest)
-            if _current(published_doc_id,digest,profile,names):
-                return {"doc_id":published_doc_id,"status":"SKIPPED"}
 
             if enrichment is None and translator is None:
                 rows = iter_prepared_document_rows(struct, profile, release_source=True)
-                check_version()
                 count = save_document_stream(
                     published_doc_id, digest, profile, names, rows,
                     batch_size=write_batch_rows, pdf_identity=True,
+                    native_version=native_version,
                 )
                 return {"doc_id":published_doc_id,"status":"SUCCESS","chunks":count}
             try:
@@ -1013,9 +1022,11 @@ def run_one(doc_id, profile, names, *, enrichment=None, expected_source_hash=Non
                 rows=append_enrichment_rows(struct,profile,rows,enrichment)
             if translator is not None:
                 rows=translator.apply_rows(rows,profile,getattr(struct,"source_metadata",{}))
-            check_version()
-            save_document(published_doc_id,digest,profile,names,rows)
-            return {"doc_id":published_doc_id,"status":"SUCCESS","chunks":len(rows)}
+            count = save_document_stream(
+                published_doc_id, digest, profile, names, rows,
+                batch_size=write_batch_rows, native_version=native_version,
+            )
+            return {"doc_id":published_doc_id,"status":"SUCCESS","chunks":count}
     except Exception as exc:
         # A broken document cannot poison other documents. A DB outage must
         # still surface: never claim durable error logging when it failed.

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import closing
 
 from processing_profile import load_profile
 from reuse_materialize import compose_embedding_text, identifiers
@@ -249,7 +250,7 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS intake_ci")
                 for table in ("out_chunks_v1_failures","out_chunks_v1_status",
-                              "out_chunks_v1","source_chunks"):
+                              "out_chunks_v1","source_chunks_docs","source_chunks"):
                     cur.execute('DROP TABLE IF EXISTS intake_ci."' + table + '" CASCADE')
                 cur.execute("""
                     CREATE TABLE intake_ci.source_chunks(
@@ -259,6 +260,9 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
                       file_name text,
                       PRIMARY KEY(doc_id,chunk_index))
                 """)
+                cur.execute("""CREATE TABLE intake_ci.source_chunks_docs(
+                    doc_id text PRIMARY KEY, source_hash text NOT NULL,
+                    extraction_hash text NOT NULL, completed_at timestamptz NOT NULL DEFAULT now())""")
                 text="Protocol Number: ABC-123\n1 STUDY DESIGN\n" + "Study information. "*80
                 cur.execute("""
                     INSERT INTO intake_ci.source_chunks VALUES
@@ -290,7 +294,7 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
             with conn:
                 with conn.cursor() as cur:
                     for name in ("out_chunks_v1_failures","out_chunks_v1_status",
-                                 "out_chunks_v1","source_chunks"):
+                                 "out_chunks_v1","source_chunks_docs","source_chunks"):
                         cur.execute('DROP TABLE IF EXISTS intake_ci."'+name+'" CASCADE')
             conn.close()
         except Exception:
@@ -342,29 +346,71 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
                 cur.execute("""UPDATE intake_ci.source_chunks
                     SET file_name='first.pdf' WHERE doc_id='doc_bad'""")
         conn.close()
-        # Streaming publication remains an atomic document replacement even
-        # when a later batch fails after the DELETE has executed.
+        # Verify rollback and reader visibility after a batch actually inserts.
         from extracted_source import load_extracted_document
-        from reuse_materialize import prepare_document,save_document_stream
+        from psycopg2.extras import execute_values
+        from reuse_materialize import iter_prepared_document_rows, prepare_document, save_document_stream
         struct,source_hash=load_extracted_document(p,"doc_ok",batch_size=1)
         prepared=prepare_document(struct,p)
-        conn=self.connect()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT chunk_id,chunk_text FROM intake_ci.out_chunks_v1 WHERE doc_id='doc_ok' ORDER BY chunk_index")
-                before=cur.fetchall()
-        conn.close()
+        names = verify_output(p)
+
+        def published():
+            with closing(self.connect()) as conn, conn.cursor() as cur:
+                cur.execute(f"SELECT chunk_id,chunk_text FROM {names['table']} WHERE doc_id='doc_ok' ORDER BY chunk_index")
+                output = cur.fetchall()
+                cur.execute(f"SELECT source_hash,chunk_count FROM {names['status']} WHERE doc_id='doc_ok'")
+                return output, cur.fetchone()
+
+        before = published()
+        inserted = []
+
+        def observed_insert(cur, sql, batch, **kwargs):
+            execute_values(cur, sql, batch, **kwargs)
+            inserted.append(len(batch))
+
         def interrupted():
-            yield prepared[0]
+            yield prepared[0][:7] + ("uncommitted replacement",) + prepared[0][8:]
+            self.assertEqual(inserted, [1])
+            self.assertEqual(published(), before)
             raise RuntimeError("injected publication failure")
-        with self.assertRaisesRegex(RuntimeError,"injected publication failure"):
-            save_document_stream("doc_ok",source_hash,p,verify_output(p),interrupted(),batch_size=1)
-        conn=self.connect()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT chunk_id,chunk_text FROM intake_ci.out_chunks_v1 WHERE doc_id='doc_ok' ORDER BY chunk_index")
-                self.assertEqual(cur.fetchall(),before)
-        conn.close()
+
+        with patch("psycopg2.extras.execute_values", side_effect=observed_insert):
+            with self.assertRaisesRegex(RuntimeError,"injected publication failure"):
+                save_document_stream("doc_ok",source_hash,p,names,interrupted(),batch_size=1)
+        self.assertEqual(published(), before)
+
+        # Replace the native revision during a pinned materialization while
+        # keeping the original PDF hash unchanged. The prior output survives.
+        pinned = "a" * 64
+        captured_profile = {**p, "extraction": {
+            "enabled": True, "schema": "intake_ci", "table": "source_chunks",
+        }}
+        with closing(self.connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO intake_ci.source_chunks_docs VALUES ('doc_ok',%s,%s,now())",
+                        (pinned,"b" * 64))
+            cur.execute("SELECT chunk_text FROM intake_ci.source_chunks WHERE doc_id='doc_ok' AND chunk_index=1")
+            original = cur.fetchone()[0]
+            cur.execute("UPDATE intake_ci.source_chunks SET chunk_text=%s WHERE doc_id='doc_ok' AND chunk_index=1",
+                        (original + " An updated paragraph.",))
+
+        def republish_during_write(*args, **kwargs):
+            rows = iter_prepared_document_rows(*args, **kwargs)
+            yield next(rows)
+            with closing(self.connect()) as conn, conn, conn.cursor() as cur:
+                cur.execute("UPDATE intake_ci.source_chunks_docs SET extraction_hash=%s WHERE doc_id='doc_ok'",
+                            ("c" * 64,))
+            yield from rows
+
+        with patch("reuse_materialize.iter_prepared_document_rows", side_effect=republish_during_write):
+            failed = run_one("doc_ok",captured_profile,names,expected_source_hash=pinned,
+                             source_batch_rows=1,write_batch_rows=1)
+        self.assertEqual(failed["status"], "FAILED")
+        self.assertEqual(published(), before)
+        with closing(self.connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(f"SELECT error_message FROM {names['failures']} WHERE doc_id='doc_ok'")
+            self.assertIn("Native version changed during materialization", cur.fetchone()[0])
+            cur.execute("UPDATE intake_ci.source_chunks SET chunk_text=%s WHERE doc_id='doc_ok' AND chunk_index=1",
+                        (original,))
         result2=run(p,max_docs=10,workers=2)
         self.assertEqual(result2["SUCCESS"],1)
         self.assertEqual(result2["SKIPPED"],1)

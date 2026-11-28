@@ -1,10 +1,30 @@
 """Source-aligned physical-line body recovery, not logical row inference."""
 import copy
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from open_grid_recovery import recover_open_grid,validate_physical_body
+
+
+class BenchmarkMemoryTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux", "Linux VmHWM measurement")
+    def test_child_peak_rss_excludes_parent_allocation(self):
+        from public_giant_materialization_benchmark import peak_process_rss_kib
+
+        parent_buffer = bytearray(64 * 1024 * 1024)
+        # Touch each page so the allocation contributes to resident memory.
+        parent_buffer[::4096] = b"\x01" * (len(parent_buffer) // 4096)
+        parent_peak = peak_process_rss_kib()
+        child = subprocess.run(
+            [sys.executable, "-c", "from public_giant_materialization_benchmark "
+             "import peak_process_rss_kib; print(peak_process_rss_kib())"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, check=True, timeout=15,
+        )
+        self.assertGreater(parent_peak - int(child.stdout), 32 * 1024)
 
 
 class OpenGridBodyTests(unittest.TestCase):

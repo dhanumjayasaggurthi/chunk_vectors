@@ -116,7 +116,9 @@ Publication validates dense chunk order and deterministic identity while
 inserting one configured batch at a time. Delete, inserts, and status-marker
 update remain one transaction: concurrent readers retain the prior committed
 document until commit, and any generator, validation, or SQL failure restores
-the prior document automatically. The native-only semantic-v2 path releases
+the prior document automatically. Caller-pinned materialization checks the
+native publication marker under a shared row lock before committing. A newer
+native revision causes the replacement to roll back. The native-only semantic-v2 path releases
 reconstructed page payloads after their derived units have been consumed and
 releases chunk objects after their rows have entered the write batch.
 
