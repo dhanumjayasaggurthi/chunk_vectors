@@ -103,20 +103,39 @@ def compose_embedding_text(chunk, fields, sources, *, max_tokens=6000, tokenizer
     return result
 
 
-def prepare_document(struct, profile):
-    """Reuse the existing token chunker and metadata extractor."""
+def iter_prepared_document_rows(struct, profile, *, release_source=False):
+    """Yield deterministic publication rows without retaining a second copy.
+
+    Chunk boundary calculation remains document-scoped and unchanged. For the
+    native-only giant-document path, validated source pages are released after
+    metadata extraction and each chunk object is released after its row is
+    consumed by the transactional writer.
+    """
     from configurable_chunking import chunk_with_profile
     from chunker import chunk_document
-    from metadata_extractor import attach_metadata
+    from metadata_extractor import (
+        attach_chunk_metadata, attach_metadata, extract_document_metadata,
+    )
 
     policy = profile["chunking"]
-    if policy["strategy"] == "legacy":
-        chunks = chunk_document(struct)
+    if release_source:
+        doc_meta,evidence=extract_document_metadata(struct,profile["metadata"])
+        struct.release_page_payloads_after_chunking=True
+    try:
+        if policy["strategy"] == "legacy":
+            chunks = chunk_document(struct)
+        else:
+            chunks = chunk_with_profile(struct, policy)
+    finally:
+        if release_source and hasattr(struct,"release_page_payloads_after_chunking"):
+            del struct.release_page_payloads_after_chunking
+    if release_source:
+        attach_chunk_metadata(chunks,profile["metadata"],doc_meta)
+        struct.metadata_evidence=evidence
     else:
-        chunks = chunk_with_profile(struct, policy)
+        doc_meta = attach_metadata(struct, chunks, profile["metadata"])
     if not chunks:
         raise ValueError("Document yielded no chunks; source remains unchanged")
-    doc_meta = attach_metadata(struct, chunks, profile["metadata"])
     source_fields = getattr(struct, "source_metadata", {})
     # A source column is authoritative only when consistent across all source
     # rows. Never replace a contradictory extracted metadata value silently.
@@ -150,8 +169,13 @@ def prepare_document(struct, profile):
             item.chunk_metadata["next_chunk_id"]=(
                 published_ids[index+1] if index+1<len(chunks) else None
             )
-    result = []
-    for chunk in chunks:
+    document_metadata_json = _safe_json(doc_meta)
+    metadata_evidence_json = _safe_json(evidence)
+    if release_source:
+        struct.pages.clear()
+        struct.toc.clear()
+    for index in range(len(chunks)):
+        chunk = chunks[index]
         chunk.document_metadata = dict(doc_meta)
         chunk.effective_metadata = {
             **(doc_meta if profile["metadata"].get("inherit_document_fields", True) else {}),
@@ -162,16 +186,23 @@ def prepare_document(struct, profile):
             max_tokens=max_tokens, tokenizer=tokenizer,
         )
         identity = published_ids[chunk.chunk_index]
-        result.append((
+        row = (
             identity, chunk.doc_id, profile["_fingerprint"], chunk.chunk_index,
             chunk.file_path, chunk.file_name, chunk.chunk_text, vector_input,
             chunk.page_start, chunk.page_end, chunk.section_title,
             _safe_json(getattr(chunk, "headers", [])),
-            _safe_json(doc_meta), _safe_json(getattr(chunk, "chunk_metadata", {})),
+            document_metadata_json, _safe_json(getattr(chunk, "chunk_metadata", {})),
             _safe_json(getattr(chunk, "content_types", [])),
-            _safe_json(evidence),
-        ))
-    return result
+            metadata_evidence_json,
+        )
+        yield row
+        if release_source:
+            chunks[index] = None
+
+
+def prepare_document(struct, profile):
+    """Compatibility wrapper returning the existing in-memory row list."""
+    return list(iter_prepared_document_rows(struct, profile))
 
 
 
@@ -665,53 +696,106 @@ def verify_output(profile, *, logical_locators=False):
     return names
 
 
-def _current(doc_id, source_hash, profile, names):
+def _published_source_hash(doc_id, profile, names):
+    """Return a reconciled published digest, or None for a new document."""
     from db import get_conn
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(f"""SELECT 1 FROM {names['status']}
-                WHERE doc_id=%s AND source_hash=%s AND profile_hash=%s""",
-                (doc_id, source_hash, profile["_fingerprint"]))
-            return cur.fetchone() is not None
+            cur.execute(f"""SELECT source_hash,chunk_count FROM {names['status']}
+                WHERE doc_id=%s AND profile_hash=%s""",
+                (doc_id, profile["_fingerprint"]))
+            state = cur.fetchone()
+            if state is None:
+                return None
+            cur.execute(f"""SELECT count(*),count(*) FILTER (
+                    WHERE profile_hash=%s) FROM {names['table']} WHERE doc_id=%s""",
+                (profile["_fingerprint"], doc_id))
+            total, matching = cur.fetchone()
+            if total != state[1] or matching != state[1]:
+                raise ValueError("Published chunk/status reconciliation failed")
+            return state[0]
     finally:
         conn.close()
 
 
-def save_document(doc_id, source_hash, profile, names, rows):
+def _current(doc_id, source_hash, profile, names):
+    return _published_source_hash(doc_id, profile, names) == source_hash
+
+
+def _validate_publication_row(row, doc_id, profile, index, *, pdf_identity):
+    if not isinstance(row, (tuple, list)) or len(row) != 16:
+        raise ValueError("Invalid materialized chunk row")
+    if row[1] != doc_id or row[2] != profile["_fingerprint"] or row[3] != index:
+        raise ValueError("Cannot publish missing, mixed or unordered document chunks")
+    if pdf_identity:
+        expected = hashlib.sha256(
+            (profile["_fingerprint"] + "\x00" + doc_id + "\x00" + str(index)).encode("utf-8")
+        ).hexdigest()
+        if row[0] != expected:
+            raise ValueError("Native chunk identity does not match publication order")
+    if not _english_contract(profile):
+        return
+    meta = json.loads(row[13])
+    trans = meta.get("translation", {})
+    if (trans.get("target_language") != "en" or not isinstance(row[7], str)
+            or not row[7].strip() or trans.get("status") not in
+            ("ENGLISH_SOURCE", "MACHINE_TRANSLATION_UNVERIFIED", "MODEL_ENGLISH_UNVERIFIED")):
+        raise ValueError("English contract requires validated English-target translation for every chunk")
+    if meta.get("source_kind") == "visual_model":
+        if row[6] is not None or trans["status"] != "MODEL_ENGLISH_UNVERIFIED":
+            raise ValueError("Model observations must not be presented as native source text")
+    elif (not isinstance(row[6], str) or not row[6].strip()
+            or trans.get("source_text_sha256") != hashlib.sha256(row[6].encode()).hexdigest()):
+        raise ValueError("Native text provenance mismatch")
+
+
+def save_document_stream(doc_id, source_hash, profile, names, rows, *,
+                         batch_size=200, pdf_identity=False):
+    """Atomically replace one document while retaining only one row batch.
+
+    PostgreSQL readers continue seeing the prior committed document until the
+    final commit. Any generator, validation or insert failure rolls the delete
+    and all inserted batches back together.
+    """
     from db import get_conn
     from psycopg2.extras import execute_values
-    if not rows or any(row[1] != doc_id for row in rows):
-        raise ValueError("Cannot publish missing/mixed document chunks")
-    english=_english_contract(profile)
-    native_column="native_text" if english else "source_chunk_text"
-    if english:
-        for row in rows:
-            meta=json.loads(row[13])
-            trans=meta.get("translation",{})
-            if (trans.get("target_language")!="en" or not isinstance(row[7],str)
-                    or not row[7].strip() or trans.get("status") not in
-                    ("ENGLISH_SOURCE","MACHINE_TRANSLATION_UNVERIFIED","MODEL_ENGLISH_UNVERIFIED")):
-                raise ValueError("English contract requires validated English-target translation for every chunk")
-            if meta.get("source_kind")=="visual_model":
-                if row[6] is not None or trans["status"]!="MODEL_ENGLISH_UNVERIFIED":
-                    raise ValueError("Model observations must not be presented as native source text")
-            elif (not isinstance(row[6],str) or not row[6].strip()
-                    or trans.get("source_text_sha256")!=hashlib.sha256(row[6].encode()).hexdigest()):
-                raise ValueError("Native text provenance mismatch")
+    if type(batch_size) is not int or not 1 <= batch_size <= 4096:
+        raise ValueError("write batch_size must be 1..4096")
+    iterator = iter(rows)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        raise ValueError("Cannot publish missing document chunks") from None
+    _validate_publication_row(first, doc_id, profile, 0, pdf_identity=pdf_identity)
+    native_column = "native_text" if _english_contract(profile) else "source_chunk_text"
+    insert_sql = f"""INSERT INTO {names['table']} (
+        chunk_id,doc_id,profile_hash,chunk_index,file_path,file_name,
+        {native_column},chunk_text,page_start,page_end,section_title,
+        headers,document_metadata,chunk_metadata,content_types,metadata_evidence
+        ) VALUES %s"""
+    template = "(" + ",".join(["%s"] * 11 + ["%s::jsonb"] * 5) + ")"
     conn = get_conn()
+    count = 0
     try:
         with conn.cursor() as cur:
-            # A document is replaced only after every new chunk has passed
-            # deterministic chunking, metadata and embedding-input validation.
+            # Atomic replacement does not require retaining every prepared row:
+            # an uncommitted delete is invisible to concurrent readers and is
+            # restored automatically if a later row or batch fails.
             cur.execute(f"DELETE FROM {names['table']} WHERE doc_id=%s", (doc_id,))
-            execute_values(cur, f"""INSERT INTO {names['table']} (
-                chunk_id,doc_id,profile_hash,chunk_index,file_path,file_name,
-                {native_column},chunk_text,page_start,page_end,section_title,
-                headers,document_metadata,chunk_metadata,content_types,metadata_evidence
-                ) VALUES %s""", rows,
-                template="(" + ",".join(["%s"] * 11 + ["%s::jsonb"] * 5) + ")",
-                page_size=200)
+            batch = [first]
+            for row in iterator:
+                _validate_publication_row(
+                    row, doc_id, profile, count + len(batch), pdf_identity=pdf_identity,
+                )
+                batch.append(row)
+                if len(batch) >= batch_size:
+                    execute_values(cur, insert_sql, batch, template=template, page_size=batch_size)
+                    count += len(batch)
+                    batch.clear()
+            if batch:
+                execute_values(cur, insert_sql, batch, template=template, page_size=batch_size)
+                count += len(batch)
             cur.execute(f"""INSERT INTO {names['status']} (
                     doc_id,profile_hash,source_hash,chunk_count,updated_at)
                     VALUES (%s,%s,%s,%s,now())
@@ -719,13 +803,18 @@ def save_document(doc_id, source_hash, profile, names, rows):
                     profile_hash=EXCLUDED.profile_hash,
                     source_hash=EXCLUDED.source_hash,
                     chunk_count=EXCLUDED.chunk_count,updated_at=now()""",
-                    (doc_id, profile["_fingerprint"], source_hash, len(rows)))
+                    (doc_id, profile["_fingerprint"], source_hash, count))
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    return count
+
+
+def save_document(doc_id, source_hash, profile, names, rows):
+    save_document_stream(doc_id, source_hash, profile, names, rows)
 
 
 def record_failure(doc_id, profile, names, exc):
@@ -820,13 +909,32 @@ def _reject_translation_loss(doc_id,names):
         conn.close()
 
 
-def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None,translator=None):
+def run_one(doc_id, profile, names, *, enrichment=None, expected_source_hash=None,
+            translator=None, source_batch_rows=128, write_batch_rows=200):
     from profile_store import profile_document_lock
-    from extracted_source import load_extracted_document
+    from extracted_source import fingerprint_extracted_document, load_extracted_document
+    if type(source_batch_rows) is not int or not 1 <= source_batch_rows <= 4096:
+        raise ValueError("source_batch_rows must be 1..4096")
+    if type(write_batch_rows) is not int or not 1 <= write_batch_rows <= 4096:
+        raise ValueError("write_batch_rows must be 1..4096")
+    published_doc_id = str(doc_id)
+
+    def effective_digest(base):
+        digest = base
+        if enrichment is not None:
+            digest = hashlib.sha256(
+                (digest + "\x00enriched-v1\x00" + _safe_json(enrichment)).encode()
+            ).hexdigest()
+        if translator is not None:
+            digest = hashlib.sha256(
+                (digest + "\x00" + translator.identity).encode()
+            ).hexdigest()
+        return digest
+
     try:
-        with profile_document_lock(str(doc_id), profile["_fingerprint"]) as acquired:
+        with profile_document_lock(published_doc_id, profile["_fingerprint"]) as acquired:
             if not acquired:
-                return {"doc_id":str(doc_id),"status":"BUSY"}
+                return {"doc_id":published_doc_id,"status":"BUSY"}
             # A native version change invalidates any selected OCR/model output.
             def check_version():
                 if expected_source_hash is None:
@@ -851,21 +959,50 @@ def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None,t
                 try:
                     with conn.cursor() as cur:
                         cur.execute(f"""SELECT 1 FROM {names['table']} WHERE doc_id=%s
-                              AND chunk_metadata->>'source_kind' IN ('ocr','visual_model') LIMIT 1""",(doc_id,))
+                              AND chunk_metadata->>'source_kind' IN ('ocr','visual_model') LIMIT 1""",
+                            (published_doc_id,))
                         if cur.fetchone():
                             raise ValueError("Refusing to replace enriched output with native-only chunks")
                 finally:
                     conn.rollback()
                     conn.close()
-            struct, digest = load_extracted_document(profile, doc_id)
-            if enrichment is not None:
-                digest=hashlib.sha256((digest+"\x00enriched-v1\x00"+_safe_json(enrichment)).encode()).hexdigest()
-            if translator is not None:
-                digest=hashlib.sha256((digest+"\x00"+translator.identity).encode()).hexdigest()
-            else:
-                _reject_translation_loss(doc_id,names)
-            if _current(str(doc_id),digest,profile,names):
-                return {"doc_id":str(doc_id),"status":"SKIPPED"}
+            if translator is None:
+                _reject_translation_loss(published_doc_id,names)
+
+            # Replays first compare the exact staged-source digest without
+            # rebuilding thousands of page and element objects. New or changed
+            # documents still receive the complete validating load below.
+            published_digest = _published_source_hash(published_doc_id, profile, names)
+            probed_digest = None
+            if published_digest is not None:
+                probed_digest = fingerprint_extracted_document(
+                    profile, doc_id, batch_size=source_batch_rows,
+                )
+                if published_digest == effective_digest(probed_digest):
+                    # The bounded scan can take seconds for a giant document.
+                    # Recheck the capture selector before accepting the replay
+                    # so a concurrently published native version is not
+                    # reported as current against the caller's pinned source.
+                    check_version()
+                    return {"doc_id":published_doc_id,"status":"SKIPPED"}
+
+            struct, base_digest = load_extracted_document(
+                profile, doc_id, batch_size=source_batch_rows,
+            )
+            if probed_digest is not None and probed_digest != base_digest:
+                raise ValueError("Extracted source changed during materialization")
+            digest = effective_digest(base_digest)
+            if _current(published_doc_id,digest,profile,names):
+                return {"doc_id":published_doc_id,"status":"SKIPPED"}
+
+            if enrichment is None and translator is None:
+                rows = iter_prepared_document_rows(struct, profile, release_source=True)
+                check_version()
+                count = save_document_stream(
+                    published_doc_id, digest, profile, names, rows,
+                    batch_size=write_batch_rows, pdf_identity=True,
+                )
+                return {"doc_id":published_doc_id,"status":"SUCCESS","chunks":count}
             try:
                 rows=prepare_document(struct,profile)
             except ValueError as exc:
@@ -877,17 +1014,17 @@ def run_one(doc_id, profile, names,*,enrichment=None,expected_source_hash=None,t
             if translator is not None:
                 rows=translator.apply_rows(rows,profile,getattr(struct,"source_metadata",{}))
             check_version()
-            save_document(str(doc_id),digest,profile,names,rows)
-            return {"doc_id":str(doc_id),"status":"SUCCESS","chunks":len(rows)}
+            save_document(published_doc_id,digest,profile,names,rows)
+            return {"doc_id":published_doc_id,"status":"SUCCESS","chunks":len(rows)}
     except Exception as exc:
         # A broken document cannot poison other documents. A DB outage must
         # still surface: never claim durable error logging when it failed.
-        record_failure(str(doc_id),profile,names,exc)
+        record_failure(published_doc_id,profile,names,exc)
         LOG.exception("Document %s materialization failed (stored in failure_events)",doc_id)
-        return {"doc_id":str(doc_id),"status":"FAILED","error":type(exc).__name__}
+        return {"doc_id":published_doc_id,"status":"FAILED","error":type(exc).__name__}
 
 
-def run(profile, *, max_docs, workers):
+def run(profile, *, max_docs, workers, source_batch_rows=128, write_batch_rows=200):
     from extracted_source import iter_document_ids
     if type(workers) is not int or not 1 <= workers <= 32:
         raise ValueError("workers must be 1..32")
@@ -911,7 +1048,11 @@ def run(profile, *, max_docs, workers):
                 counts[result["status"]]+=1
                 counts["chunks"]+=result.get("chunks",0)
         for doc in iter_document_ids(profile,max_docs=max_docs):
-            pending[pool.submit(run_one,doc,profile,names)]=doc
+            pending[pool.submit(
+                run_one, doc, profile, names,
+                source_batch_rows=source_batch_rows,
+                write_batch_rows=write_batch_rows,
+            )]=doc
             if len(pending)>=workers*2:
                 done,_=concurrent.futures.wait(
                     pending,return_when=concurrent.futures.FIRST_COMPLETED)
@@ -931,6 +1072,8 @@ def main(argv=None):
                         help="Explicit DDL approval for a new output table")
     parser.add_argument("--max-docs",type=int,default=10)
     parser.add_argument("--doc-workers",type=int,default=2)
+    parser.add_argument("--source-batch-rows",type=int,default=128)
+    parser.add_argument("--write-batch-rows",type=int,default=200)
     parser.add_argument("--doc-id",help="Required for read-only document preview")
     parser.add_argument("--evidence-root")
     parser.add_argument("--capture-id")
@@ -966,7 +1109,9 @@ def main(argv=None):
         if not args.doc_id:
             parser.error("--doc-id required for preview")
         from extracted_source import load_extracted_document
-        struct,source_hash=load_extracted_document(profile,args.doc_id)
+        struct,source_hash=load_extracted_document(
+            profile,args.doc_id,batch_size=args.source_batch_rows,
+        )
         rows=prepare_document(struct,profile)
         summary=quality_summary(rows,profile["chunking"])
         info={"document_id":str(args.doc_id),"source_hash":source_hash,
@@ -980,7 +1125,11 @@ def main(argv=None):
         if summary["structural_errors"]:
             raise ValueError("Chunk preview structural integrity failed")
     else:
-        info=run(profile,max_docs=args.max_docs,workers=args.doc_workers)
+        info=run(
+            profile,max_docs=args.max_docs,workers=args.doc_workers,
+            source_batch_rows=args.source_batch_rows,
+            write_batch_rows=args.write_batch_rows,
+        )
     print(json.dumps(info,indent=2))
     return 0 if not info.get("FAILED") else 1
 

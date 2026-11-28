@@ -4,14 +4,40 @@ on:
     branches: [feat/rich-document-multilingual-v2, feat/regulatory-capture-qualification]
     paths:
       - open_grid_recovery.py
+      - extracted_source.py
+      - metadata_extractor.py
+      - reuse_materialize.py
+      - semantic_chunking_v2.py
       - tests/test_open_grid_recovery.py
       - tests/full_open_grid_benchmark.py
+      - tests/public_giant_materialization_benchmark.py
       - .github/workflows/open-grid-recovery.yml
   workflow_dispatch:
 jobs:
   regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: embedding_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d embedding_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: test
+      PGDATABASE: embedding_test
+      INGESTION_REUSE_TEST_DB: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +55,9 @@ jobs:
           password=test
           schema=intake_ci
           folder=ci
+          pool_enabled=true
+          pool_min_connections=1
+          pool_max_connections=4
           [GCP]
           gcp_key_path=not-used.json
           EOF
@@ -57,10 +86,17 @@ jobs:
           assert 0 < result['bodies_with_native_spacing'] <= 2084
           assert result['logical_rows_verified'] is False
           PY
+      - name: Publish and replay the same 4496-page source with bounded batches
+        run: |
+          python tests/public_giant_materialization_benchmark.py \
+            --pdf "$RUNNER_TEMP/public-hts.pdf" --report hts_materialization.json \
+            --source-batch-rows 128 --write-batch-rows 200
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: hts-native-rows-${{ github.run_id }}
-          path: hts_native_rows.json
+          path: |
+            hts_native_rows.json
+            hts_materialization.json
           if-no-files-found: warn
           retention-days: 14

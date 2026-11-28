@@ -95,6 +95,36 @@ table because the current materializer deliberately rejects incompatible
 profile versions in the same output. The production logical model remains
 documents/pages/chunks.
 
+## Giant-document materialization controls
+
+These deployment-only controls bound PostgreSQL transfer and publication
+batches without changing either the capture or retrieval profile fingerprint:
+
+~~~ini
+[DEPLOYMENT]
+materialize_source_batch_rows=128
+materialize_write_batch_rows=200
+~~~
+
+The extracted-page reader uses a PostgreSQL server-side cursor. Current-document
+replays recompute the exact staged-source digest without reconstructing the
+page/element graph, reconcile the publication marker with the actual chunk
+count, and recheck a caller-pinned source version before returning `SKIPPED`.
+Changed documents still receive the complete validating load.
+
+Publication validates dense chunk order and deterministic identity while
+inserting one configured batch at a time. Delete, inserts, and status-marker
+update remain one transaction: concurrent readers retain the prior committed
+document until commit, and any generator, validation, or SQL failure restores
+the prior document automatically. The native-only semantic-v2 path releases
+reconstructed page payloads after their derived units have been consumed and
+releases chunk objects after their rows have entered the write batch.
+
+This is reduced-copy and batch-bounded I/O, not fully constant-memory semantic
+chunking. A changed giant document still constructs a document-scoped page
+graph before chunking and retains the complete derived chunk list while global
+packing, adjacency, and table-continuity metadata are finalized.
+
 ## Quality policies
 
 1. Original pages, source cells, bboxes, nulls and original source hashes stay
@@ -156,8 +186,10 @@ The completed 100-document native-only benchmark processed 80,312 physical pages
 table density, encoding anomalies and retries; benchmark multiple nodes and
 100+ representative original PDFs with p95 latency and peak RSS.
 
-**Known remaining risks:** extracted_source.py still accumulates full-document
-content in memory before chunking, chunk materialization still replaces chunks
-per document, and deferred OCR/visual enrichment requires full provider, storage and publication throughput qualification. Benchmark outlier 25k-page PDFs, PostgreSQL WAL/commit latency,
-memory, sustained parallel extraction and cloud quotas before treating the
-10-day production SLA as validated.
+**Known remaining risks:** changed-document materialization still builds a
+document-scoped semantic page/chunk graph even though source transfer and output
+publication are batched; enriched/translated paths retain their compatibility
+list materialization; and deferred OCR/visual enrichment requires full provider,
+storage and publication throughput qualification. Benchmark outlier 25k-page
+PDFs, PostgreSQL WAL/commit latency, memory, sustained parallel extraction and
+cloud quotas before treating the 10-day production SLA as validated.

@@ -162,8 +162,11 @@ class TestConsumerIntake(unittest.TestCase):
                 self.calls += 1
                 return [("first paragraph", 0), ("second paragraph", 0)] if self.calls == 1 else []
         class FakeConnection:
-            def cursor(self):
+            def cursor(self, *, name=None):
+                self.cursor_name=name
                 return FakeCursor()
+            def rollback(self):
+                pass
             def close(self):
                 pass
         profile = {"extracted_content": {
@@ -174,6 +177,51 @@ class TestConsumerIntake(unittest.TestCase):
         with patch("extracted_source.get_conn", return_value=FakeConnection()):
             with self.assertRaisesRegex(ValueError, "Ambiguous extracted row order"):
                 load_extracted_document(profile, "doc_1")
+
+    def test_server_cursor_fingerprint_matches_full_validating_load(self):
+        from extracted_source import fingerprint_extracted_document,load_extracted_document
+        from unittest.mock import patch
+        elements=lambda text:[{"type":"text","bbox":[0,0,100,20],"text":text,
+                               "confidence":1.0,"reading_order":0}]
+        source=[
+            ("Alpha",1,1,"nas://fixed.pdf","fixed.pdf","Section A",elements("Alpha"),612,792,0),
+            ("Beta",2,2,"nas://fixed.pdf","fixed.pdf","Section A",elements("Beta"),612,792,0),
+        ]
+        cursors=[]
+        class FakeCursor:
+            def __init__(self):
+                self.offset=0
+                self.itersize=None
+                cursors.append(self)
+            def __enter__(self): return self
+            def __exit__(self,*args): return False
+            def execute(self,*args): pass
+            def fetchmany(self,size):
+                batch=source[self.offset:self.offset+size]
+                self.offset+=len(batch)
+                return batch
+        class FakeConnection:
+            def cursor(self,*,name=None):
+                self.cursor_name=name
+                return FakeCursor()
+            def rollback(self): pass
+            def close(self): pass
+        profile={"extracted_content":{
+            "schema":"palm_paw","table":"pages","doc_id_column":"doc_id",
+            "text_column":"chunk_text","page_column":"page_number",
+            "position_column":"page_number","page_end_column":"page_end",
+            "file_path_column":"file_path","file_name_column":"file_name",
+            "section_column":"section_title","element_json_column":"elements",
+            "width_column":"page_width","height_column":"page_height",
+            "rotation_column":"page_rotation","source_columns":{"source_file_name":"file_name"},
+        }}
+        with patch("extracted_source.get_conn",side_effect=lambda:FakeConnection()):
+            struct,full=load_extracted_document(profile,"fixed-doc",batch_size=1)
+            bounded=fingerprint_extracted_document(profile,"fixed-doc",batch_size=1)
+        self.assertEqual(full,bounded)
+        self.assertEqual([p.raw_text for p in struct.pages],["Alpha","Beta"])
+        self.assertEqual(struct.source_metadata,{"source_file_name":"fixed.pdf"})
+        self.assertEqual([cursor.itersize for cursor in cursors],[1,1])
 
     def test_duplicate_yaml_keys_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -251,7 +299,7 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
             raise
 
     def test_atomic_skip_failure_recovery_and_embedding_readiness(self):
-        from reuse_materialize import init_output, run
+        from reuse_materialize import init_output, run,run_one,verify_output
         p=self.profile
         self.assertEqual(init_output(p,apply=False)["status"],"NO_WRITES")
         init_output(p,apply=True)
@@ -264,6 +312,13 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
         conn_debug.close()
         self.assertEqual(result["SUCCESS"],1, (result,failures_debug))
         self.assertEqual(result["FAILED"],1, (result,failures_debug))
+        # A current document uses the bounded digest replay and never rebuilds
+        # its complete page/element graph.
+        from unittest.mock import patch
+        with patch("extracted_source.load_extracted_document",
+                   side_effect=AssertionError("current replay rebuilt the document")):
+            self.assertEqual(run_one("doc_ok",p,verify_output(p),source_batch_rows=1)["status"],
+                             "SKIPPED")
         conn=self.connect()
         with conn:
             with conn.cursor() as cur:
@@ -286,6 +341,29 @@ class TestPostgresRechunkIntegration(unittest.TestCase):
                 # Repair the one poisoned document without touching successful rows.
                 cur.execute("""UPDATE intake_ci.source_chunks
                     SET file_name='first.pdf' WHERE doc_id='doc_bad'""")
+        conn.close()
+        # Streaming publication remains an atomic document replacement even
+        # when a later batch fails after the DELETE has executed.
+        from extracted_source import load_extracted_document
+        from reuse_materialize import prepare_document,save_document_stream
+        struct,source_hash=load_extracted_document(p,"doc_ok",batch_size=1)
+        prepared=prepare_document(struct,p)
+        conn=self.connect()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT chunk_id,chunk_text FROM intake_ci.out_chunks_v1 WHERE doc_id='doc_ok' ORDER BY chunk_index")
+                before=cur.fetchall()
+        conn.close()
+        def interrupted():
+            yield prepared[0]
+            raise RuntimeError("injected publication failure")
+        with self.assertRaisesRegex(RuntimeError,"injected publication failure"):
+            save_document_stream("doc_ok",source_hash,p,verify_output(p),interrupted(),batch_size=1)
+        conn=self.connect()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT chunk_id,chunk_text FROM intake_ci.out_chunks_v1 WHERE doc_id='doc_ok' ORDER BY chunk_index")
+                self.assertEqual(cur.fetchall(),before)
         conn.close()
         result2=run(p,max_docs=10,workers=2)
         self.assertEqual(result2["SUCCESS"],1)

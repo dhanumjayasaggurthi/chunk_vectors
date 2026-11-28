@@ -97,14 +97,9 @@ def _extract(text: str, rule: dict):
     return _convert(value,rule)
 
 
-def attach_metadata(struct, chunks: list, config: dict) -> dict:
-    """Extract document fields once and chunk fields only from local text.
-
-    When a field is required but unavailable, fail rather than fabricate.
-    Sample values inform expected formats only; they are never used as data.
-    """
+def extract_document_metadata(struct, config: dict):
+    """Extract document-scoped fields and evidence before chunk construction."""
     doc_rules = config.get("document", {})
-    chunk_rules = config.get("chunk", {})
     pages = sorted(struct.pages, key=lambda p: p.page_number)
     doc_metadata = {}
     evidence = {}
@@ -140,6 +135,12 @@ def attach_metadata(struct, chunks: list, config: dict) -> dict:
             )
         elif rule.get("required",False):
             raise ValueError("Required document metadata not found: " + name)
+    return doc_metadata,evidence
+
+
+def attach_chunk_metadata(chunks, config: dict, doc_metadata: dict) -> None:
+    """Apply deterministic chunk-local rules to already constructed chunks."""
+    chunk_rules = config.get("chunk", {})
 
     inherit = config.get("inherit_document_fields",True)
     for chunk in chunks:
@@ -164,5 +165,15 @@ def attach_metadata(struct, chunks: list, config: dict) -> dict:
         }
         if not getattr(chunk,"headers",None):
             chunk.headers = [chunk.section_title] if chunk.section_title else []
+
+
+def attach_metadata(struct, chunks: list, config: dict) -> dict:
+    """Extract document fields once and chunk fields only from local text.
+
+    When a field is required but unavailable, fail rather than fabricate.
+    Sample values inform expected formats only; they are never used as data.
+    """
+    doc_metadata,evidence=extract_document_metadata(struct,config)
+    attach_chunk_metadata(chunks,config,doc_metadata)
     struct.metadata_evidence = evidence
     return doc_metadata

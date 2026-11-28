@@ -1,7 +1,7 @@
 """Opt-in semantic v2 chunking: paragraphs, sentences, complete table rows.
 
-Source pages remain immutable. Cross-page table links are conservative and
-carry source page references in existing chunk_metadata JSONB, not new tables.
+Persisted source pages remain immutable. Cross-page table links are conservative
+and carry source page references in existing chunk_metadata JSONB, not new tables.
 Oversized indivisible text is split at Unicode character boundaries without
 changing source characters; every exceptional split is marked in metadata.
 """
@@ -125,8 +125,12 @@ def _units(struct,policy):
         toc_by_page.setdefault(item.page_number,[]).append(item)
     headings=[]
     table_row_numbers={}
+    release_payloads=bool(getattr(struct,"release_page_payloads_after_chunking",False))
     for page in sorted(struct.pages,key=lambda p:p.page_number):
         if page.is_blank or page.error:
+            if release_payloads:
+                page.raw_text=""
+                page.elements.clear()
             continue
         toc_entries=toc_by_page.get(page.page_number,[])
         if toc_entries:
@@ -203,6 +207,14 @@ def _units(struct,policy):
                 page,el,headings,known_titles,source_end,
                 policy.get("page_join_edge_fraction",0.20),
             )
+        if release_payloads:
+            # The derived Unit/Chunk has copied every required source string
+            # and provenance field. Release the reconstructed page payload as
+            # soon as its units have been consumed; immutable database rows are
+            # untouched and linked logical-table elements remain referenced by
+            # ``links`` until their extractive summaries are complete.
+            page.raw_text=""
+            page.elements.clear()
 
 
 def _coalesce_cross_page_paragraphs(units):

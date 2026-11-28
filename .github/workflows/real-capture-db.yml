@@ -3,6 +3,12 @@ on:
   push:
     branches: [feat/rich-document-multilingual-v2, feat/regulatory-capture-qualification]
     paths:
+      - extracted_source.py
+      - metadata_extractor.py
+      - reuse_materialize.py
+      - semantic_chunking_v2.py
+      - production.py
+      - config.ini.example
       - tests/real_capture_db_benchmark.py
       - .github/workflows/real-capture-db.yml
   workflow_dispatch:

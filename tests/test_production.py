@@ -187,10 +187,16 @@ class DeploymentTests(unittest.TestCase):
             path,c=fixture(Path(tmp))
             d=resolve_configuration(path)
             self.assertEqual(d["limits"]["finish_workers"],1)
+            self.assertEqual(d["limits"]["materialize_source_batch_rows"],128)
+            self.assertEqual(d["limits"]["materialize_write_batch_rows"],200)
             c["DEPLOYMENT"]["finish_workers"]="3"
+            c["DEPLOYMENT"]["materialize_source_batch_rows"]="64"
+            c["DEPLOYMENT"]["materialize_write_batch_rows"]="96"
             save(path,c)
             parallel=resolve_configuration(path)
             self.assertEqual(parallel["limits"]["finish_workers"],3)
+            self.assertEqual(parallel["limits"]["materialize_source_batch_rows"],64)
+            self.assertEqual(parallel["limits"]["materialize_write_batch_rows"],96)
             self.assertEqual(parallel["retrieval"]["_fingerprint"],d["retrieval"]["_fingerprint"])
             self.assertEqual(parallel["capture"]["_fingerprint"],d["capture"]["_fingerprint"])
             parallel["visual_llm"]=({}, {"read_workers":1})
@@ -200,6 +206,11 @@ class DeploymentTests(unittest.TestCase):
             c["DEPLOYMENT"]["finish_workers"]="9"
             save(path,c)
             with self.assertRaisesRegex(ValueError,"finish_workers"):
+                resolve_configuration(path)
+            c["DEPLOYMENT"]["finish_workers"]="1"
+            c["DEPLOYMENT"]["materialize_source_batch_rows"]="0"
+            save(path,c)
+            with self.assertRaisesRegex(ValueError,"materialize_source_batch_rows"):
                 resolve_configuration(path)
 
     def test_optional_enrichment_rejects_invented_source(self):

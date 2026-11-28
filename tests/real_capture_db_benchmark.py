@@ -224,7 +224,9 @@ def materialize(d,records,workers):
         discovery=time.monotonic()-started
         started=time.monotonic()
         result=run_one(record["doc_id"],d["retrieval"],names,
-                       expected_source_hash=record["source_sha256"])
+                       expected_source_hash=record["source_sha256"],
+                       source_batch_rows=d["limits"]["materialize_source_batch_rows"],
+                       write_batch_rows=d["limits"]["materialize_write_batch_rows"])
         return {**result,"ocr_candidates_unprocessed":pending["candidates"],
                 "ocr_discovery_seconds":round(discovery,3),
                 "materialization_seconds":round(time.monotonic()-started,3)}
@@ -268,6 +270,8 @@ def main():
             raise RuntimeError("Insufficient free disk for full 300-DPI evidence pilot")
         d,schema=deployment(root,args.workers)
         report["schema"]=schema
+        report["materialize_source_batch_rows"]=d["limits"]["materialize_source_batch_rows"]
+        report["materialize_write_batch_rows"]=d["limits"]["materialize_write_batch_rows"]
         urls=dict(candidates())
         start=time.monotonic()
         items=acquire_manifest(root/"source",[{"name":name} for name in SOURCE_HASHES],urls)
@@ -344,6 +348,12 @@ def main():
         report["replay_evidence_worker_seconds"]=evidence_timings(replayed, "evidence_phase_timings_seconds")
         report["replay_verified_pages"]=sum(row["verified_pages"] for row in replayed)
         report["replay"]=replay
+        tick=time.monotonic()
+        materialization_replay=materialize(d,replayed,args.materialize_workers)
+        report["materialization_replay_wall_seconds"]=round(time.monotonic()-tick,3)
+        report["materialization_replay_results"]=materialization_replay
+        if any(row["status"]!="SKIPPED" for row in materialization_replay):
+            raise ValueError("Materialization replay was not idempotent")
         report["complete"]=True
         save()
         print("CAPTURE_DB_SUMMARY="+json.dumps({k:v for k,v in report.items()

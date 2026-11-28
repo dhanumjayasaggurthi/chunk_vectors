@@ -250,6 +250,22 @@ class SemanticChunkV2Tests(unittest.TestCase):
             self.assertEqual(meta["next_chunk_id"],
                              rows[i+1][0] if i+1<len(rows) else None)
 
+    def test_releasing_page_payloads_preserves_exact_materialized_rows(self):
+        import copy
+        from processing_profile import load_profile
+        from reuse_materialize import prepare_document,iter_prepared_document_rows
+        p=load_profile("profiles/regulatory_page_stage_example.yml")
+        p["chunking"].update(config(max_tokens=180,min_tokens=120,
+                                    small_section_policy="merge_forward",
+                                    table_summary_mode="extractive"))
+        baseline=document_with_continued_table()
+        bounded=copy.deepcopy(baseline)
+        expected=prepare_document(baseline,p)
+        actual=list(iter_prepared_document_rows(bounded,p,release_source=True))
+        self.assertEqual(actual,expected)
+        self.assertEqual(bounded.pages,[])
+        self.assertEqual(bounded.toc,[])
+
     def test_four_page_table_is_one_logical_table_and_row_chunks(self):
         from configurable_chunking import chunk_with_profile
         import tiktoken

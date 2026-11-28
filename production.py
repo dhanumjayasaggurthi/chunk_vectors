@@ -133,6 +133,12 @@ def resolve_configuration(path="config.ini"):
     if not 1<=finish_workers<=8:
         raise ValueError("finish_workers must be 1..8")
     limits["finish_workers"]=finish_workers
+    for key,default in (("materialize_source_batch_rows",128),
+                        ("materialize_write_batch_rows",200)):
+        value=dep.getint(key,default)
+        if not 1<=value<=4096:
+            raise ValueError(key+" must be 1..4096")
+        limits[key]=value
     if retrieval["embedding"]["enabled"] is not False:
         raise ValueError("Deployment policy embedding.enabled must remain false; use explicit embed command")
     vision=None
@@ -505,7 +511,12 @@ def finish_captured(d,receipt,*,records=None,admit=None):
                 tick=time.monotonic()
                 parts.sort(key=lambda item:(item["page"],item["kind"],json.dumps(item["provenance"],sort_keys=True)))
                 with stage_gate(materialize_gate):
-                    result=run_one(doc,q,names,enrichment=parts,expected_source_hash=row["source_sha256"],translator=translator)
+                    result=run_one(
+                        doc,q,names,enrichment=parts,
+                        expected_source_hash=row["source_sha256"],translator=translator,
+                        source_batch_rows=d["limits"].get("materialize_source_batch_rows",128),
+                        write_batch_rows=d["limits"].get("materialize_write_batch_rows",200),
+                    )
             log.info("finish doc=%s stage=%s status=%s total_elapsed=%.2fs",
                      doc[:12],stage,result["status"],time.monotonic()-started)
             return result["status"]
@@ -801,12 +812,20 @@ def main(argv=None):
         _database(d)
         from reuse_materialize import run,run_one,verify_output
         if args.doc_id:
-            result=run_one(args.doc_id,q,verify_output(q))
+            result=run_one(
+                args.doc_id,q,verify_output(q),
+                source_batch_rows=lim.get("materialize_source_batch_rows",128),
+                write_batch_rows=lim.get("materialize_write_batch_rows",200),
+            )
             code=int(result["status"] not in ("SUCCESS","SKIPPED"))
         else:
             if not args.all_docs:
                 parser.error("materialize requires --doc-id or --all-docs")
-            result=run(q,max_docs=lim["materialize_max_docs"],workers=lim["materialize_workers"])
+            result=run(
+                q,max_docs=lim["materialize_max_docs"],workers=lim["materialize_workers"],
+                source_batch_rows=lim.get("materialize_source_batch_rows",128),
+                write_batch_rows=lim.get("materialize_write_batch_rows",200),
+            )
             code=int(bool(result.get("FAILED") or result.get("BUSY")))
     elif cmd in ("docx-preview","docx-publish"):
         if not all((args.doc_id,args.capture_id,args.file_name)):
