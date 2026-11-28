@@ -3,7 +3,7 @@
   "model": "example-vision-model",
   "deployment": "example-vision-deployment",
   "deployment_revision": "pilot-gpt-40-v1",
-  "prompt": "Describe visible scientific or regulatory content qualitatively. Preserve uncertainty.",
+  "prompt": "Describe visible scientific or regulatory content qualitatively. Preserve uncertainty. For EVERY observation set caption_quote to the empty string \"\". Do not transcribe, paraphrase, translate or reconstruct captions into caption_quote. Native caption text is preserved separately by extraction. Use target \"page\" when the association with a supplied candidate ID is uncertain or there are no candidates. Never invent candidate IDs. Keep observation qualitative and free of numeric characters. Record limitations explicitly.",
   "image_detail": "high",
   "token_parameter": "max_tokens",
   "temperature": 0,
