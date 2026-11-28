@@ -1,5 +1,9 @@
 # Native throughput and semantic chunking v2
 
+> **Current source handshake (2026-11-28):** No persistent original-document copies, page images, crops, raster/vector reconstructions or other non-text source substitutes. Temporary processing evidence is permitted only within explicitly approved storage, lifetime and disposal conditions. The current implementation does not enforce that lifecycle. No bulk or capture-only rollout under this corpus's text-only agreement. See [authoritative source handshake](SOURCE_EVIDENCE_RETENTION.md) and [current project state](PIPELINE_PROJECT_STATE.md). Older archive/capture guidance below is historical, not permission.
+
+The first live v3 pilot passed all six documents/98 pages/304 vectors, with 96 MiB temporary evidence. Current P0: bounded transient staging, verified disposal, source handshake and actual large-document QA before scale. See [server runbook](SERVER_PILOT_RUNBOOK.md).
+
 **Always start from the [living project state and handoff](PIPELINE_PROJECT_STATE.md).** That file records verified original-PDF evidence, code changes, passing CI, 10-day capacity targets, outstanding OCR/streaming work and the next safe action.
 
 ## Scope and compatibility

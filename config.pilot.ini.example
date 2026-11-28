@@ -1,3 +1,7 @@
+; Source handshake: no persistent source copies or non-text derivatives. Evidence is temporary only
+; under approved capacity, TTL and disposal conditions. Current code lacks automatic disposal.
+; No additional real-source or bulk run until lifecycle is approved and qualified.
+; See docs/SOURCE_EVIDENCE_RETENTION.md; no new runtime settings in this documentation update.
 ; 8 logical CPU / 30 GiB RAM pilot only. Not a full-corpus configuration.
 ; Replace placeholder paths/credentials/schema locally. Do not replace a working config.ini.
 ; All authorization flags remain false until separately approved. Current resolver requires

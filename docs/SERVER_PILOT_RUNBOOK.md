@@ -1,5 +1,7 @@
 # Server pilot and rollout runbook
 
+> **Current milestone:** Six documents / 98 pages / 304 valid 1536-dimension vectors reconciled. Do not repeat setup or those six documents. [Text-only source handshake](SOURCE_EVIDENCE_RETENTION.md) is mandatory; existing image evidence is temporary staging only and automatic disposal is NOT implemented. Current next task is lifecycle qualification before expanding real-source workload.
+
 Application baseline: tested commit `a86ec54e012b640544e7abb39f56dadcf7f2e00c` (internal SCM imports may have different commit IDs). This runbook and templates do not change that application. Check [living state](PIPELINE_PROJECT_STATE.md) first for the latest results and release blockers. The server is not accessible from the assistant; the operator executes commands and shares sanitized aggregate output.
 
 ## 1. New server setup
@@ -146,10 +148,45 @@ Do not equate 100% chunk vectors to 100% input documents; reconcile expected dis
 
 ## 6. Larger workload release gate
 
-Do NOT point the current release at 656k or 1.3M PDFs. First complete six-doc recovery/vector coverage and manually validate source-grounded text, multilingual translation, table/metadata fidelity. Then qualify the seven larger PDFs in bounded shards (start one outlier at a time if memory/storage risk); qualify >4000-page originals, representative 100-doc and sustained 1000-doc workload, compare same workload against legacy main. Use source census page mix and quotas to size fleet. 656000/10 days = 45.56 complete docs/min fleet-wide (68.33 with 50% headroom); 1.3M/10 days = 90.28 (135.42 with headroom). Neither is demonstrated.
+Do NOT point the current release at 656k or 1.3M PDFs. Six-doc recovery/vector coverage and per-document reconciliation passed. Manually validate source-grounded text, multilingual translation, table/metadata fidelity and review required visual limitations. Resolve the text-only staging/disposal gate before additional real-source processing. Then qualify the seven larger PDFs in bounded shards (start one outlier at a time if memory/storage risk); qualify >4000-page originals, representative 100-doc and sustained 1000-doc workload, compare same workload against legacy main. Use source census page mix and quotas to size fleet. 656000/10 days = 45.56 complete docs/min fleet-wide (68.33 with 50% headroom); 1.3M/10 days = 90.28 (135.42 with headroom). Neither is demonstrated.
 
 Required before scale: source-team text-only policy, approved temporary derivative staging, retry-safe disposal after verified publication and vector completion, upstream deletion coordination, approved textual/structured/metadata/vector retention, failed-document TTL; no source purge from current local-capture receipts. Current release retains all-page PNGs and other derivatives with no automatic cleanup, and 10-GiB preflight free-space floor is a start check, not a continuous disk budget. Cannot defer mandatory disposal to the 600k review milestone. No full original fidelity guarantee after upstream deletion under text-only policy. Native and finish stages can hold full-document state; measure large-doc memory. No unbounded production shards, no deletion script until safe lifecycle qualification. Assign disjoint source shards, approved storage budget and quotas per server; choose batch max_documents to cover the explicit shard, not the corpus. Keep actual runtime settings and per-shard receipts in approved local storage, not Git. Capture/finish/embedding retries stay within original identities; do not change schema or profile during a job.
 
-## 7. Conversation handoff
+## 7. Next bounded qualification (do not launch until source handshake gate passes)
 
-Read the latest `docs/PIPELINE_PROJECT_STATE.md` first, then this runbook and architecture. The user runs commands in a private internal SCM checkout; no server access from assistant. Continue from the newest observed server step rather than replay setup. Preserve measured versus estimated results and update the state after each substantive iteration. Current observed server milestone: contract v3 recovered the sixth document, six native documents/98 pages, six materialized documents/304 chunks; embedding SUCCESS304, coverage complete, zero missing/foreign vectors, wall6.659s, exit0. Do not repeat these stages. Next read-only per-document reconciliation, source-quality sample review and evidence/storage audit before selecting a bounded larger shard. See latest project state for subsequent updates. No credentials, internal file names, exact source paths or private data in Git.
+Remaining pages 747,778,918,1104,2364,2548,3082 (11541 total). Keep existing six-document inventory until gate passes. Start with one 747-page PDF to isolate large-document memory/disk behavior, then two concurrent 778+918 to measure overlap; qualify larger outliers with bounded admission and compare actual end-to-end rate against main. This is a proposed order, not a mandatory workload cap or a throughput claim. At ~0.98MiB/page observed, first shard ~732MiB and all remaining ~11GiB before overhead; these are estimates not maxima.
+
+After approval and validated temporary disposal mechanism, create a **new** inventory from the configured source root (no copies, moves or original deletion). For the current test set only, select the unique 747-page PDF, confirm identity locally and verify no existing document in the shard. Example selection script, to be executed only after that gate:
+
+~~~bash
+python - <<'PY'
+import configparser, json
+from pathlib import Path
+import pymupdf
+cfg=configparser.ConfigParser(interpolation=None)
+assert cfg.read("config.ini")
+root=Path(cfg["DEPLOYMENT"].get("source_root","").strip() or cfg["PATHS"]["docs_root"]).resolve(strict=True)
+chosen=[]
+for p in sorted(root.rglob("*")):
+    if p.is_symlink() or not p.is_file() or p.suffix.lower()!=".pdf":
+        continue
+    resolved=p.resolve(strict=True)
+    if not resolved.is_relative_to(root):
+        continue
+    with pymupdf.open(resolved) as pdf:
+        if not pdf.is_encrypted and pdf.page_count==747:
+            chosen.append(resolved)
+assert len(chosen)==1, "Expected exactly one 747-page pilot PDF; inspect locally"
+out=Path(cfg["DEPLOYMENT"]["receipt_dir"])/"pilot_747.jsonl"
+with out.open("x",encoding="utf-8") as stream:
+    stream.write(json.dumps({"path":str(chosen[0])})+"\n")
+out.chmod(0o600)
+print("New inventory:",out,"documents: 1, pages: 747")
+PY
+~~~
+
+This path-only inventory is for approved bounded no-explicit-deadline qualification, not a replacement for authoritative deadline/hash inventory. Update only DEPLOYMENT.inventory to its printed path once idle. Run census/plan/status/preflight, verify expected one new doc and baseline six/98/304 with unchanged fingerprints. If automatic embedding enabled and approved, use the timed nohup wrapper above; no init on existing tables. Record actual exit code, new document/vector counts, memory peak, disk high-water mark, provider errors and elapsed wall time; verify approved cleanup and source quality before the next shard. Expected cumulative native/retrieval docs7, pages845 after one successful new document; new chunk count unknown. Use actual vector coverage (including old rows), not only status counts. Never run a larger batch merely because preflight free space passes.
+
+## 8. Conversation handoff
+
+Read the latest `docs/PIPELINE_PROJECT_STATE.md` first, then this runbook and architecture. The user runs commands in a private internal SCM checkout; no server access from assistant. Continue from the newest observed server step rather than replay setup. Preserve measured versus estimated results and update the state after each substantive iteration. Current observed server milestone: six native and materialized docs/98 pages, 304/304 vectors, per-document counts matched, all1536 dims, missing/foreign/bad dims0; source-kind256 unspecified_native,44 OCR,4 visual. Evidence96MiB, free33GiB, available RAM21GiB. Read-only audit complete for counts/dimensions and disk snapshot; semantic source QA outstanding. Next implement/qualify text-only disposal and bounded staging, review pilot content, then approved 747-page shard. Do not repeat completed stages. See latest project state for subsequent updates. No credentials, internal file names, exact source paths or private data in Git.

@@ -1,3 +1,7 @@
+; Source handshake: no persistent source copies or non-text derivatives. Evidence is temporary only
+; under approved capacity, TTL and disposal conditions. Current code lacks automatic disposal.
+; No additional real-source or bulk run until lifecycle is approved and qualified.
+; See docs/SOURCE_EVIDENCE_RETENTION.md; no new runtime settings in this documentation update.
 ; Copy to config.ini only for a NEW install. Otherwise merge sections with your existing file.
 ; Never commit config.ini or provider keys. Example paths, credentials and names are NOT production values.
 [POSTGRES]

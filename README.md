@@ -3,11 +3,14 @@
 One entry point: `production.py`. One local `config.ini`. No Docker.
 Use the existing legacy `main.py` and embedding launchers only for legacy jobs.
 
-> **Release gate:** Tested application commit `a86ec54` passed disposable
-> PostgreSQL integration and live server provider probes. First live server
-> pilot: 6 PDFs / 98 pages captured, 5 documents / 235 chunks published,
-> one visual-caption failure under targeted recovery; embeddings not yet qualified.
-> Do not run the full corpus until the retention, quality, resource and throughput
+> **Release gate:** Tested application commit `b965877` completed the live
+> six-document pilot: 98 pages, 304 chunks, 304 valid 1536-dimensional vectors,
+> zero missing/foreign vectors. Per-document counts reconciled. Not a clean
+> sustained throughput or semantic-accuracy certification.
+> **Source-team handshake: text-only retention. No persistent source copies,
+> images or non-text substitutes.** Current evidence staging lacks automatic
+> disposal. Resolve the [source handshake](docs/SOURCE_EVIDENCE_RETENTION.md)
+> before additional real-source workloads; do not launch 656k/1.3M until the
 > gates in [project state](docs/PIPELINE_PROJECT_STATE.md) pass.
 >
 > [Server pilot runbook — setup, recovery, nohup, monitoring and larger shards](docs/SERVER_PILOT_RUNBOOK.md).
@@ -329,7 +332,7 @@ See [embedding operations](docs/FAST_EMBEDDINGS.md) for legacy/distributed detai
 Changing metadata or chunking policy can change the retrieval profile identity.
 Preserve the policy used by existing tables until an approved migration/backfill
 exists. Never treat model observations or a successful OCR request as proof of
-correct source facts. Keep native text and approved temporary evidence until completion and recovery validation. Do not purge originals based on local capture alone. The source-team text-only policy requires verified disposal of non-text derivatives; the tested release does not implement automatic cleanup.
+correct source facts. Keep permitted text and approved derived search/audit data. Images, source copies and other non-text evidence are temporary only, subject to approved TTL and verified disposal; do not retain them as an archive or postpone cleanup until bulk ingestion. Do not purge originals based on local capture alone. The tested release does not implement automatic cleanup. See [source handshake](docs/SOURCE_EVIDENCE_RETENTION.md).
 
 [Release status and handoff](docs/PIPELINE_PROJECT_STATE.md) ·
 [Full production reference](docs/PRODUCTION_REFERENCE.md) ·

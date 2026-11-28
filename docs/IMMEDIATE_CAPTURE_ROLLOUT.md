@@ -1,5 +1,7 @@
 # Immediate source-capture rollout — frozen release c9b0991
 
+> **Current source handshake (2026-11-28):** No persistent original-document copies, page images, crops, raster/vector reconstructions or other non-text source substitutes. Temporary processing evidence is permitted only within explicitly approved storage, lifetime and disposal conditions. The current implementation does not enforce that lifecycle. No bulk or capture-only rollout under this corpus's text-only agreement. See [authoritative source handshake](SOURCE_EVIDENCE_RETENTION.md) and [current project state](PIPELINE_PROJECT_STATE.md). Older archive/capture guidance below is historical, not permission.
+
 ## Decision
 Stop feature expansion. Begin controlled real-document processing now **only on approved targets and with derivative retention authorization**. Keep mandatory 15-day original purge unchanged. Capture native text/tables and authorized visual evidence first, defer OCR/LLM/translation/embedding unless the required evidence cannot be recovered later. No original copies. Do not certify purge readiness from a local capture flag.
 

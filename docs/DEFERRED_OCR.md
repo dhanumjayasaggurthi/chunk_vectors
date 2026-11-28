@@ -1,5 +1,7 @@
 # Deferred OCR stage — design, controls and usage
 
+> **Current source handshake (2026-11-28):** No persistent original-document copies, page images, crops, raster/vector reconstructions or other non-text source substitutes. Temporary processing evidence is permitted only within explicitly approved storage, lifetime and disposal conditions. The current implementation does not enforce that lifecycle. No bulk or capture-only rollout under this corpus's text-only agreement. See [authoritative source handshake](SOURCE_EVIDENCE_RETENTION.md) and [current project state](PIPELINE_PROJECT_STATE.md). Older archive/capture guidance below is historical, not permission.
+
 Read [PIPELINE_PROJECT_STATE.md](PIPELINE_PROJECT_STATE.md) first. This stage is implemented and **cloud-free CI passed**, including [Windows/Linux plus disposable PostgreSQL](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875585) and [rich-document tests](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45338875427). **Original-document read-only discovery PASSED on 2026-11-24:** 778-page PBRER, 1 document and **323 visual candidates**, inserted=0, writes=false. No GCP OCR calls have been made. Proceed to isolated queue initialization/enqueue, then tiny source-scoped pilot. Final implementation evidence: [multi-platform ingestion/DB CI PASS](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45339898781), [rich-document CI PASS](https://github.com/dhanumjayasaggurthi/chunk_vectors/actions/runs/45339898776).
 
 ## End-to-end contract
