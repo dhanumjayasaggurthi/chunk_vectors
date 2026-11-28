@@ -187,6 +187,74 @@ class VisualEnrichmentTests(unittest.TestCase):
                 list(run_pages(retained,[(cid,1)],visual_settings=vs,config=cfg,
                                execution={**exec_cfg,"authorized_result_storage":False}))
 
+    def test_bounded_contract_correction_and_replay(self):
+        import fitz
+        import threading
+        from visual_enrichment import (_execute_page,_cache_path,CORRECTION,
+                                       VisualObservationContractError)
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            source=root/"source.pdf"
+            with fitz.open() as doc:
+                for _ in range(6):
+                    doc.new_page(width=100,height=100).draw_rect((10,10,80,80))
+                doc.save(source)
+            vs={"dpi":150}
+            retained=root/"retained"
+            cap=capture(source,retained,1,6,settings=vs,policy_id="test",
+                        authorized_page_derivatives=True)
+            cfg={**configuration(),"authorized_provider":True}
+            quota=Mock()
+            locks=[threading.Lock()]
+            item={"target":"page","observation":"A rectangle is visible",
+                  "caption_quote":"","uncertainty":"limited"}
+            def raw(changes):
+                return json.dumps({"observations":[{**item,**changes}],"limitations":[]})
+            good=raw({})
+            bads=[raw({"observation":"Dose 30 mg"}),
+                  raw({"caption_quote":"invented"}),
+                  raw({"target":"unknown"})]
+            def packet(n):
+                return prepare_page(retained,cap["capture_id"],n,
+                                    visual_settings=vs,config=cfg)
+            def execute(pkt,attempts=3):
+                return _execute_page(retained,pkt,cfg,{"max_attempts":attempts},quota,locks)
+            for n,bad in enumerate(bads,1):
+                pkt=packet(n)
+                quota.reset_mock()
+                with patch("azure_client.call_visual_structured",
+                           side_effect=[(bad,{}),(good,{})]) as api:
+                    result=execute(pkt)
+                    self.assertEqual(result["provider_attempts"],2)
+                    self.assertTrue(result["verified_result"]["corrective_response"])
+                    self.assertFalse(result["verified_result"]["source_facts_verified"])
+                    self.assertEqual(result["verified_result"]["result"],json.loads(good))
+                    self.assertEqual(api.call_count,2)
+                    self.assertEqual(quota.reserve.call_count,2)
+                    first,second=(call.args[0] for call in api.call_args_list)
+                    self.assertNotIn(CORRECTION,first[0]["content"])
+                    self.assertIn(CORRECTION,second[0]["content"])
+                    self.assertEqual(first[1],second[1])
+                    self.assertNotIn("Dose 30 mg",second[0]["content"])
+                    self.assertEqual(execute(pkt)["provider_attempts"],0)
+                    self.assertEqual(api.call_count,2)
+            # Persistent semantic rejection: stop after correction, even if
+            # additional network attempts were configured.
+            for n,attempts,calls in ((4,3,2),(5,1,1)):
+                pkt=packet(n)
+                with patch("azure_client.call_visual_structured",return_value=(bads[0],{})) as api:
+                    with self.assertRaises(VisualObservationContractError):
+                        execute(pkt,attempts)
+                    self.assertEqual(api.call_count,calls)
+                    self.assertFalse(_cache_path(retained,pkt).exists())
+            # Other malformed output is not eligible for semantic correction.
+            pkt=packet(6)
+            with patch("azure_client.call_visual_structured",return_value=("{}",{})) as api:
+                with self.assertRaises(ValueError):
+                    execute(pkt)
+                self.assertEqual(api.call_count,1)
+                self.assertFalse(_cache_path(retained,pkt).exists())
+
     def test_safe_failure_codes_do_not_expose_provider_content(self):
         import requests
         from visual_enrichment import safe_failure_code
