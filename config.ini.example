@@ -75,6 +75,14 @@ authorized_docx_derivatives = false
 [GCP]
 gcp_key_path = /approved/secrets/gcpkeys.json
 
+[AZURE_OPENAI_CHAT]
+; Use the actual approved enterprise gateway model/deployment alias.
+api_base = https://REPLACE_WITH_APPROVED_ENDPOINT
+api_key = REPLACE_WITH_KEY
+api_version = REPLACE_WITH_API_VERSION
+deployment = REPLACE_WITH_DEPLOYMENT
+model = REPLACE_WITH_MODEL
+
 [AZURE_OPENAI_EMBEDDING]
 api_base = https://REPLACE_WITH_APPROVED_ENDPOINT
 api_key = REPLACE_WITH_KEY

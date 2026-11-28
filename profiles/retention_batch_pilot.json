@@ -1,0 +1,21 @@
+{
+  "workers": 8,
+  "max_documents": 16,
+  "admission_margin_seconds": 60,
+  "max_inventory_line_bytes": 16384,
+  "receipt_flush_every": 32,
+  "authorized_receipt_storage": false,
+  "authorized_docx_derivatives": false,
+  "resource_guard": {
+    "initial_workers": 6,
+    "poll_seconds": 5,
+    "recovery_seconds": 30,
+    "max_pause_seconds": 600,
+    "cpu_high_percent": 92,
+    "cpu_recover_percent": 80,
+    "host_stop_available_gib": 5,
+    "host_resume_available_gib": 8,
+    "group_stop_gib": 20,
+    "group_resume_gib": 17
+  }
+}

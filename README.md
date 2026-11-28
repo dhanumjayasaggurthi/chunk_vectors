@@ -3,10 +3,16 @@
 One entry point: `production.py`. One local `config.ini`. No Docker.
 Use the existing legacy `main.py` and embedding launchers only for legacy jobs.
 
-> **Release gate:** This feature branch is still under validation. Native capture
-> succeeded on the local 14-document workload; full OCR/visual enrichment did not.
-> Do not run the full workload on the branch HEAD until the release gates in
-> [project state](docs/PIPELINE_PROJECT_STATE.md) pass. Optional text enrichment is experimental and requires its own qualification.
+> **Release gate:** Tested application commit `a86ec54` passed disposable
+> PostgreSQL integration and live server provider probes. First live server
+> pilot: 6 PDFs / 98 pages captured, 5 documents / 235 chunks published,
+> one visual-caption failure under targeted recovery; embeddings not yet qualified.
+> Do not run the full corpus until the retention, quality, resource and throughput
+> gates in [project state](docs/PIPELINE_PROJECT_STATE.md) pass.
+>
+> [Server pilot runbook — setup, recovery, nohup, monitoring and larger shards](docs/SERVER_PILOT_RUNBOOK.md).
+> [Pilot INI template](config.pilot.ini.example) and [pilot YAML](profiles/deployment_policy.pilot.yml)
+> record the 8-logical-CPU / 30-GiB configuration; never overwrite existing local settings.
 
 ## 1. Configure once
 
@@ -156,12 +162,21 @@ until its failure reason and release gates are resolved.
 Linux background execution (only on a qualified release):
 
 ~~~bash
-nohup python -u production.py run --apply > ingestlogs.log 2>&1 </dev/null &
-echo $! > ingest.pid
-tail -f ingestlogs.log
+RUN_DIR="logs/run-$(date -u +%Y%m%dT%H%M%S)-$"
+mkdir -m 700 "$RUN_DIR"
+nohup bash -c '
+  start=$(date +%s)
+  .venv/bin/python -u production.py run --apply
+  rc=$?
+  printf "exit_code=%s\nelapsed_seconds=%s\n" "$rc" "$(($(date +%s)-start))" > "$1/result.txt"
+  exit "$rc"
+' _ "$RUN_DIR" > "$RUN_DIR/console.log" 2>&1 </dev/null &
+echo $! > "$RUN_DIR/pid"
+echo "$RUN_DIR"
+tail -f "$RUN_DIR/console.log"
 ~~~
 
-Run one coordinator per server. See [production reference](docs/PRODUCTION_REFERENCE.md)
+Use only one active coordinator per server and never change its configuration while running. A missing result.txt is not proof of completion. Use status for stored counts, and the final embedding coverage result for vector completion. See the [server runbook](docs/SERVER_PILOT_RUNBOOK.md) for monitoring and shard gates. See [production reference](docs/PRODUCTION_REFERENCE.md)
 for OS resource protection and advanced diagnostics.
 
 ## Real-corpus qualification (public test PDFs only)
@@ -292,7 +307,7 @@ After retrieval quality and provider quotas are approved:
 
 ~~~bash
 python production.py embed-preview
-python -u production.py embed --apply
+python -u production.py embed --apply --rescan-source
 ~~~
 
 `embed-preview` is read-only. Set the actual embedding dimensions and limits
@@ -314,8 +329,7 @@ See [embedding operations](docs/FAST_EMBEDDINGS.md) for legacy/distributed detai
 Changing metadata or chunking policy can change the retrieval profile identity.
 Preserve the policy used by existing tables until an approved migration/backfill
 exists. Never treat model observations or a successful OCR request as proof of
-correct source facts. Keep native text and original evidence; do not purge originals
-based on local capture alone.
+correct source facts. Keep native text and approved temporary evidence until completion and recovery validation. Do not purge originals based on local capture alone. The source-team text-only policy requires verified disposal of non-text derivatives; the tested release does not implement automatic cleanup.
 
 [Release status and handoff](docs/PIPELINE_PROJECT_STATE.md) ·
 [Full production reference](docs/PRODUCTION_REFERENCE.md) ·
