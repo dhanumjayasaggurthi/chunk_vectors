@@ -352,6 +352,15 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(report["retrieval"],{"SUCCESS":1})
             self.assertEqual(report["overlap"]["reserved_reader_processes"],1)
 
+    def test_finish_completion_fails_closed(self):
+        from production import _finish_complete
+        self.assertTrue(_finish_complete({"SUCCESS":1,"SKIPPED":1},2))
+        for counts in ({},{"SUCCESS":1},{"SUCCESS":1,"NOT_ADMITTED_SYSTEMIC":1},
+                       {"SUCCESS":1,"FAILED":1},{"SUCCESS":1,"BUSY":1},
+                       {"SUCCESS":1,"NOT_ADMITTED_RESOURCE":1}):
+            self.assertFalse(_finish_complete(counts,2))
+        self.assertFalse(_finish_complete({"NOT_ADMITTED_SYSTEMIC":1}))
+
     def test_embedding_switch_is_independent(self):
         with tempfile.TemporaryDirectory() as tmp:
             path,c=fixture(Path(tmp))
@@ -401,6 +410,12 @@ class DeploymentPostgresTests(unittest.TestCase):
             # Exercise real production capture, evidence, replay and downstream
             # publication with the new opt-in on disposable destination tables.
             c["DEPLOYMENT"]["native_table_prepass"]="true"
+            # Real pgvector, deliberately small synthetic vectors. The provider
+            # network boundary is mocked, not the distributed runtime.
+            import uuid
+            c["AZURE_OPENAI_EMBEDDING"].update(dimensions="3",
+                api_base="https://ci-"+uuid.uuid4().hex+".invalid",
+                api_key="not-a-key",api_version="ci-only",deployment="ci-only",model="ci-only")
             save(path,c)
             d=resolve_configuration(path)
             p,q=d["capture"],d["retrieval"]
@@ -562,6 +577,55 @@ class DeploymentPostgresTests(unittest.TestCase):
                         self.assertEqual(english,"Translated clinical document")
                 finally:
                     conn.close()
+                # Actual distributed discovery, quota, claim, failure ledger,
+                # persistence and replay on the very same English chunks.
+                import copy
+                import hashlib
+                from types import SimpleNamespace
+                import fast_embedding_runtime as engine
+                from production import run_embeddings
+                ep=copy.deepcopy(q)
+                ep["embedding"]["enabled"]=True
+                job=engine.identity(ep,c["AZURE_OPENAI_EMBEDDING"],None)
+                deployment=c["AZURE_OPENAI_EMBEDDING"]["deployment"]
+                quota=hashlib.sha256((c["AZURE_OPENAI_EMBEDDING"]["api_base"].lower()+":"+deployment.lower()).encode()).hexdigest()
+                d["limits"].update(embedding_max_chunks=0,embedding_workers=2)
+                def embedding_reply(_cfg,_session,texts):
+                    if "Translated clinical document" in texts:
+                        raise engine.ApiError("Synthetic invalid input",400)
+                    return [[1.0,0.0,0.0] for _ in texts]
+                try:
+                    with (patch.object(engine,"configparser",SimpleNamespace(ConfigParser=lambda:c)),
+                          patch.object(c,"read",return_value=["config.ini"]),
+                          patch.object(engine,"call",side_effect=embedding_reply) as embed):
+                        failed=run_embeddings(d,rescan_source=True)
+                        self.assertFalse(failed["coverage"]["complete"],failed)
+                        self.assertGreater(failed["coverage"]["missing_vectors"],0)
+                        self.assertGreater(failed["states"].get("FAILED",0),0)
+                        self.assertGreater(failed["coverage"]["embedded_chunks"],0)
+                        self.assertGreater(embed.call_count,0)
+                        embed.side_effect=lambda _cfg,_session,texts:[[1.0,0.0,0.0] for _ in texts]
+                        recovered=run_embeddings(d,retry_failed=True,rescan_source=True)
+                        self.assertTrue(recovered["coverage"]["complete"],recovered)
+                        self.assertEqual(recovered["coverage"]["missing_vectors"],0)
+                        self.assertEqual(recovered["coverage"]["chunks"],report["retrieval"]["chunks"])
+                        calls=embed.call_count
+                        replay=run_embeddings(d,rescan_source=True)
+                        self.assertTrue(replay["coverage"]["complete"],replay)
+                        self.assertEqual(embed.call_count,calls)
+                finally:
+                    conn=get_conn()
+                    try:
+                        with conn:
+                            with conn.cursor() as cur:
+                                # Only this test's private job and quota.
+                                cur.execute("SELECT to_regclass('embedding_runtime.runs')")
+                                if cur.fetchone()[0]:
+                                    for table in ("failure_events","tasks","runs"):
+                                        cur.execute(f"DELETE FROM embedding_runtime.{table} WHERE job_key=%s",(job,))
+                                    cur.execute("DELETE FROM embedding_runtime.quota WHERE deployment_key=%s",(quota,))
+                    finally:
+                        conn.close()
             finally:
                 conn=get_conn()
                 try:

@@ -664,6 +664,59 @@ def run_capture_and_finish(d,receipt,*,overlap=False,finish=False):
     return result
 
 
+def _finish_complete(counts, expected=None):
+    """Only complete successful or idempotently skipped publications qualify."""
+    finished=counts.get("SUCCESS",0)+counts.get("SKIPPED",0)
+    return (finished>0 and (expected is None or finished==expected)
+            and not any(n for status,n in counts.items()
+                        if status not in ("SUCCESS","SKIPPED")))
+
+
+def embedding_completion(d, result):
+    """Reconcile actual vectors, not merely the embedding task ledger.
+
+    One final read-only scan of the configured isolated retrieval destination.
+    A capped run, empty/failed/skipped source row, or interrupted discovery
+    cannot certify a complete destination while vectors remain missing.
+    """
+    from db import get_conn
+    from reuse_materialize import identifiers
+    q=d["retrieval"]
+    table=identifiers(q)["table"]
+    conn=get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION READ ONLY")
+            cur.execute(f"""SELECT count(*),
+                    count(*) FILTER (WHERE chunk_vector IS NULL),
+                    count(*) FILTER (WHERE profile_hash IS DISTINCT FROM %s)
+                    FROM {table}""",(q["_fingerprint"],))
+            total,missing,foreign=cur.fetchone()
+    finally:
+        conn.rollback()
+        conn.close()
+    complete=(total>0 and missing==0 and foreign==0
+              and result.get("discovery_done") is True
+              and not any(n for state,n in result["states"].items()
+                          if state not in ("SUCCESS","SKIPPED")))
+    return {"scope":"configured_retrieval_table","chunks":total,
+            "embedded_chunks":total-missing,"missing_vectors":missing,
+            "foreign_profile_chunks":foreign,"complete":complete}
+
+
+def run_embeddings(d, *, dry_run=False, retry_failed=False, rescan_source=False):
+    from existing_embeddings import embed_existing
+    ep=copy.deepcopy(d["retrieval"])
+    ep["embedding"]["enabled"]=True
+    lim=d["limits"]
+    result=embed_existing(ep,dry_run=dry_run,max_chunks=lim["embedding_max_chunks"] or None,
+                          workers=lim["embedding_workers"],retry_failed=retry_failed,
+                          rescan_source=rescan_source)
+    if not dry_run:
+        result["coverage"]=embedding_completion(d,result)
+    return result
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",choices=("plan","status","census","preflight","init","run","capture","materialize","docx-preview","docx-publish",
@@ -738,13 +791,11 @@ def main(argv=None):
         code=int(not result["all_local_capture_verified"])
         if cmd=="run":
             finished=result["retrieval"]
-            code=int(bool(code or finished.get("FAILED") or finished.get("BUSY") or finished.get("NOT_ADMITTED_RESOURCE")))
+            expected=result["outcomes"].get("LOCAL_CAPTURE_VERIFIED",0)
+            code=int(bool(code or not _finish_complete(finished,expected)))
             if d["enable_embeddings"] and not code:
-                from existing_embeddings import embed_existing
-                ep=copy.deepcopy(q)
-                ep["embedding"]["enabled"]=True
-                result["embedding"]=embed_existing(ep,max_chunks=lim["embedding_max_chunks"] or None,
-                    workers=lim["embedding_workers"],rescan_source=True)
+                result["embedding"]=run_embeddings(d,rescan_source=True)
+                code=int(not result["embedding"]["coverage"]["complete"])
     elif cmd=="finish":
         if not args.receipt or not d["authorized_ocr"]:
             parser.error("finish requires --receipt and authorized_ocr=true")
@@ -763,7 +814,7 @@ def main(argv=None):
             result=finish_captured(d,receipt,records=selected)
         else:
             result=finish_captured(d,receipt)
-        code=int(bool(result.get("FAILED") or result.get("BUSY") or result.get("NOT_ADMITTED_RESOURCE")))
+        code=int(not _finish_complete(result))
     elif cmd=="visual-plan":
         import deferred_ocr as ocr
         if args.apply:
@@ -855,13 +906,10 @@ def main(argv=None):
         _database(d)
         if cmd=="embed" and not d["authorized_embedding"]:
             raise PermissionError("Explicit embedding provider authorization required")
-        from existing_embeddings import embed_existing
-        ep=copy.deepcopy(q)
-        ep["embedding"]["enabled"]=True
-        result=embed_existing(ep,dry_run=cmd=="embed-preview",
-                              max_chunks=lim["embedding_max_chunks"] or None,
-                              workers=lim["embedding_workers"],retry_failed=args.retry_failed,
+        result=run_embeddings(d,dry_run=cmd=="embed-preview",retry_failed=args.retry_failed,
                               rescan_source=args.rescan_source)
+        if cmd=="embed":
+            code=int(not result["coverage"]["complete"])
     print(json.dumps(result,indent=2,ensure_ascii=True,default=str))
     return code
 
